@@ -24,7 +24,7 @@ function(star_add_module module_name)
         file(
             GLOB_RECURSE module_sources
             CONFIGURE_DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/Private/*.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/private/*.cpp"
         )
     endif()
 
@@ -44,15 +44,16 @@ function(star_add_module module_name)
     target_include_directories(
         ${target_name}
         PUBLIC
-            "${CMAKE_CURRENT_SOURCE_DIR}/Public"
+            "${CMAKE_CURRENT_SOURCE_DIR}/public"
         PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/Private"
+            "${CMAKE_CURRENT_SOURCE_DIR}/private"
             "${CMAKE_CURRENT_BINARY_DIR}"
     )
 
     string(TOUPPER "${module_name}" module_export_name)
-    set(export_directory "${CMAKE_BINARY_DIR}/Generated/${module_name}")
-    set(export_header "${export_directory}/${module_name}/Export.hpp")
+    string(TOLOWER "${module_name}" module_path_name)
+    set(export_directory "${CMAKE_BINARY_DIR}/generated/${module_path_name}")
+    set(export_header "${export_directory}/${module_path_name}/export.hpp")
     generate_export_header(
         ${target_name}
         BASE_NAME STAR_${module_export_name}
