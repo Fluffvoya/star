@@ -2,6 +2,7 @@ star_add_module(Core core
     include/core/allocation_error.hpp
     include/core/assert.hpp
     include/core/core.hpp
+    include/core/cvar.hpp
     include/core/guid.hpp
     include/core/linear_allocator.hpp
     include/core/log.hpp
@@ -12,6 +13,7 @@ star_add_module(Core core
     include/core/tracked_allocator.hpp
     src/arena_allocators.cpp
     src/assert.cpp
+    src/cvar.cpp
     src/guid.cpp
     src/log.cpp
     src/name.cpp
