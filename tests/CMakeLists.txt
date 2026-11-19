@@ -10,5 +10,8 @@ foreach(module IN ITEMS Core Jobs Platform)
     add_test(NAME ${test_name} COMMAND ${target})
 endforeach()
 
+find_package(Threads REQUIRED)
+target_link_libraries(StarCoreTests PRIVATE Threads::Threads)
+
 set_tests_properties(jobs-tests platform-tests PROPERTIES TIMEOUT 30)
 set_tests_properties(platform-tests PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
