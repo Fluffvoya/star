@@ -63,6 +63,11 @@
 - 支持任务依赖声明、拓扑调度、失败传播和运行后重复执行。
 - 详细范围、接口约束和验证结果见 [M0 Jobs TaskGraph 阶段报告](M0-task-graph.md)。
 
+### Core Delegate（后续增量）
+
+- 支持单播委托、多播委托、解绑句柄和弱对象绑定。
+- 详细范围和验证结果见 [M0 Core Delegate 阶段报告](M0-core-delegates.md)。
+
 ## 本地验证
 
 验证环境：
