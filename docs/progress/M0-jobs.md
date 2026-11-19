@@ -13,11 +13,11 @@ M0 的后续工作可在此接口上增加任务依赖图，而不必先改动�
 ## 已交付
 
 - 新增 `StarJobs` 运行时模块，并建立对 `StarCore` 的公开依赖。
-- 提供 `Jobs::Run()`，支持 `High`、`Normal`、`Background` 三档优先级。
-- 提供按数量或随机访问范围调用的 `ParallelFor()`，按 grain 切分任务。
-- 提供可复制、可移动的 `JobHandle`；`Wait()` 在等待期间会执行同一调度器中可运行的任务，支持任务内等待子任务。
+- 提供 `Jobs::run()`，支持 `High`、`Normal`、`Background` 三档优先级。
+- 提供按数量或随机访问范围调用的 `parallelFor()`，按 grain 切分任务。
+- 提供可复制、可移动的 `JobHandle`；`wait()` 在等待期间会执行同一调度器中可运行的任务，支持任务内等待子任务。
 - 使用工作线程本地任务队列和跨线程偷取，优先级队列优先执行高优先级任务。
-- 提供 `Jobs::GetWorkerCount()` 和 `Jobs::IsWorkerThread()` 查询接口。
+- 提供 `Jobs::getWorkerCount()` 和 `Jobs::isWorkerThread()` 查询接口。
 - 新增 `jobs-tests`，覆盖单任务、索引与范围并行、空批次、零 grain、嵌套等待和后台优先级。
 
 ## 接口约束
