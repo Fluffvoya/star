@@ -73,6 +73,11 @@
 - 新增 `FlatMap`、`FlatSet`、`HashMap` 和 `RingBuffer`。
 - 详细范围和验证结果见 [M0 Core 容器阶段报告](M0-core-containers.md)。
 
+### Core SmallVector（后续增量）
+
+- 新增支持内联容量和堆扩容的 `SmallVector`。
+- 详细范围和验证结果见 [M0 Core SmallVector 阶段报告](M0-core-small-vector.md)。
+
 ## 本地验证
 
 验证环境：

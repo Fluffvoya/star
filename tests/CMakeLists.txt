@@ -11,7 +11,7 @@ foreach(module IN ITEMS Core Jobs Platform)
 endforeach()
 
 find_package(Threads REQUIRED)
-target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_tests.cpp delegate_tests.cpp)
+target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_tests.cpp delegate_tests.cpp small_vector_tests.cpp)
 target_link_libraries(StarCoreTests PRIVATE Threads::Threads)
 target_sources(StarJobsTests PRIVATE task_graph_tests.cpp)
 
