@@ -11,6 +11,7 @@ foreach(module IN ITEMS Core Jobs Platform)
 endforeach()
 
 find_package(Threads REQUIRED)
+target_sources(StarCoreTests PRIVATE cvar_tests.cpp)
 target_link_libraries(StarCoreTests PRIVATE Threads::Threads)
 
 set_tests_properties(jobs-tests platform-tests PROPERTIES TIMEOUT 30)
