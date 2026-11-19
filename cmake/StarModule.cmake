@@ -2,6 +2,21 @@ include_guard(GLOBAL)
 
 include(GenerateExportHeader)
 
+function(star_kebab_case input output_variable)
+    set(kebab_value "${input}")
+    string(REGEX REPLACE "([a-z0-9])([A-Z])" "\\1-\\2" kebab_value "${kebab_value}")
+    string(REGEX REPLACE "([A-Z]+)([A-Z][a-z])" "\\1-\\2" kebab_value "${kebab_value}")
+    string(TOLOWER "${kebab_value}" kebab_value)
+    string(REGEX REPLACE "[^a-z0-9]+" "-" kebab_value "${kebab_value}")
+    string(REGEX REPLACE "^-+|-+$" "" kebab_value "${kebab_value}")
+    set(${output_variable} "${kebab_value}" PARENT_SCOPE)
+endfunction()
+
+function(star_set_artifact_output_name target_name)
+    star_kebab_case("${target_name}" artifact_output_name)
+    set_target_properties(${target_name} PROPERTIES OUTPUT_NAME "${artifact_output_name}")
+endfunction()
+
 function(star_add_module module_name)
     cmake_parse_arguments(
         STAR_MODULE
@@ -33,10 +48,10 @@ function(star_add_module module_name)
     add_library(${target_name} ${STAR_MODULE_LIBRARY_TYPE} ${module_sources})
     add_library(Star::${module_name} ALIAS ${target_name})
 
+    star_set_artifact_output_name(${target_name})
     set_target_properties(
         ${target_name}
         PROPERTIES
-            OUTPUT_NAME "${target_name}"
             CXX_VISIBILITY_PRESET hidden
             VISIBILITY_INLINES_HIDDEN YES
     )
@@ -51,7 +66,7 @@ function(star_add_module module_name)
     )
 
     string(TOUPPER "${module_name}" module_export_name)
-    string(TOLOWER "${module_name}" module_path_name)
+    star_kebab_case("${module_name}" module_path_name)
     set(export_directory "${CMAKE_BINARY_DIR}/generated/${module_path_name}")
     set(export_header "${export_directory}/${module_path_name}/export.hpp")
     generate_export_header(

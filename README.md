@@ -28,5 +28,5 @@ ctest --preset linux-dev --output-on-failure
 The Windows x64 and macOS arm64 presets are declared but have not yet been validated by this change. Run
 `cmake --list-presets` on the target host to list the presets available on that platform.
 
-`StarHelloWindow` opens an SDL3 window and prints frame timings. For local automated validation, set
+`star-hello-window` opens an SDL3 window and prints frame timings. For local automated validation, set
 `SDL_VIDEODRIVER=dummy` and run it with `--frames=3`.

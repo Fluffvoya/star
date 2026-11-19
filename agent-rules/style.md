@@ -9,6 +9,9 @@
 ## 命名
 
 - 文件夹使用 kebab-case：全小写，单词之间用短横线分隔，例如 `runtime-jobs/`、`window-events/`。
+- 编译产物及其输出路径使用 kebab-case：全小写，单词之间用短横线分隔。例如 `star-core`、
+  `star-hello-window`、`bin/`、`lib/`；平台自动添加的 `lib` 前缀及 `.so`、`.dll`、`.dylib`、`.exe`
+  等后缀不计入名称主体。
 - C++ 源文件和头文件使用 snake_case，例如 `job_scheduler.hpp`、`window_events.cpp`。
 - 类和 concept 使用 UpperCamelCase（大驼峰），例如 `FrameClock`、`JobCallable`。
 - 除构造函数、析构函数和运算符重载等语言固定形式外，所有函数使用 lowerCamelCase（小驼峰），包括自由函数、成员函数和静态成员函数，例如 `submitJob()`、`isComplete()`。
