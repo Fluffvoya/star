@@ -4,6 +4,7 @@
 #include "core/config.hpp"
 #include "core/cvar.hpp"
 #include "core/delegate.hpp"
+#include "core/global_allocator.hpp"
 #include "core/guid.hpp"
 #include "core/linear_allocator.hpp"
 #include "core/log.hpp"

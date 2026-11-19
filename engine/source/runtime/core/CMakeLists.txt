@@ -7,6 +7,7 @@ star_add_module(Core core
     include/core/cvar.hpp
     include/core/delegate.hpp
     include/core/guid.hpp
+    include/core/global_allocator.hpp
     include/core/linear_allocator.hpp
     include/core/log.hpp
     include/core/math.hpp
@@ -20,6 +21,7 @@ star_add_module(Core core
     src/config.cpp
     src/cvar.cpp
     src/guid.cpp
+    src/global_allocator.cpp
     src/log.cpp
     src/name.cpp
     src/tracked_allocator.cpp
