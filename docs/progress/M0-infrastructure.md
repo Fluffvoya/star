@@ -14,7 +14,8 @@
 - 提供 Windows x64、Linux x64、macOS arm64 的 `debug`、`dev`、`profile`、`shipping` 配置、构建和测试预设。
 - Development 与 Debug 使用动态模块；Profile 与 Shipping 选择静态模块库。
 - 建立 SDL3 系统包发现入口，并在依赖缺失时给出明确配置错误。
-- 建立 CTest 本地测试入口和 `StarHelloWindow` 示例目标。
+- 编译产物统一输出到 `<build>/bin/` 与 `<build>/lib/`，产物名使用 kebab-case。
+- 建立 CTest 本地测试入口和 `star-hello-window` 示例目标。
 
 ### Core
 
@@ -32,7 +33,7 @@
 
 ### 示例与测试
 
-- `StarHelloWindow` 可创建窗口并输出帧时间；支持 `--frames=N`。
+- `star-hello-window` 可创建窗口并输出帧时间；支持 `--frames=N`。
 - Core 测试覆盖 GUID 生成、解析、往返和失败输入，以及 Name 驻留和比较。
 - Platform 测试覆盖 headless 窗口创建、属性读取和帧时钟。
 - headless 示例测试运行三帧，验证平台、窗口和主循环入口。
