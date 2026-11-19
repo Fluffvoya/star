@@ -2,6 +2,7 @@
 
 #include "core/assert.hpp"
 #include "core/config.hpp"
+#include "core/containers.hpp"
 #include "core/cvar.hpp"
 #include "core/delegate.hpp"
 #include "core/guid.hpp"
