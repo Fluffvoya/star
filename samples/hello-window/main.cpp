@@ -51,8 +51,17 @@ int main(int argc, char **argv) {
 
     star::FrameClock frame_clock;
     std::uint64_t frame_index = 0;
-    while (!(*window)->shouldClose()) {
+    for (;;) {
         static_cast<void>((*window)->pollEvents());
+        if ((*window)->shouldClose()) {
+            break;
+        }
+
+        // Wayland maps the window after the first buffer is presented.
+        if (const auto result = (*window)->presentSolidColor(32, 36, 44); !result) {
+            star::log::error(k_log_category, "Frame presentation failed: {}", result.error().message);
+            return 1;
+        }
 
         const double delta_seconds = frame_clock.tick();
         const double milliseconds = delta_seconds * 1000.0;

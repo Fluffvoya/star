@@ -68,6 +68,20 @@ std::span<const WindowEvent> Window::pollEvents() {
     return m_implementation->events;
 }
 
+std::expected<void, PlatformError> Window::presentSolidColor(std::uint8_t red, std::uint8_t green, std::uint8_t blue) {
+    if (!m_implementation) {
+        return std::unexpected(PlatformError{"Window is not available"});
+    }
+
+    SDL_Window *handle = m_implementation->handle;
+    SDL_Surface *surface = SDL_GetWindowSurface(handle);
+    if (surface == nullptr || !SDL_FillSurfaceRect(surface, nullptr, SDL_MapSurfaceRGB(surface, red, green, blue)) ||
+        !SDL_UpdateWindowSurface(handle)) {
+        return std::unexpected(PlatformError{SDL_GetError()});
+    }
+    return {};
+}
+
 bool Window::shouldClose() const { return !m_implementation || m_implementation->should_close; }
 
 std::int32_t Window::getWidth() const { return m_implementation ? m_implementation->width : 0; }
