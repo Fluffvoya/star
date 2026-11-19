@@ -3,12 +3,174 @@
 #include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
+#include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace star {
+
+template <class T, std::size_t InlineCapacity> class SmallVector final {
+    static_assert(std::is_nothrow_move_constructible_v<T> && std::is_nothrow_destructible_v<T>);
+
+    using Allocator = std::allocator<T>;
+    static constexpr std::size_t inline_count = InlineCapacity == 0 ? 1 : InlineCapacity;
+
+  public:
+    SmallVector() noexcept : m_data(inlineData()), m_capacity(InlineCapacity) {}
+
+    SmallVector(const SmallVector &other) : SmallVector() {
+        reserve(other.m_size);
+        for (const T &value : other) {
+            emplaceBack(value);
+        }
+    }
+
+    SmallVector(SmallVector &&other) noexcept : SmallVector() { moveFrom(std::move(other)); }
+
+    SmallVector &operator=(const SmallVector &other) {
+        if (this == &other) {
+            return *this;
+        }
+        clear();
+        reserve(other.m_size);
+        for (const T &value : other) {
+            emplaceBack(value);
+        }
+        return *this;
+    }
+
+    SmallVector &operator=(SmallVector &&other) noexcept {
+        if (this != &other) {
+            clear();
+            releaseHeap();
+            m_data = inlineData();
+            m_capacity = InlineCapacity;
+            moveFrom(std::move(other));
+        }
+        return *this;
+    }
+
+    ~SmallVector() {
+        clear();
+        releaseHeap();
+    }
+
+    [[nodiscard]] bool empty() const noexcept { return m_size == 0; }
+    [[nodiscard]] std::size_t size() const noexcept { return m_size; }
+    [[nodiscard]] std::size_t capacity() const noexcept { return m_capacity; }
+    [[nodiscard]] T *data() noexcept { return m_data; }
+    [[nodiscard]] const T *data() const noexcept { return m_data; }
+    [[nodiscard]] T &operator[](std::size_t index) noexcept { return m_data[index]; }
+    [[nodiscard]] const T &operator[](std::size_t index) const noexcept { return m_data[index]; }
+    [[nodiscard]] T &at(std::size_t index) {
+        if (index >= m_size) {
+            throw std::out_of_range("SmallVector index out of range");
+        }
+        return m_data[index];
+    }
+    [[nodiscard]] const T &at(std::size_t index) const {
+        if (index >= m_size) {
+            throw std::out_of_range("SmallVector index out of range");
+        }
+        return m_data[index];
+    }
+    [[nodiscard]] T *begin() noexcept { return m_data; }
+    [[nodiscard]] const T *begin() const noexcept { return m_data; }
+    [[nodiscard]] T *end() noexcept { return m_data + m_size; }
+    [[nodiscard]] const T *end() const noexcept { return m_data + m_size; }
+
+    void reserve(std::size_t requested_capacity) {
+        if (requested_capacity <= m_capacity) {
+            return;
+        }
+        const std::size_t new_capacity = std::max(requested_capacity, m_capacity == 0 ? 1 : m_capacity * 2);
+        T *new_data = m_allocator.allocate(new_capacity);
+        std::size_t moved = 0;
+        try {
+            for (; moved < m_size; ++moved) {
+                std::construct_at(new_data + moved, std::move(m_data[moved]));
+            }
+        } catch (...) {
+            while (moved != 0) {
+                --moved;
+                std::destroy_at(new_data + moved);
+            }
+            m_allocator.deallocate(new_data, new_capacity);
+            throw;
+        }
+        const std::size_t old_size = m_size;
+        destroyElements();
+        releaseHeap();
+        m_data = new_data;
+        m_capacity = new_capacity;
+        m_size = old_size;
+    }
+
+    template <class... Args> T &emplaceBack(Args &&...args) {
+        if (m_size == m_capacity) {
+            reserve(m_size + 1);
+        }
+        T *value = std::construct_at(m_data + m_size, std::forward<Args>(args)...);
+        ++m_size;
+        return *value;
+    }
+
+    void pushBack(const T &value) { emplaceBack(value); }
+    void pushBack(T &&value) { emplaceBack(std::move(value)); }
+
+    void popBack() noexcept {
+        if (m_size != 0) {
+            --m_size;
+            std::destroy_at(m_data + m_size);
+        }
+    }
+
+    void clear() noexcept { destroyElements(); }
+
+  private:
+    [[nodiscard]] T *inlineData() noexcept { return reinterpret_cast<T *>(m_inline_storage); }
+    [[nodiscard]] const T *inlineData() const noexcept { return reinterpret_cast<const T *>(m_inline_storage); }
+
+    void destroyElements() noexcept {
+        while (m_size != 0) {
+            --m_size;
+            std::destroy_at(m_data + m_size);
+        }
+    }
+
+    void releaseHeap() noexcept {
+        if (m_data != inlineData()) {
+            m_allocator.deallocate(m_data, m_capacity);
+        }
+    }
+
+    void moveFrom(SmallVector &&other) noexcept {
+        if (other.m_data != other.inlineData()) {
+            m_data = other.m_data;
+            m_size = other.m_size;
+            m_capacity = other.m_capacity;
+            other.m_data = other.inlineData();
+            other.m_size = 0;
+            other.m_capacity = InlineCapacity;
+            return;
+        }
+        reserve(other.m_size);
+        for (T &value : other) {
+            emplaceBack(std::move(value));
+        }
+        other.clear();
+    }
+
+    Allocator m_allocator;
+    T *m_data;
+    std::size_t m_size = 0;
+    std::size_t m_capacity;
+    alignas(T) std::byte m_inline_storage[sizeof(T) * inline_count];
+};
 
 template <class Key, class Value, class Compare = std::less<Key>> class FlatMap final {
     using Entry = std::pair<Key, Value>;
