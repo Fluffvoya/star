@@ -68,6 +68,11 @@
 - 支持单播委托、多播委托、解绑句柄和弱对象绑定。
 - 详细范围和验证结果见 [M0 Core Delegate 阶段报告](M0-core-delegates.md)。
 
+### Core 容器（后续增量）
+
+- 新增 `FlatMap`、`FlatSet`、`HashMap` 和 `RingBuffer`。
+- 详细范围和验证结果见 [M0 Core 容器阶段报告](M0-core-containers.md)。
+
 ## 本地验证
 
 验证环境：

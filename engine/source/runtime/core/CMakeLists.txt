@@ -2,6 +2,7 @@ star_add_module(Core core
     include/core/allocation_error.hpp
     include/core/assert.hpp
     include/core/config.hpp
+    include/core/containers.hpp
     include/core/core.hpp
     include/core/cvar.hpp
     include/core/delegate.hpp
