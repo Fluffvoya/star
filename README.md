@@ -3,6 +3,9 @@
 Star Engine is a C++23 game engine currently under implementation. The repository is in the M0 infrastructure
 milestone; only the facilities documented below are available.
 
+See the [M0 infrastructure progress report](docs/progress/M0-infrastructure.md) for completed scope and remaining
+work.
+
 ## Prerequisites
 
 - CMake 3.28 or newer
