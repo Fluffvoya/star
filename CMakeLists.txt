@@ -46,6 +46,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Lib")
 
 add_subdirectory(Engine/Source/Runtime/Core)
+add_subdirectory(Engine/Source/Runtime/Jobs)
 add_subdirectory(Engine/Source/Runtime/Platform)
 
 if(STAR_BUILD_SAMPLES)
