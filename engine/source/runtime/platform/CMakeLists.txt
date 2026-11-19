@@ -1,13 +1,16 @@
-star_add_module(
-    Platform
-    TYPE RUNTIME
-    DEPENDS_PRIVATE SDL3::SDL3
+if(STAR_SHIPPING_DEPS)
+    message(STATUS "Star: supply shipping dependencies through the configured toolchain")
+endif()
+
+find_package(SDL3 3.2 REQUIRED CONFIG)
+
+star_add_module(Platform platform
+    include/platform/clock.hpp
+    include/platform/platform.hpp
+    include/platform/window.hpp
+    src/clock.cpp
+    src/platform.cpp
+    src/window.cpp
 )
 
-target_sources(
-    StarPlatform
-    PRIVATE
-        public/platform/clock.hpp
-        public/platform/platform.hpp
-        public/platform/window.hpp
-)
+target_link_libraries(StarPlatform PRIVATE SDL3::SDL3)
