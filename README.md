@@ -6,6 +6,10 @@ milestone; only the facilities documented below are available.
 See the [M0 infrastructure progress report](docs/progress/M0-infrastructure.md) for completed scope and remaining
 work.
 
+The current runtime modules provide Core utilities, an SDL3-backed Platform layer, and a Jobs scheduler with
+asynchronous runs, priority queues, parallel-for helpers, and nested-safe job waiting. See the
+[M0 Jobs progress report](docs/progress/M0-jobs.md) for its current API constraints and validation status.
+
 ## Prerequisites
 
 - CMake 3.28 or newer

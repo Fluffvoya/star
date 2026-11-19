@@ -37,6 +37,11 @@
 - Platform 测试覆盖 headless 窗口创建、属性读取和帧时钟。
 - headless 示例测试运行三帧，验证平台、窗口和主循环入口。
 
+### Jobs（后续增量）
+
+- 新增任务系统、并行 for、任务优先级和等待期间执行任务的能力。
+- 详细范围、接口约束和验证结果见 [M0 Jobs 任务系统报告](M0-jobs.md)。
+
 ## 本地验证
 
 验证环境：
@@ -69,12 +74,13 @@ cmake --build --preset linux-shipping
 ctest --preset linux-shipping --output-on-failure
 ```
 
-每个预设的 `core-tests`、`platform-tests` 和 `hello-window-headless` 均通过。`clang-format --dry-run --Werror` 与 `git diff --check` 通过。
+基础设施阶段验证时，每个预设的 `core-tests`、`platform-tests` 和 `hello-window-headless` 均通过。
+Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
+`clang-format --dry-run --Werror` 与 `git diff --check` 通过。
 
 ## 尚未完成
 
 - M0 的整体验收尚未完成；Windows x64 和 macOS arm64 仅声明了预设，尚未实机构建和运行。
-- Jobs 任务系统和对应测试尚未实现。
 - Core 的内存分配器、容器、数学库、委托、配置和 CVar 尚未实现。
 - 日志目前只输出到控制台，文件、编辑器面板、平台调试输出和后台写出尚未实现。
 - Platform 尚未覆盖输入、动态库加载、文件监视、内存映射、崩溃处理和线程工具。
@@ -86,8 +92,7 @@ ctest --preset linux-shipping --output-on-failure
 
 ## 下一步
 
-1. 建立 Jobs 任务系统、并行 for 和等待语义，并加入并发测试。
-2. 补齐 Core 的句柄容器、内存设施、配置和 CVar，逐步覆盖 M0 清单。
-3. 确定 vcpkg baseline 与静态依赖 triplet，使 Profile/Shipping 的依赖策略可复现。
-4. 在 Windows x64 和 macOS arm64 实机执行本地预设、测试和窗口示例。
-5. 将公共头文件独立编译检查纳入 CTest。
+1. 补齐 Core 的句柄容器、内存设施、配置和 CVar，逐步覆盖 M0 清单。
+2. 确定 vcpkg baseline 与静态依赖 triplet，使 Profile/Shipping 的依赖策略可复现。
+3. 在 Windows x64 和 macOS arm64 实机执行本地预设、测试和窗口示例。
+4. 将公共头文件独立编译检查纳入 CTest。
