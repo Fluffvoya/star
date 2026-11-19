@@ -1,4 +1,5 @@
 #include "jobs/jobs.hpp"
+#include "jobs/task_graph.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,6 +10,7 @@
 #include <deque>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -116,8 +118,6 @@ class Scheduler final {
                 return false;
             }
 
-            m_pending.fetch_add(1, std::memory_order_relaxed);
-
             std::move_only_function<void()> runnable = [this, state, function = std::move(function)]() mutable {
                 try {
                     function();
@@ -129,7 +129,13 @@ class Scheduler final {
                 state->completeOne();
             };
 
-            push(Task{priority, std::move(runnable)});
+            m_pending.fetch_add(1, std::memory_order_relaxed);
+            try {
+                push(Task{priority, std::move(runnable)});
+            } catch (...) {
+                taskFinished();
+                throw;
+            }
         }
 
         return true;
@@ -232,6 +238,7 @@ class Scheduler final {
 
     void taskFinished() noexcept {
         if (m_pending.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            const std::lock_guard lock(m_idle_mutex);
             m_idle.notify_all();
         }
     }
@@ -354,5 +361,208 @@ JobHandle Jobs::parallelForIndices(std::size_t count, std::size_t grain_size,
 std::uint32_t Jobs::getWorkerCount() { return getScheduler()->workerCount(); }
 
 bool Jobs::isWorkerThread() noexcept { return g_current_scheduler != nullptr; }
+
+struct TaskGraph::Execution {
+    static constexpr std::size_t no_task = std::numeric_limits<std::size_t>::max();
+
+    struct DependencyState {
+        std::atomic<std::size_t> remaining{0};
+        std::atomic<bool> blocked{false};
+        std::size_t next_unsubmitted = no_task;
+    };
+
+    Execution(std::vector<Node> &nodes, const std::shared_ptr<Scheduler> &scheduler)
+        : m_nodes(nodes), m_scheduler(*scheduler), m_completion(std::make_shared<detail::JobState>(scheduler)),
+          m_dependencies(std::make_unique<DependencyState[]>(nodes.size())) {
+        m_completion->setRemaining(nodes.size());
+        for (std::size_t index = 0; index < m_nodes.size(); ++index) {
+            m_dependencies[index].remaining.store(m_nodes[index].prerequisites, std::memory_order_relaxed);
+        }
+    }
+
+    void start() noexcept {
+        std::size_t unsubmitted = no_task;
+        for (std::size_t index = 0; index < m_nodes.size(); ++index) {
+            if (m_nodes[index].prerequisites == 0) {
+                enqueue(index, unsubmitted);
+            }
+        }
+        drainUnsubmitted(unsubmitted);
+    }
+
+    [[nodiscard]] const std::shared_ptr<detail::JobState> &getCompletion() const noexcept { return m_completion; }
+
+    [[nodiscard]] std::expected<void, TaskGraphError> getResult() const noexcept {
+        if (m_submission_failed.load(std::memory_order_relaxed)) {
+            return std::unexpected(TaskGraphError::SubmissionFailed);
+        }
+        if (m_task_failed.load(std::memory_order_relaxed)) {
+            return std::unexpected(TaskGraphError::TaskFailed);
+        }
+        return {};
+    }
+
+  private:
+    void enqueue(std::size_t index, std::size_t &unsubmitted) noexcept {
+        try {
+            if (m_scheduler.submit(m_completion, m_nodes[index].priority, [this, index] { execute(index); })) {
+                return;
+            }
+        } catch (...) {
+            // A ready node can still be retired without allocating storage for another queue entry.
+        }
+        m_submission_failed.store(true, std::memory_order_relaxed);
+        m_dependencies[index].next_unsubmitted = unsubmitted;
+        unsubmitted = index;
+    }
+
+    void releaseDependents(std::size_t index, bool succeeded, std::size_t &unsubmitted) noexcept {
+        for (const std::size_t dependent : m_nodes[index].dependents) {
+            auto &state = m_dependencies[dependent];
+            if (!succeeded) {
+                state.blocked.store(true, std::memory_order_relaxed);
+            }
+            // The final prerequisite observes the writes released by all preceding prerequisites.
+            if (state.remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                enqueue(dependent, unsubmitted);
+            }
+        }
+    }
+
+    void drainUnsubmitted(std::size_t unsubmitted) noexcept {
+        while (unsubmitted != no_task) {
+            const auto index = unsubmitted;
+            unsubmitted = m_dependencies[index].next_unsubmitted;
+            releaseDependents(index, false, unsubmitted);
+            m_completion->completeOne();
+        }
+    }
+
+    void execute(std::size_t index) noexcept {
+        bool succeeded = false;
+        if (!m_dependencies[index].blocked.load(std::memory_order_relaxed)) {
+            try {
+                succeeded = m_nodes[index].task();
+            } catch (...) {
+                // The graph reports a failed callback and skips its dependents before returning to the caller.
+            }
+            if (!succeeded) {
+                m_task_failed.store(true, std::memory_order_relaxed);
+            }
+        }
+        std::size_t unsubmitted = no_task;
+        releaseDependents(index, succeeded, unsubmitted);
+        drainUnsubmitted(unsubmitted);
+    }
+
+    std::vector<Node> &m_nodes;
+    Scheduler &m_scheduler;
+    std::shared_ptr<detail::JobState> m_completion;
+    std::unique_ptr<DependencyState[]> m_dependencies;
+    std::atomic<bool> m_submission_failed{false};
+    std::atomic<bool> m_task_failed{false};
+};
+
+std::expected<TaskGraph::TaskId, TaskGraphError> TaskGraph::addTask(Task task, JobPriority priority) noexcept {
+    if (!task) {
+        return std::unexpected(TaskGraphError::InvalidTask);
+    }
+    if (priorityIndex(priority) >= k_priority_count) {
+        return std::unexpected(TaskGraphError::InvalidPriority);
+    }
+    const std::lock_guard lock(m_mutex);
+    if (m_running) {
+        return std::unexpected(TaskGraphError::Busy);
+    }
+    try {
+        const auto index = m_nodes.size();
+        m_nodes.push_back(Node{std::move(task), priority, {}});
+        return TaskId(*this, index);
+    } catch (...) {
+        return std::unexpected(TaskGraphError::AllocationFailed);
+    }
+}
+
+std::expected<void, TaskGraphError> TaskGraph::addDependency(TaskId prerequisite, TaskId dependent) noexcept {
+    const std::lock_guard lock(m_mutex);
+    if (m_running) {
+        return std::unexpected(TaskGraphError::Busy);
+    }
+    if (prerequisite.m_owner != this || dependent.m_owner != this || prerequisite.m_index >= m_nodes.size() ||
+        dependent.m_index >= m_nodes.size()) {
+        return std::unexpected(TaskGraphError::InvalidTask);
+    }
+    if (prerequisite == dependent) {
+        return std::unexpected(TaskGraphError::Cycle);
+    }
+    auto &dependents = m_nodes[prerequisite.m_index].dependents;
+    if (std::ranges::find(dependents, dependent.m_index) != dependents.end()) {
+        return {};
+    }
+    try {
+        dependents.push_back(dependent.m_index);
+        ++m_nodes[dependent.m_index].prerequisites;
+        return {};
+    } catch (...) {
+        return std::unexpected(TaskGraphError::AllocationFailed);
+    }
+}
+
+bool TaskGraph::isAcyclic() const {
+    std::vector<std::size_t> remaining;
+    std::vector<std::size_t> ready;
+    remaining.reserve(m_nodes.size());
+    ready.reserve(m_nodes.size());
+    for (std::size_t index = 0; index < m_nodes.size(); ++index) {
+        remaining.push_back(m_nodes[index].prerequisites);
+        if (remaining.back() == 0) {
+            ready.push_back(index);
+        }
+    }
+    for (std::size_t cursor = 0; cursor < ready.size(); ++cursor) {
+        for (const auto dependent : m_nodes[ready[cursor]].dependents) {
+            if (--remaining[dependent] == 0) {
+                ready.push_back(dependent);
+            }
+        }
+    }
+    return ready.size() == m_nodes.size();
+}
+
+std::expected<void, TaskGraphError> TaskGraph::run() noexcept {
+    {
+        const std::lock_guard lock(m_mutex);
+        if (m_running) {
+            return std::unexpected(TaskGraphError::Busy);
+        }
+        if (m_nodes.empty()) {
+            return {};
+        }
+        m_running = true;
+    }
+    struct RunGuard {
+        std::mutex &mutex;
+        bool &running;
+        ~RunGuard() {
+            const std::lock_guard lock(mutex);
+            running = false;
+        }
+    } guard{m_mutex, m_running};
+
+    std::shared_ptr<Scheduler> scheduler;
+    std::optional<Execution> execution;
+    try {
+        if (!isAcyclic()) {
+            return std::unexpected(TaskGraphError::Cycle);
+        }
+        scheduler = getScheduler();
+        execution.emplace(m_nodes, scheduler);
+    } catch (...) {
+        return std::unexpected(TaskGraphError::AllocationFailed);
+    }
+    execution->start();
+    JobHandle(execution->getCompletion()).wait();
+    return execution->getResult();
+}
 
 } // namespace star

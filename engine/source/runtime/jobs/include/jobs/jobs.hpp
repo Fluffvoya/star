@@ -42,6 +42,7 @@ class STAR_JOBS_API JobHandle final {
 
   private:
     friend class Jobs;
+    friend class TaskGraph;
 
     explicit JobHandle(std::shared_ptr<detail::JobState> state) noexcept;
 
