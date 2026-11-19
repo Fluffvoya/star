@@ -1,449 +1,137 @@
 {
-  "version": 6,
-  "cmakeMinimumRequired": {
-    "major": 3,
-    "minor": 28,
-    "patch": 0
-  },
-  "configurePresets": [
-    {
-      "name": "base",
-      "hidden": true,
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {
-        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
-        "STAR_BUILD_SAMPLES": true,
-        "STAR_BUILD_TESTS": true
-      }
-    },
-    {
-      "name": "linux-debug",
-      "displayName": "Linux x64 Debug",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "linux-dev",
-      "displayName": "Linux x64 Development",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Development"
-      }
-    },
-    {
-      "name": "linux-profile",
-      "displayName": "Linux x64 Profile",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Profile",
-        "STAR_MONOLITHIC": true,
-        "STAR_SHIPPING_DEPS": true
-      }
-    },
-    {
-      "name": "linux-shipping",
-      "displayName": "Linux x64 Shipping",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Shipping",
-        "STAR_MONOLITHIC": true,
-        "STAR_SHIPPING_DEPS": true
-      }
-    },
-    {
-      "name": "win-debug",
-      "displayName": "Windows x64 Debug",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "win-dev",
-      "displayName": "Windows x64 Development",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Development"
-      }
-    },
-    {
-      "name": "win-profile",
-      "displayName": "Windows x64 Profile",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Profile",
-        "STAR_MONOLITHIC": true,
-        "STAR_SHIPPING_DEPS": true
-      }
-    },
-    {
-      "name": "win-shipping",
-      "displayName": "Windows x64 Shipping",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Shipping",
-        "STAR_MONOLITHIC": true,
-        "STAR_SHIPPING_DEPS": true
-      }
-    },
-    {
-      "name": "mac-debug",
-      "displayName": "macOS arm64 Debug",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_OSX_ARCHITECTURES": "arm64"
-      }
-    },
-    {
-      "name": "mac-dev",
-      "displayName": "macOS arm64 Development",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Development",
-        "CMAKE_OSX_ARCHITECTURES": "arm64"
-      }
-    },
-    {
-      "name": "mac-profile",
-      "displayName": "macOS arm64 Profile",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Profile",
-        "CMAKE_OSX_ARCHITECTURES": "arm64",
-        "STAR_MONOLITHIC": true,
-        "STAR_SHIPPING_DEPS": true
-      }
-    },
-    {
-      "name": "mac-shipping",
-      "displayName": "macOS arm64 Shipping",
-      "inherits": "base",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      },
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Shipping",
-        "CMAKE_OSX_ARCHITECTURES": "arm64",
-        "STAR_MONOLITHIC": true,
-        "STAR_SHIPPING_DEPS": true
-      }
-    }
-  ],
-  "buildPresets": [
-    {
-      "name": "linux-debug",
-      "configurePreset": "linux-debug",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      }
-    },
-    {
-      "name": "linux-dev",
-      "configurePreset": "linux-dev",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      }
-    },
-    {
-      "name": "linux-profile",
-      "configurePreset": "linux-profile",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      }
-    },
-    {
-      "name": "linux-shipping",
-      "configurePreset": "linux-shipping",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      }
-    },
-    {
-      "name": "win-debug",
-      "configurePreset": "win-debug",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "win-dev",
-      "configurePreset": "win-dev",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "win-profile",
-      "configurePreset": "win-profile",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "win-shipping",
-      "configurePreset": "win-shipping",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "mac-debug",
-      "configurePreset": "mac-debug",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      }
-    },
-    {
-      "name": "mac-dev",
-      "configurePreset": "mac-dev",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      }
-    },
-    {
-      "name": "mac-profile",
-      "configurePreset": "mac-profile",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      }
-    },
-    {
-      "name": "mac-shipping",
-      "configurePreset": "mac-shipping",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      }
-    }
-  ],
-  "testPresets": [
-    {
-      "name": "linux-debug",
-      "configurePreset": "linux-debug",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      }
-    },
-    {
-      "name": "linux-dev",
-      "configurePreset": "linux-dev",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      }
-    },
-    {
-      "name": "linux-profile",
-      "configurePreset": "linux-profile",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      }
-    },
-    {
-      "name": "linux-shipping",
-      "configurePreset": "linux-shipping",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      }
-    },
-    {
-      "name": "win-debug",
-      "configurePreset": "win-debug",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "win-dev",
-      "configurePreset": "win-dev",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "win-profile",
-      "configurePreset": "win-profile",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "win-shipping",
-      "configurePreset": "win-shipping",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "mac-debug",
-      "configurePreset": "mac-debug",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      }
-    },
-    {
-      "name": "mac-dev",
-      "configurePreset": "mac-dev",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      }
-    },
-    {
-      "name": "mac-profile",
-      "configurePreset": "mac-profile",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      }
-    },
-    {
-      "name": "mac-shipping",
-      "configurePreset": "mac-shipping",
-      "output": {
-        "outputOnFailure": true
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Darwin"
-      }
-    }
-  ]
+    "version": 6,
+    "cmakeMinimumRequired": {"major": 3, "minor": 28, "patch": 0},
+    "configurePresets": [
+        {
+            "name": "ninja",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}"
+        },
+        {
+            "name": "monolithic",
+            "hidden": true,
+            "cacheVariables": {"STAR_MONOLITHIC": true, "STAR_SHIPPING_DEPS": true}
+        },
+        {
+            "name": "linux-host",
+            "hidden": true,
+            "inherits": "ninja",
+            "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux"}
+        },
+        {
+            "name": "linux-debug",
+            "displayName": "Linux x64 Debug",
+            "inherits": "linux-host",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}
+        },
+        {
+            "name": "linux-dev",
+            "displayName": "Linux x64 Development",
+            "inherits": "linux-host",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Development"}
+        },
+        {
+            "name": "linux-profile",
+            "displayName": "Linux x64 Profile",
+            "inherits": ["linux-host", "monolithic"],
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Profile"}
+        },
+        {
+            "name": "linux-shipping",
+            "displayName": "Linux x64 Shipping",
+            "inherits": ["linux-host", "monolithic"],
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Shipping"}
+        },
+        {
+            "name": "win-host",
+            "hidden": true,
+            "inherits": "ninja",
+            "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"}
+        },
+        {
+            "name": "win-debug",
+            "displayName": "Windows x64 Debug",
+            "inherits": "win-host",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}
+        },
+        {
+            "name": "win-dev",
+            "displayName": "Windows x64 Development",
+            "inherits": "win-host",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Development"}
+        },
+        {
+            "name": "win-profile",
+            "displayName": "Windows x64 Profile",
+            "inherits": ["win-host", "monolithic"],
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Profile"}
+        },
+        {
+            "name": "win-shipping",
+            "displayName": "Windows x64 Shipping",
+            "inherits": ["win-host", "monolithic"],
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Shipping"}
+        },
+        {
+            "name": "mac-host",
+            "hidden": true,
+            "inherits": "ninja",
+            "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin"},
+            "cacheVariables": {"CMAKE_OSX_ARCHITECTURES": "arm64"}
+        },
+        {
+            "name": "mac-debug",
+            "displayName": "macOS arm64 Debug",
+            "inherits": "mac-host",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}
+        },
+        {
+            "name": "mac-dev",
+            "displayName": "macOS arm64 Development",
+            "inherits": "mac-host",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Development"}
+        },
+        {
+            "name": "mac-profile",
+            "displayName": "macOS arm64 Profile",
+            "inherits": ["mac-host", "monolithic"],
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Profile"}
+        },
+        {
+            "name": "mac-shipping",
+            "displayName": "macOS arm64 Shipping",
+            "inherits": ["mac-host", "monolithic"],
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Shipping"}
+        }
+    ],
+    "buildPresets": [
+        {"name": "linux-debug", "configurePreset": "linux-debug"},
+        {"name": "linux-dev", "configurePreset": "linux-dev"},
+        {"name": "linux-profile", "configurePreset": "linux-profile"},
+        {"name": "linux-shipping", "configurePreset": "linux-shipping"},
+        {"name": "win-debug", "configurePreset": "win-debug"},
+        {"name": "win-dev", "configurePreset": "win-dev"},
+        {"name": "win-profile", "configurePreset": "win-profile"},
+        {"name": "win-shipping", "configurePreset": "win-shipping"},
+        {"name": "mac-debug", "configurePreset": "mac-debug"},
+        {"name": "mac-dev", "configurePreset": "mac-dev"},
+        {"name": "mac-profile", "configurePreset": "mac-profile"},
+        {"name": "mac-shipping", "configurePreset": "mac-shipping"}
+    ],
+    "testPresets": [
+        {"name": "test-output", "hidden": true, "output": {"outputOnFailure": true}},
+        {"name": "linux-debug", "configurePreset": "linux-debug", "inherits": "test-output"},
+        {"name": "linux-dev", "configurePreset": "linux-dev", "inherits": "test-output"},
+        {"name": "linux-profile", "configurePreset": "linux-profile", "inherits": "test-output"},
+        {"name": "linux-shipping", "configurePreset": "linux-shipping", "inherits": "test-output"},
+        {"name": "win-debug", "configurePreset": "win-debug", "inherits": "test-output"},
+        {"name": "win-dev", "configurePreset": "win-dev", "inherits": "test-output"},
+        {"name": "win-profile", "configurePreset": "win-profile", "inherits": "test-output"},
+        {"name": "win-shipping", "configurePreset": "win-shipping", "inherits": "test-output"},
+        {"name": "mac-debug", "configurePreset": "mac-debug", "inherits": "test-output"},
+        {"name": "mac-dev", "configurePreset": "mac-dev", "inherits": "test-output"},
+        {"name": "mac-profile", "configurePreset": "mac-profile", "inherits": "test-output"},
+        {"name": "mac-shipping", "configurePreset": "mac-shipping", "inherits": "test-output"}
+    ]
 }

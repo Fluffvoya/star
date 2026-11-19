@@ -25,6 +25,11 @@ cmake --build --preset linux-dev
 ctest --preset linux-dev --output-on-failure
 ```
 
+This preset uses `build/linux-dev/` for its CMake cache, with executables in `build/linux-dev/bin/` and
+libraries in `build/linux-dev/lib/`. Each preset uses its own build directory.
+
+Runtime modules keep public headers under `include/<module>/` and implementation files under `src/`.
+
 The Windows x64 and macOS arm64 presets are declared but have not yet been validated by this change. Run
 `cmake --list-presets` on the target host to list the presets available on that platform.
 
