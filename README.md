@@ -17,6 +17,12 @@ asynchronous runs, priority queues, parallel-for helpers, and nested-safe job wa
 - A C++23 compiler
 - SDL3 3.2 or newer
 
+Initialize the pinned YAML parser and its dependencies after cloning the repository.
+
+```sh
+git submodule update --init --recursive
+```
+
 On Linux, configure and validate the current scaffold with:
 
 ```sh

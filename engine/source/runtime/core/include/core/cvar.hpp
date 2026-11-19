@@ -5,6 +5,7 @@
 #include <concepts>
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -34,11 +35,18 @@ struct CVarInfo {
     CVarValue value;
 };
 
+struct CVarAssignment {
+    std::string_view name;
+    std::string_view value;
+};
+
 class STAR_CORE_API CVarRegistry final {
   public:
     [[nodiscard]] static std::expected<CVarInfo, CVarError> getInfo(std::string_view name) noexcept;
     [[nodiscard]] static std::expected<void, CVarError> setFromString(std::string_view name,
                                                                       std::string_view text) noexcept;
+    [[nodiscard]] static std::expected<void, CVarError>
+    setFromStrings(std::span<const CVarAssignment> assignments) noexcept;
 };
 
 namespace detail {
