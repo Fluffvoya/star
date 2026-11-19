@@ -58,6 +58,11 @@
 - 支持分层配置文件、命令行覆盖及原子应用 `CVars` 映射。
 - 源码依赖和验证结果见 [M0 Core YAML 分层配置阶段报告](M0-layered-yaml-config.md)。
 
+### Jobs TaskGraph（后续增量）
+
+- 支持任务依赖声明、拓扑调度、失败传播和运行后重复执行。
+- 详细范围、接口约束和验证结果见 [M0 Jobs TaskGraph 阶段报告](M0-task-graph.md)。
+
 ## 本地验证
 
 验证环境：
@@ -108,7 +113,8 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 
 ## 下一步
 
-1. 补齐 Core 的其余容器和全局分配设施，逐步覆盖 M0 清单。
-2. 确定 vcpkg baseline 与静态依赖 triplet，使 Profile/Shipping 的依赖策略可复现。
-3. 在 Windows x64 和 macOS arm64 实机执行本地预设、测试和窗口示例。
-4. 将公共头文件独立编译检查纳入 CTest。
+1. 抽象外部物理任务系统适配层，为 Jolt 和 Box2D 接入预留稳定接口。
+2. 补齐 Core 的其余容器和全局分配设施，逐步覆盖 M0 清单。
+3. 确定 vcpkg baseline 与静态依赖 triplet，使 Profile/Shipping 的依赖策略可复现。
+4. 在 Windows x64 和 macOS arm64 实机执行本地预设、测试和窗口示例。
+5. 将公共头文件独立编译检查纳入 CTest。

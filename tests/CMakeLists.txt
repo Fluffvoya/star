@@ -13,6 +13,7 @@ endforeach()
 find_package(Threads REQUIRED)
 target_sources(StarCoreTests PRIVATE config_tests.cpp cvar_tests.cpp)
 target_link_libraries(StarCoreTests PRIVATE Threads::Threads)
+target_sources(StarJobsTests PRIVATE task_graph_tests.cpp)
 
 set_tests_properties(jobs-tests platform-tests PROPERTIES TIMEOUT 30)
 set_tests_properties(platform-tests PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
