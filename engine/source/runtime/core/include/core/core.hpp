@@ -7,6 +7,7 @@
 #include "core/guid.hpp"
 #include "core/linear_allocator.hpp"
 #include "core/log.hpp"
+#include "core/math.hpp"
 #include "core/name.hpp"
 #include "core/pool_allocator.hpp"
 #include "core/slot_map.hpp"
