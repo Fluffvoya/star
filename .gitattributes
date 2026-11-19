@@ -1,0 +1,11 @@
+# Normalize text across Windows, Linux, and macOS.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets and packages must not undergo newline conversion.
+*.dds -text
+*.exr -text
+*.glb -text
+*.ktx2 -text
+*.pak -text

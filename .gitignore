@@ -1,0 +1,41 @@
+# Local build trees and generated build metadata.
+/build/
+/out/
+/cmake-build-*/
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+Testing/
+vcpkg_installed/
+
+# Star Editor and game-project outputs. Keep source assets and .meta files tracked.
+Build/
+Intermediate/
+Saved/
+
+# Local tooling, IDE state, and OS metadata.
+/.local/
+.cache/
+.vs/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+
+# Private project documentation is local-only.
+/.private-docs/
+
+# Local environment data, not shared examples.
+.env
+.env.*
+!.env.example
+!.env.sample

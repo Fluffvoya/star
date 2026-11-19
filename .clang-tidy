@@ -1,0 +1,10 @@
+Checks: >-
+  -*,
+  clang-analyzer-*,
+  bugprone-assert-side-effect,
+  bugprone-dangling-handle,
+  bugprone-use-after-move,
+  performance-for-range-copy,
+  performance-unnecessary-copy-initialization
+WarningsAsErrors: ''
+SystemHeaders: false
