@@ -53,6 +53,11 @@
 - 新增类型化运行时变量、按名称查询和文本修改能力。
 - 详细范围、接口约束和验证结果见 [M0 Core CVar 阶段报告](M0-core-cvars.md)。
 
+### Core YAML 分层配置（后续增量）
+
+- 支持分层配置文件、命令行覆盖及原子应用 `CVars` 映射。
+- 源码依赖和验证结果见 [M0 Core YAML 分层配置阶段报告](M0-layered-yaml-config.md)。
+
 ## 本地验证
 
 验证环境：
@@ -92,7 +97,7 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 ## 尚未完成
 
 - M0 的整体验收尚未完成；Windows x64 和 macOS arm64 仅声明了预设，尚未实机构建和运行。
-- Core 的全局分配器选择、其余容器、数学库、委托、分层配置和 CVar 配置集成尚待实现。
+- Core 的全局分配器选择、其余容器、数学库和委托尚待实现。启动器尚待接入配置路径与命令行入口。
 - 日志目前只输出到控制台，文件、编辑器面板、平台调试输出和后台写出尚未实现。
 - Platform 尚未覆盖输入、动态库加载、文件监视、内存映射、崩溃处理和线程工具。
 - `STAR_SHIPPING_DEPS` 目前只启用策略提示；vcpkg manifest、固定 baseline 和静态依赖 triplet 尚未落地。
@@ -103,7 +108,7 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 
 ## 下一步
 
-1. 补齐 Core 的分层配置、CVar 配置集成、其余容器和全局分配设施，逐步覆盖 M0 清单。
+1. 补齐 Core 的其余容器和全局分配设施，逐步覆盖 M0 清单。
 2. 确定 vcpkg baseline 与静态依赖 triplet，使 Profile/Shipping 的依赖策略可复现。
 3. 在 Windows x64 和 macOS arm64 实机执行本地预设、测试和窗口示例。
 4. 将公共头文件独立编译检查纳入 CTest。

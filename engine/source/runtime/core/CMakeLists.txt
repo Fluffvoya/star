@@ -1,6 +1,7 @@
 star_add_module(Core core
     include/core/allocation_error.hpp
     include/core/assert.hpp
+    include/core/config.hpp
     include/core/core.hpp
     include/core/cvar.hpp
     include/core/guid.hpp
@@ -13,9 +14,12 @@ star_add_module(Core core
     include/core/tracked_allocator.hpp
     src/arena_allocators.cpp
     src/assert.cpp
+    src/config.cpp
     src/cvar.cpp
     src/guid.cpp
     src/log.cpp
     src/name.cpp
     src/tracked_allocator.cpp
 )
+
+target_link_libraries(StarCore PRIVATE ryml)

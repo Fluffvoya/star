@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/assert.hpp"
+#include "core/config.hpp"
 #include "core/cvar.hpp"
 #include "core/guid.hpp"
 #include "core/linear_allocator.hpp"

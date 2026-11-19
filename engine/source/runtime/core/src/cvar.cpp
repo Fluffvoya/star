@@ -10,6 +10,7 @@
 #include <sstream>
 #include <system_error>
 #include <type_traits>
+#include <vector>
 
 namespace star {
 
@@ -135,6 +136,33 @@ std::expected<void, CVarError> CVarRegistry::setFromString(std::string_view name
         return std::unexpected(CVarError::NotFound);
     }
     return setValueFromString(found->second.info.value, text);
+}
+
+std::expected<void, CVarError> CVarRegistry::setFromStrings(std::span<const CVarAssignment> assignments) noexcept {
+    auto &registry = getRegistry();
+    const std::lock_guard lock(registry.mutex);
+    try {
+        std::vector<std::pair<CVarValue *, CVarValue>> changes;
+        changes.reserve(assignments.size());
+        for (const auto &[name, text] : assignments) {
+            const auto found = registry.records.find(name);
+            if (found == registry.records.end()) {
+                return std::unexpected(CVarError::NotFound);
+            }
+            CVarValue &current = found->second.info.value;
+            CVarValue value = current;
+            if (const auto parsed = setValueFromString(value, text); !parsed) {
+                return std::unexpected(parsed.error());
+            }
+            changes.emplace_back(&current, std::move(value));
+        }
+        for (auto &[current, value] : changes) {
+            *current = std::move(value);
+        }
+        return {};
+    } catch (const std::exception &) {
+        return std::unexpected(CVarError::AllocationFailed);
+    }
 }
 
 namespace detail {
