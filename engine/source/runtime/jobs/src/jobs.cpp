@@ -4,9 +4,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <exception>
 #include <functional>
@@ -14,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -31,6 +34,26 @@ constexpr std::size_t k_priority_count = 3;
 }
 
 thread_local Scheduler *g_current_scheduler = nullptr;
+
+[[nodiscard]] std::uint32_t defaultWorkerCount() noexcept {
+    const std::uint32_t hardware_threads = std::thread::hardware_concurrency();
+    return hardware_threads > 1 ? hardware_threads - 1 : 1;
+}
+
+[[nodiscard]] std::uint32_t configuredWorkerCount() noexcept {
+    const char *value = std::getenv("STAR_JOBS_WORKERS");
+    if (value == nullptr || *value == '\0') {
+        return defaultWorkerCount();
+    }
+
+    const std::string_view text(value);
+    std::uint32_t worker_count = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), worker_count);
+    if (error != std::errc{} || end != text.data() + text.size() || worker_count == 0) {
+        return defaultWorkerCount();
+    }
+    return worker_count;
+}
 
 } // namespace
 
@@ -69,8 +92,7 @@ namespace {
 class Scheduler final {
   public:
     Scheduler() {
-        const std::uint32_t hardware_threads = std::thread::hardware_concurrency();
-        const std::uint32_t worker_count = hardware_threads > 1 ? hardware_threads - 1 : 1;
+        const std::uint32_t worker_count = configuredWorkerCount();
 
         m_queues.reserve(worker_count);
         for (std::uint32_t index = 0; index < worker_count; ++index) {
