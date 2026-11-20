@@ -4,5 +4,6 @@
 | --- | --- | --- |
 | 01 | [反射基础](01-reflection-foundation.md) | Linux x64 Development |
 | 02 | [序列化归档](02-serialization-archives.md) | Linux x64 Development、Profile |
+| 03 | [生成器集成与联合验收](03-generated-reflection.md) | Linux x64 Development、Profile |
 
-M1 整体验收还包括生成代码接入增量构建、生成注册表与序列化的联合测试，以及 Windows x64 和 macOS arm64 的本地验证。
+M1 的 Windows x64 和 macOS arm64 本地验收待对应主机执行。生成器与归档当前支持的类型和模式见第三阶段报告。
