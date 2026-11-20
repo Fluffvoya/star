@@ -3,7 +3,7 @@
 - 日期：2026-11-19
 - 实现分支：`feature/m0-infrastructure`
 - 实现提交：`29f2aa6`
-- 状态：第一阶段已交付；M0 整体尚未完成
+- 状态：M0 Linux x64 实现与本地验收已完成；Windows x64 和 macOS arm64 实机验收待执行
 
 ## 已交付
 
@@ -181,6 +181,8 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 - 当前依赖系统中未发现 glm，因此数学相关设施尚未提供。
 - 测试入口使用仓库内的轻量测试支持，doctest 尚未接入。
 - `clang-tidy` 未完成本地检查：当前 Clang 23 无法解析 GCC 16 生成的 C++23 module mapper 参数；这不是源码诊断通过。
+
+M0 的阶段汇总见 [M0 基础设施总体验收报告](M0-completion.md)。
 
 ## 下一步
 
