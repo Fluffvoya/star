@@ -56,4 +56,9 @@ STAR_TEST(platformRejectsInvalidThreadNames) {
 #endif
 }
 
+STAR_TEST(platformRejectsEmptyThreadAffinity) {
+    const auto result = star::setCurrentThreadAffinity({});
+    STAR_CHECK(!result && result.error() == std::errc::invalid_argument);
+}
+
 } // namespace
