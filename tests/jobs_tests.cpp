@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include "jobs/external_tasks.hpp"
 #include "jobs/jobs.hpp"
 
 #include <atomic>
@@ -92,6 +93,34 @@ STAR_TEST(backgroundPriorityRunsAndWaits) {
     handle.wait();
 
     STAR_CHECK(ran.load(std::memory_order_acquire));
+}
+
+STAR_TEST(externalTaskFinishesWithBorrowedContext) {
+    int value = 0;
+    star::ExternalTaskHandle *handle =
+        star::ExternalTasks::enqueue([](void *context) noexcept { ++*static_cast<int *>(context); }, &value);
+    STAR_CHECK(handle != nullptr);
+    star::ExternalTasks::finish(handle);
+    STAR_CHECK(value == 1);
+}
+
+STAR_TEST(externalTaskAcceptsNullCallbackAndHandle) {
+    STAR_CHECK(star::ExternalTasks::enqueue(nullptr, nullptr) == nullptr);
+    star::ExternalTasks::finish(nullptr);
+}
+
+STAR_TEST(externalTaskCanFinishAnotherExternalTask) {
+    int value = 0;
+    star::ExternalTaskHandle *outer = star::ExternalTasks::enqueue(
+        [](void *context) noexcept {
+            star::ExternalTaskHandle *inner = star::ExternalTasks::enqueue(
+                [](void *inner_context) noexcept { *static_cast<int *>(inner_context) = 42; }, context,
+                star::JobPriority::Normal);
+            star::ExternalTasks::finish(inner);
+        },
+        &value);
+    star::ExternalTasks::finish(outer);
+    STAR_CHECK(value == 42);
 }
 
 } // namespace
