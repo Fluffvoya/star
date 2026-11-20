@@ -108,6 +108,11 @@
 - CTest 新增 `public-headers`，以消费者的编译设置逐个验证 Core、Jobs 和 Platform 的公共头。
 - 详细范围和验证结果见 [M0 公共头文件独立编译阶段报告](M0-public-headers.md)。
 
+### Core 单生产者单消费者队列（后续增量）
+
+- 新增固定容量的无锁 `SPSCQueue<T>`，用于单生产者和单消费者之间转移元素。
+- 详细范围和验证结果见 [M0 Core 单生产者单消费者队列阶段报告](M0-core-spsc-queue.md)。
+
 ## 本地验证
 
 验证环境：
