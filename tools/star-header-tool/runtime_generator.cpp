@@ -513,6 +513,35 @@ bool validateProperties(const std::vector<Declaration> &declarations) {
     return valid;
 }
 
+std::string generateAnnotationHeader(std::vector<Declaration> declarations) {
+    std::ranges::sort(declarations, {}, &Declaration::name);
+    std::ostringstream output;
+    output << "#pragma once\n#include <array>\n#include <string_view>\n\nnamespace star::generated {\n\n";
+    for (const auto &declaration : declarations) {
+        auto kind = declaration.kind;
+        kind.front() = static_cast<char>(std::tolower(static_cast<unsigned char>(kind.front())));
+        const auto separator = declaration.name.rfind("::");
+        const auto name = separator == std::string::npos ? declaration.name : declaration.name.substr(separator + 2);
+        const auto member_count = std::ranges::count(declaration.members, false, &Member::function);
+        output << "inline constexpr std::string_view " << kind << '_' << name
+               << "_annotation = " << literal("star:" + kind + ':' + declaration.metadata) << ";\n";
+        if (member_count == 0) {
+            output << "inline constexpr std::array<std::string_view, 0> " << kind << '_' << name
+                   << "_properties{};\n\n";
+            continue;
+        }
+        output << "inline constexpr std::string_view " << kind << '_' << name << "_properties[] = {";
+        for (const auto &member : declaration.members) {
+            if (!member.function) {
+                output << literal(member.name) << ", ";
+            }
+        }
+        output << "};\n\n";
+    }
+    output << "} // namespace star::generated\n";
+    return output.str();
+}
+
 std::string generateHeader(const std::string &module) {
     return "#pragma once\n\n#include \"reflection/reflection.hpp\"\n\nnamespace star::generated::" + module +
            " {\n\nstd::span<const reflect::TypeInfo *const> types();\n\n}\n";
@@ -605,8 +634,15 @@ std::string generateSource(const std::string &module, std::uint64_t owner, const
 }
 
 std::string generateDepfile(const std::filesystem::path &output, const std::set<std::filesystem::path> &dependencies) {
-    std::string result = escapeDependency(output.generic_string()) + ":";
+    std::set<std::filesystem::path> resolved_paths;
     for (const auto &dependency : dependencies) {
+        // Resolve symlinks before CMake normalizes parent components in system include paths.
+        std::error_code error;
+        auto resolved = std::filesystem::canonical(dependency, error);
+        resolved_paths.insert(error ? dependency : std::move(resolved));
+    }
+    std::string result = escapeDependency(output.generic_string()) + ":";
+    for (const auto &dependency : resolved_paths) {
         result += " " + escapeDependency(dependency.generic_string());
     }
     return result + "\n";
