@@ -72,6 +72,7 @@ include(cmake/StarModule.cmake)
 include(cmake/Dependencies.cmake)
 add_subdirectory(engine/source/runtime/core)
 add_subdirectory(engine/source/runtime/reflection)
+add_subdirectory(engine/source/runtime/serialization)
 add_subdirectory(engine/source/runtime/jobs)
 add_subdirectory(engine/source/runtime/platform)
 

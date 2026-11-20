@@ -2,14 +2,19 @@
 
 #include "reflection/export.hpp"
 
+#include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace star::reflect {
@@ -64,6 +69,9 @@ struct PropertyInfo {
     const TypeInfo *nested_type;
     void *(*get_mutable)(void *object);
     const void *(*get_const)(const void *object);
+    std::string (*format_scalar)(const void *member) = nullptr;
+    bool (*parse_scalar)(std::string_view text, void *member) = nullptr;
+    std::string_view former_name{};
 };
 
 struct TypeOps {
@@ -71,6 +79,7 @@ struct TypeOps {
     void (*destroy)(void *object);
     void (*copy_construct)(void *destination, const void *source);
     bool (*equals)(const void *left, const void *right);
+    void (*swap)(void *left, void *right) noexcept = nullptr;
 };
 
 struct TypeInfo {
@@ -84,6 +93,7 @@ struct TypeInfo {
     ModuleId owner;
     std::uint32_t version;
     const TypeInfo *base;
+    std::string_view former_name{};
 };
 
 enum class RegistryErrorCode : std::uint8_t {
@@ -118,9 +128,11 @@ namespace detail {
 template <typename T> consteval PropertyKind propertyKind() {
     if constexpr (std::is_same_v<T, bool>) {
         return PropertyKind::Boolean;
-    } else if constexpr (std::is_integral_v<T> && std::is_signed_v<T>) {
+    } else if constexpr (std::is_integral_v<T> && std::is_signed_v<T> &&
+                         requires(const char *p, T &value) { std::from_chars(p, p, value); }) {
         return PropertyKind::SignedInteger;
-    } else if constexpr (std::is_integral_v<T> && std::is_unsigned_v<T>) {
+    } else if constexpr (std::is_integral_v<T> && std::is_unsigned_v<T> &&
+                         requires(const char *p, T &value) { std::from_chars(p, p, value); }) {
         return PropertyKind::UnsignedInteger;
     } else if constexpr (std::is_floating_point_v<T>) {
         return PropertyKind::FloatingPoint;
@@ -152,22 +164,116 @@ template <typename T> bool equals(const void *left, const void *right) {
     }
 }
 
+template <typename T> std::string formatScalar(const void *member) {
+    const auto &value = *static_cast<const T *>(member);
+    if constexpr (std::is_same_v<T, std::string>) {
+        return value;
+    } else if constexpr (std::is_same_v<T, bool>) {
+        return value ? "true" : "false";
+    } else {
+        if constexpr (std::is_floating_point_v<T>) {
+            if (std::isnan(value)) {
+                return ".nan";
+            }
+            if (std::isinf(value)) {
+                return std::signbit(value) ? "-.inf" : ".inf";
+            }
+        }
+        char buffer[128];
+        const auto converted = std::to_chars(buffer, buffer + sizeof(buffer), value);
+        return std::string(buffer, converted.ptr);
+    }
+}
+
+template <typename T> bool parseScalar(std::string_view text, void *member) {
+    auto &destination = *static_cast<T *>(member);
+    if constexpr (std::is_same_v<T, std::string>) {
+        destination = text;
+    } else if constexpr (std::is_same_v<T, bool>) {
+        if (text == "true" || text == "True" || text == "TRUE") {
+            destination = true;
+        } else if (text == "false" || text == "False" || text == "FALSE") {
+            destination = false;
+        } else {
+            return false;
+        }
+    } else {
+        if constexpr (std::is_floating_point_v<T>) {
+            if (text == ".nan" || text == ".NaN" || text == ".NAN") {
+                destination = std::numeric_limits<T>::quiet_NaN();
+                return true;
+            }
+            if (text == ".inf" || text == ".Inf" || text == ".INF") {
+                destination = std::numeric_limits<T>::infinity();
+                return true;
+            }
+            if (text == "-.inf" || text == "-.Inf" || text == "-.INF") {
+                destination = -std::numeric_limits<T>::infinity();
+                return true;
+            }
+        }
+        if (text.starts_with('+')) {
+            text.remove_prefix(1);
+            if (text.starts_with('-')) {
+                return false;
+            }
+        }
+        if (text.empty()) {
+            return false;
+        }
+        T value{};
+        const auto converted = [&] {
+            if constexpr (std::is_integral_v<T>) {
+                int base = 10;
+                if (text.starts_with("0x") || text.starts_with("0o")) {
+                    base = text[1] == 'x' ? 16 : 8;
+                    text.remove_prefix(2);
+                }
+                return std::from_chars(text.data(), text.data() + text.size(), value, base);
+            } else {
+                return std::from_chars(text.data(), text.data() + text.size(), value);
+            }
+        }();
+        if (converted.ec != std::errc{} || converted.ptr != text.data() + text.size()) {
+            return false;
+        }
+        destination = value;
+    }
+    return true;
+}
+
+template <typename T> void swapObjects(void *left, void *right) noexcept {
+    using std::swap;
+    swap(*static_cast<T *>(left), *static_cast<T *>(right));
+}
+
 } // namespace detail
 
 template <typename Owner, typename Member, Member Owner::*MemberPointer>
 constexpr PropertyInfo makeProperty(std::string_view name, PropertyFlags flags = PropertyFlags::None,
-                                    const TypeInfo *nested_type = nullptr) {
-    return PropertyInfo{name,
-                        detail::propertyKind<Member>(),
-                        flags,
-                        nested_type,
-                        &detail::getMutable<Owner, Member, MemberPointer>,
-                        &detail::getConst<Owner, Member, MemberPointer>};
+                                    const TypeInfo *nested_type = nullptr, std::string_view former_name = {}) {
+    constexpr auto kind = detail::propertyKind<Member>();
+    PropertyInfo property{name,
+                          kind,
+                          flags,
+                          nested_type,
+                          &detail::getMutable<Owner, Member, MemberPointer>,
+                          &detail::getConst<Owner, Member, MemberPointer>};
+    if constexpr (kind != PropertyKind::Reflected) {
+        property.format_scalar = &detail::formatScalar<Member>;
+        property.parse_scalar = &detail::parseScalar<Member>;
+    }
+    property.former_name = former_name;
+    return property;
 }
 
 template <typename T> constexpr TypeOps makeTypeOps() {
     static_assert(std::is_default_constructible_v<T> && std::is_destructible_v<T> && std::is_copy_constructible_v<T>);
-    return TypeOps{&detail::construct<T>, &detail::destroy<T>, &detail::copyConstruct<T>, &detail::equals<T>};
+    TypeOps ops{&detail::construct<T>, &detail::destroy<T>, &detail::copyConstruct<T>, &detail::equals<T>};
+    if constexpr (std::is_nothrow_swappable_v<T>) {
+        ops.swap = &detail::swapObjects<T>;
+    }
+    return ops;
 }
 
 } // namespace star::reflect
