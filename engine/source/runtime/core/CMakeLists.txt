@@ -14,6 +14,7 @@ star_add_module(Core core
     include/core/name.hpp
     include/core/pool_allocator.hpp
     include/core/slot_map.hpp
+    include/core/spsc_queue.hpp
     include/core/stack_allocator.hpp
     include/core/tracked_allocator.hpp
     src/arena_allocators.cpp

@@ -37,6 +37,7 @@ add_test(NAME public-headers COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_
 
 find_package(Threads REQUIRED)
 target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_tests.cpp delegate_tests.cpp global_allocator_tests.cpp math_tests.cpp small_vector_tests.cpp)
+target_sources(StarCoreTests PRIVATE spsc_queue_tests.cpp)
 target_link_libraries(StarCoreTests PRIVATE Threads::Threads)
 target_sources(StarJobsTests PRIVATE task_graph_tests.cpp)
 
