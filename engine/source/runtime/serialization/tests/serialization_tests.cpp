@@ -18,16 +18,16 @@ struct Nested {
 };
 
 constexpr PropertyInfo nested_properties[] = {makeProperty<Nested, bool, &Nested::enabled>("enabled")};
-constexpr TypeInfo nested_type{makeTypeId("tests::Nested"),
-                               "tests::Nested",
-                               TypeKind::Struct,
-                               sizeof(Nested),
-                               alignof(Nested),
-                               nested_properties,
-                               makeTypeOps<Nested>(),
-                               7,
-                               1,
-                               nullptr};
+const TypeInfo nested_type{makeTypeId("tests::Nested"),
+                           "tests::Nested",
+                           TypeKind::Struct,
+                           sizeof(Nested),
+                           alignof(Nested),
+                           nested_properties,
+                           makeTypeOps<Nested>(),
+                           7,
+                           1,
+                           nullptr};
 
 struct Document {
     std::int8_t count = 4;
@@ -47,17 +47,17 @@ constexpr PropertyInfo properties[] = {
     makeProperty<Document, Nested, &Document::nested>("nested", PropertyFlags::None, &nested_type),
     makeProperty<Document, std::int32_t, &Document::scratch>("scratch", PropertyFlags::Transient),
 };
-constexpr TypeInfo type{makeTypeId("tests::Document"),
-                        "tests::Document",
-                        TypeKind::Struct,
-                        sizeof(Document),
-                        alignof(Document),
-                        properties,
-                        makeTypeOps<Document>(),
-                        7,
-                        3,
-                        nullptr,
-                        "tests::OldDocument"};
+const TypeInfo type{makeTypeId("tests::Document"),
+                    "tests::Document",
+                    TypeKind::Struct,
+                    sizeof(Document),
+                    alignof(Document),
+                    properties,
+                    makeTypeOps<Document>(),
+                    7,
+                    3,
+                    nullptr,
+                    "tests::OldDocument"};
 
 STAR_TEST(serializationRoundTripsBothFormatsAndKeepsUnknownData) {
     const auto source = readYaml(R"yaml(
@@ -210,6 +210,51 @@ STAR_TEST(serializationRoundTripsEmptyDocumentsAndNonfiniteFloats) {
     STAR_CHECK(applyObject(*decoded, type, &object).has_value());
     STAR_CHECK(std::isinf(object.ratio));
     STAR_CHECK(std::signbit(object.ratio));
+}
+
+struct Builtins {
+    star::Guid guid;
+    star::Name name;
+    std::filesystem::path path;
+    star::math::Vector3 vector;
+};
+
+STAR_TEST(serializationRoundTripsCoreBuiltins) {
+    constexpr PropertyInfo fields[] = {
+        makeProperty<Builtins, star::Guid, &Builtins::guid>("guid"),
+        makeProperty<Builtins, star::Name, &Builtins::name>("name"),
+        makeProperty<Builtins, std::filesystem::path, &Builtins::path>("path"),
+        makeProperty<Builtins, star::math::Vector3, &Builtins::vector>("vector"),
+    };
+    const TypeInfo builtin_test{makeTypeId("tests::Builtins"),
+                                "tests::Builtins",
+                                TypeKind::Struct,
+                                sizeof(Builtins),
+                                alignof(Builtins),
+                                fields,
+                                makeTypeOps<Builtins>(),
+                                7,
+                                1,
+                                nullptr};
+    TypeRegistry registry;
+    STAR_CHECK(registry.registerModule(builtin_module, builtinTypes()));
+    STAR_CHECK(registry.find("star::math::Vector3") == fields[3].nestedType());
+    STAR_CHECK(registry.find("star::Guid") != nullptr);
+
+    const Builtins original{
+        star::Guid::generate(), star::Name("item"), std::filesystem::path(u8"assets/场景.star"), {1.0f, 2.0f, 3.0f}};
+    const auto saved = captureObject(builtin_test, &original);
+    STAR_CHECK(saved.has_value());
+    const auto text = writeYaml(*saved);
+    STAR_CHECK(text.has_value());
+    const auto decoded = readYaml(*text);
+    STAR_CHECK(decoded == *saved);
+    Builtins restored;
+    STAR_CHECK(applyObject(*decoded, builtin_test, &restored, LoadPolicy::Strict));
+    STAR_CHECK(restored.guid == original.guid);
+    STAR_CHECK(restored.name == original.name);
+    STAR_CHECK(restored.path == original.path);
+    STAR_CHECK(restored.vector == original.vector);
 }
 
 } // namespace

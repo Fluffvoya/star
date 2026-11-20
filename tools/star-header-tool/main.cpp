@@ -1,7 +1,10 @@
 #include <clang-c/Index.h>
 
+#include "runtime_generator.hpp"
+
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -23,6 +26,11 @@ struct Options {
     std::filesystem::path output;
     std::filesystem::path cache;
     std::vector<std::filesystem::path> include_directories;
+    std::filesystem::path source;
+    std::filesystem::path depfile;
+    std::string module;
+    std::uint64_t owner = 0;
+    std::vector<std::string> clang_arguments;
 };
 
 struct ReflectedDeclaration {
@@ -151,12 +159,18 @@ CXChildVisitResult visitDeclaration(CXCursor cursor, CXCursor, CXClientData data
 }
 
 bool parseFile(const std::filesystem::path &path, const Options &options,
-               std::vector<ReflectedDeclaration> &declarations) {
+               std::vector<ReflectedDeclaration> &declarations,
+               std::vector<star::header_tool::Declaration> &runtime_declarations,
+               std::set<std::filesystem::path> &dependencies) {
     CXIndex clang_index = clang_createIndex(0, 0);
     std::vector<std::string> argument_storage{"-x", "c++", "-std=c++23", "-DSTAR_REFLECTION_PARSER"};
+#ifdef STAR_CLANG_RESOURCE_DIR
+    argument_storage.emplace_back("-resource-dir=" STAR_CLANG_RESOURCE_DIR);
+#endif
     for (const auto &directory : options.include_directories) {
         argument_storage.push_back("-I" + directory.string());
     }
+    argument_storage.insert(argument_storage.end(), options.clang_arguments.begin(), options.clang_arguments.end());
     std::vector<const char *> arguments;
     arguments.reserve(argument_storage.size());
     for (const auto &argument : argument_storage) {
@@ -164,7 +178,8 @@ bool parseFile(const std::filesystem::path &path, const Options &options,
     }
     CXTranslationUnit unit = clang_parseTranslationUnit(
         clang_index, path.string().c_str(), arguments.data(), static_cast<int>(arguments.size()), nullptr, 0,
-        CXTranslationUnit_SkipFunctionBodies | CXTranslationUnit_Incomplete);
+        CXTranslationUnit_SkipFunctionBodies | CXTranslationUnit_Incomplete |
+            CXTranslationUnit_DetailedPreprocessingRecord);
     if (unit == nullptr) {
         clang_disposeIndex(clang_index);
         std::cerr << path << ":1:1: error: unable to parse translation unit\n";
@@ -181,7 +196,20 @@ bool parseFile(const std::filesystem::path &path, const Options &options,
         }
         clang_disposeDiagnostic(diagnostic);
     }
-    if (valid) {
+    if (valid && !options.source.empty()) {
+        valid = star::header_tool::collectDeclarations(unit, path, runtime_declarations);
+        dependencies.insert(std::filesystem::absolute(path).lexically_normal());
+        clang_getInclusions(
+            unit,
+            [](CXFile file, CXSourceLocation *, unsigned, CXClientData data) {
+                auto &paths = *static_cast<std::set<std::filesystem::path> *>(data);
+                const auto included_path = cursorString(clang_getFileName(file));
+                if (!included_path.empty()) {
+                    paths.insert(std::filesystem::absolute(included_path).lexically_normal());
+                }
+            },
+            &dependencies);
+    } else if (valid) {
         std::string source;
         std::map<std::string, std::string> source_markers;
         if (readFile(path, source)) {
@@ -259,6 +287,24 @@ bool parseOptions(int argc, char **argv, Options &options) {
             if (!nextValue(options.cache)) {
                 return false;
             }
+        } else if (argument == "--source") {
+            if (!nextValue(options.source)) {
+                return false;
+            }
+        } else if (argument == "--depfile") {
+            if (!nextValue(options.depfile)) {
+                return false;
+            }
+        } else if (argument == "--module" && index + 1 < argc) {
+            options.module = argv[++index];
+        } else if (argument == "--owner" && index + 1 < argc) {
+            const std::string_view value = argv[++index];
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), options.owner);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size()) {
+                return false;
+            }
+        } else if (argument == "--clang-arg" && index + 1 < argc) {
+            options.clang_arguments.emplace_back(argv[++index]);
         } else if (argument == "--include-dir") {
             std::filesystem::path directory;
             if (!nextValue(directory)) {
@@ -269,20 +315,66 @@ bool parseOptions(int argc, char **argv, Options &options) {
             return false;
         }
     }
-    return !options.inputs.empty() && !options.output.empty();
+    if (options.inputs.empty() || options.output.empty()) {
+        return false;
+    }
+    if (options.source.empty()) {
+        return options.depfile.empty() && options.module.empty() && options.owner == 0;
+    }
+    return options.cache.empty() && options.output != options.source && options.output != options.depfile &&
+           options.source != options.depfile && options.owner != 0 && !options.module.empty() &&
+           options.module.front() >= 'a' && options.module.front() <= 'z' &&
+           options.module.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") == std::string::npos;
+}
+
+bool writeIfChanged(const std::filesystem::path &path, std::string_view contents) {
+    std::string existing;
+    if (readFile(path, existing) && existing == contents) {
+        return true;
+    }
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << contents;
+    output.close();
+    if (!output) {
+        std::cerr << path << ": error: unable to write generated output\n";
+        return false;
+    }
+    return true;
 }
 
 } // namespace
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv) try {
     Options options;
     if (!parseOptions(argc, argv, options)) {
         std::cerr << "usage: star-header-tool --input <header> [--input <header> ...] --output <file> "
-                     "[--cache <file>] [--include-dir <directory>]\n";
+                     "[--cache <file> | --source <file> --module <identifier> --owner <id> [--depfile <file>]] "
+                     "[--include-dir <directory>] [--clang-arg <argument>]\n";
         return 2;
     }
 
     std::set<std::filesystem::path> dependencies;
+    if (!options.source.empty()) {
+        std::vector<ReflectedDeclaration> legacy;
+        std::vector<star::header_tool::Declaration> declarations;
+        for (const auto &input : options.inputs) {
+            if (!parseFile(input, options, legacy, declarations, dependencies)) {
+                return 1;
+            }
+        }
+        const auto source = star::header_tool::generateSource(options.module, options.owner, options.output,
+                                                              options.inputs, std::move(declarations));
+        return writeIfChanged(options.output, star::header_tool::generateHeader(options.module)) &&
+                       writeIfChanged(options.source, source) &&
+                       (options.depfile.empty() || writeIfChanged(options.depfile, star::header_tool::generateDepfile(
+                                                                                       options.source, dependencies)))
+                   ? 0
+                   : 1;
+    }
+
     for (const auto &input : options.inputs) {
         collectDependencies(input, dependencies);
     }
@@ -297,23 +389,15 @@ int main(int argc, char **argv) {
     }
 
     std::vector<ReflectedDeclaration> declarations;
+    std::vector<star::header_tool::Declaration> runtime_declarations;
     for (const auto &input : options.inputs) {
-        if (!parseFile(input, options, declarations)) {
+        if (!parseFile(input, options, declarations, runtime_declarations, dependencies)) {
             return 1;
         }
     }
     const std::string generated = generate(declarations);
-    std::string existing;
-    if (!readFile(options.output, existing) || existing != generated) {
-        if (!options.output.parent_path().empty()) {
-            std::filesystem::create_directories(options.output.parent_path());
-        }
-        std::ofstream output(options.output, std::ios::binary | std::ios::trunc);
-        output << generated;
-        if (!output) {
-            std::cerr << options.output << ": error: unable to write generated output\n";
-            return 1;
-        }
+    if (!writeIfChanged(options.output, generated)) {
+        return 1;
     }
     if (!options.cache.empty()) {
         if (!options.cache.parent_path().empty()) {
@@ -323,4 +407,7 @@ int main(int argc, char **argv) {
         cache << fingerprint << '\n';
     }
     return 0;
+} catch (const std::exception &exception) {
+    std::cerr << "star-header-tool: error: " << exception.what() << '\n';
+    return 1;
 }

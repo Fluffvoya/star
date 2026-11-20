@@ -69,6 +69,7 @@ if(STAR_BUILD_TESTS)
 endif()
 
 include(cmake/StarModule.cmake)
+include(cmake/StarReflection.cmake)
 include(cmake/Dependencies.cmake)
 add_subdirectory(engine/source/runtime/core)
 add_subdirectory(engine/source/runtime/reflection)

@@ -52,11 +52,35 @@ struct ArchiveError {
 };
 
 enum class LoadPolicy : std::uint8_t { Preserve, Strict };
+enum class CapturePolicy : std::uint8_t { AllFields, OmitDefaults };
 
 struct LoadResult {
     // Pass extensions back to captureObject to preserve unresolved values.
     ArchiveValue::Mapping extensions;
     std::vector<ArchiveError> diagnostics;
+};
+
+class Archive final {
+  public:
+    Archive(const Archive &) = delete;
+    Archive &operator=(const Archive &) = delete;
+
+    [[nodiscard]] bool isLoading() const noexcept { return m_loading; }
+
+    template <typename T> bool value(std::string_view name, T &value, const reflect::TypeInfo *type = nullptr) {
+        return m_transfer(m_context, name, reflect::makeValueInfo<T>(type), &value);
+    }
+
+  private:
+    friend struct ArchiveAccess;
+    using Transfer = bool (*)(void *context, std::string_view name, const reflect::PropertyInfo &property, void *value);
+
+    Archive(bool loading, void *context, Transfer transfer)
+        : m_loading(loading), m_context(context), m_transfer(transfer) {}
+
+    bool m_loading;
+    void *m_context;
+    Transfer m_transfer;
 };
 
 // A migration can advance an older document before field matching.
@@ -72,7 +96,8 @@ readBinary(std::span<const std::byte> source);
 writeBinary(const ArchiveDocument &document);
 
 [[nodiscard]] STAR_SERIALIZATION_API std::expected<ArchiveDocument, ArchiveError>
-captureObject(const reflect::TypeInfo &type, const void *object, const ArchiveValue::Mapping &extensions = {});
+captureObject(const reflect::TypeInfo &type, const void *object, const ArchiveValue::Mapping &extensions = {},
+              CapturePolicy policy = CapturePolicy::AllFields);
 
 // Loads direct and nested properties into a copy, then commits via TypeOps::swap.
 [[nodiscard]] STAR_SERIALIZATION_API std::expected<LoadResult, ArchiveError>

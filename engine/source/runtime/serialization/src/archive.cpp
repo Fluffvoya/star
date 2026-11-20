@@ -5,146 +5,19 @@
 #include <charconv>
 #include <memory>
 #include <new>
+#include <optional>
+#include <set>
 #include <utility>
 
 namespace star::serialization {
 
+struct ArchiveAccess {
+    static Archive make(bool loading, void *context, Archive::Transfer transfer) {
+        return Archive(loading, context, transfer);
+    }
+};
+
 namespace {
-
-template <typename T> bool parseNumber(std::string_view text, T &value, int base) {
-    if (text.empty()) {
-        return false;
-    }
-    const auto result = std::from_chars(text.data(), text.data() + text.size(), value, base);
-    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
-}
-
-std::string fieldPath(std::string_view parent, std::string_view field) {
-    return std::string(parent) + "/" + std::string(field);
-}
-
-ValueResult captureFields(const reflect::TypeInfo &type, const void *object, const ArchiveValue::Mapping &extensions,
-                          std::string_view path, unsigned depth) {
-    if (depth > max_archive_depth) {
-        return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, std::string(path)});
-    }
-    ArchiveValue::Mapping fields = extensions;
-    for (const auto &property : type.properties) {
-        if (reflect::hasFlag(property.flags, reflect::PropertyFlags::Transient)) {
-            fields.erase(std::string(property.name));
-            if (!property.former_name.empty()) {
-                fields.erase(std::string(property.former_name));
-            }
-            continue;
-        }
-        auto existing = fields.find(property.name);
-        const auto *nested_extensions =
-            existing == fields.end() ? nullptr : std::get_if<ArchiveValue::Mapping>(&existing->second.value);
-        if (existing != fields.end() && (property.nested_type == nullptr || nested_extensions == nullptr)) {
-            continue;
-        }
-        if (property.get_const == nullptr) {
-            return std::unexpected(ArchiveError{ArchiveErrorCode::UnsupportedProperty, fieldPath(path, property.name)});
-        }
-        const void *member = property.get_const(object);
-        if (property.nested_type != nullptr && property.kind == reflect::PropertyKind::Reflected) {
-            const ArchiveValue::Mapping empty;
-            auto nested =
-                captureFields(*property.nested_type, member, nested_extensions == nullptr ? empty : *nested_extensions,
-                              fieldPath(path, property.name), depth + 1);
-            if (!nested) {
-                return std::unexpected(std::move(nested.error()));
-            }
-            fields.insert_or_assign(std::string(property.name), std::move(*nested));
-        } else if (property.format_scalar != nullptr) {
-            std::string text = property.format_scalar(member);
-            ArchiveValue value = property.kind == reflect::PropertyKind::String
-                                     ? ArchiveValue{std::move(text)}
-                                     : ArchiveValue{PlainScalar{std::move(text)}};
-            fields.emplace(property.name, std::move(value));
-        } else {
-            return std::unexpected(ArchiveError{ArchiveErrorCode::UnsupportedProperty, fieldPath(path, property.name)});
-        }
-    }
-    return ArchiveValue{std::move(fields)};
-}
-
-const reflect::PropertyInfo *findProperty(const reflect::TypeInfo &type, std::string_view name) {
-    for (const auto &property : type.properties) {
-        if (property.name == name) {
-            return &property;
-        }
-    }
-    for (const auto &property : type.properties) {
-        if (property.former_name == name && !name.empty()) {
-            return &property;
-        }
-    }
-    return nullptr;
-}
-
-std::expected<void, ArchiveError> applyFields(const ArchiveValue::Mapping &fields, const reflect::TypeInfo &type,
-                                              void *object, LoadPolicy policy, LoadResult &result,
-                                              std::string_view path, unsigned depth) {
-    if (depth > max_archive_depth) {
-        return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, std::string(path)});
-    }
-    for (const auto &[name, value] : fields) {
-        const auto *property = findProperty(type, name);
-        const auto member_path = fieldPath(path, name);
-        auto code = ArchiveErrorCode::UnknownField;
-        if (property != nullptr) {
-            if (reflect::hasFlag(property->flags, reflect::PropertyFlags::Transient)) {
-                continue;
-            }
-            if (name != property->name && fields.contains(property->name)) {
-                property = nullptr;
-            }
-        }
-        if (property != nullptr) {
-            code = ArchiveErrorCode::UnsupportedProperty;
-            if (property->get_mutable != nullptr) {
-                void *member = property->get_mutable(object);
-                if (property->nested_type != nullptr && property->kind == reflect::PropertyKind::Reflected) {
-                    if (const auto *mapping = std::get_if<ArchiveValue::Mapping>(&value.value)) {
-                        LoadResult nested;
-                        auto applied = applyFields(*mapping, *property->nested_type, member, policy, nested,
-                                                   member_path, depth + 1);
-                        if (!applied) {
-                            return applied;
-                        }
-                        if (!nested.extensions.empty()) {
-                            result.extensions.emplace(property->name, ArchiveValue{std::move(nested.extensions)});
-                        }
-                        for (auto &diagnostic : nested.diagnostics) {
-                            result.diagnostics.push_back(std::move(diagnostic));
-                        }
-                        continue;
-                    }
-                    code = ArchiveErrorCode::TypeMismatch;
-                } else if (property->parse_scalar != nullptr) {
-                    const auto *plain = std::get_if<PlainScalar>(&value.value);
-                    const auto *text = std::get_if<std::string>(&value.value);
-                    if (property->kind == reflect::PropertyKind::String && text != nullptr) {
-                        if (property->parse_scalar(*text, member)) {
-                            continue;
-                        }
-                    } else if (property->kind != reflect::PropertyKind::String && plain != nullptr &&
-                               property->parse_scalar(plain->text, member)) {
-                        continue;
-                    }
-                    code = ArchiveErrorCode::TypeMismatch;
-                }
-            }
-        }
-        if (policy == LoadPolicy::Strict) {
-            return std::unexpected(ArchiveError{code, member_path});
-        }
-        result.extensions.emplace(property == nullptr ? std::string_view(name) : property->name, value);
-        result.diagnostics.push_back(ArchiveError{code, member_path});
-    }
-    return {};
-}
 
 struct ObjectDeleter {
     const reflect::TypeInfo &type;
@@ -158,6 +31,420 @@ struct ObjectDeleter {
         ::operator delete(object, std::align_val_t(alignment));
     }
 };
+
+using WorkingObject = std::unique_ptr<void, ObjectDeleter>;
+
+WorkingObject allocateObject(const reflect::TypeInfo &type) {
+    const auto alignment = std::max(type.alignment, alignof(std::max_align_t));
+    return WorkingObject(::operator new(type.size, std::align_val_t(alignment)), ObjectDeleter{type, alignment});
+}
+
+bool hasCopyOperations(const reflect::TypeInfo &type) {
+    return type.size != 0 && std::has_single_bit(type.alignment) && type.ops.copy_construct != nullptr &&
+           type.ops.destroy != nullptr;
+}
+
+template <typename T> bool parseNumber(std::string_view text, T &value, int base) {
+    if (text.empty()) {
+        return false;
+    }
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value, base);
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+}
+
+std::string fieldPath(std::string_view parent, std::string_view field) {
+    return std::string(parent) + "/" + std::string(field);
+}
+
+bool isEnum(const reflect::TypeInfo *type) { return type != nullptr && type->kind == reflect::TypeKind::Enum; }
+
+const ArchiveValue::Mapping *fieldExtensions(const reflect::PropertyInfo &property, const ArchiveValue &value) {
+    const auto *type = property.nestedType();
+    if (type == nullptr || isEnum(type) || property.container != nullptr) {
+        return nullptr;
+    }
+    return std::get_if<ArchiveValue::Mapping>(&value.value);
+}
+
+ValueResult captureFields(const reflect::TypeInfo &type, const void *object, const ArchiveValue::Mapping &extensions,
+                          std::string_view path, unsigned depth);
+
+ValueResult captureValue(const reflect::PropertyInfo &property, const void *value,
+                         const ArchiveValue::Mapping *extensions, std::string_view path, unsigned depth) {
+    if (depth > max_archive_depth) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, std::string(path)});
+    }
+    const auto *nested_type = property.nestedType();
+    if (const auto *ops = property.container) {
+        struct Context {
+            reflect::PropertyInfo element;
+            std::string_view path;
+            unsigned depth;
+            bool is_mapping;
+            ArchiveValue::Sequence sequence;
+            ArchiveValue::Mapping mapping;
+            std::optional<ArchiveError> failure;
+        } context{ops->element(nested_type), path, depth, ops->is_mapping, {}, {}, {}};
+        if (!ops->is_mapping) {
+            context.sequence.reserve(ops->size(value));
+        }
+        ops->visit(value, &context, [](void *opaque, std::string_view key, const void *entry) {
+            auto &state = *static_cast<Context *>(opaque);
+            if (state.failure) {
+                return;
+            }
+            const auto index = state.is_mapping ? std::string(key) : std::to_string(state.sequence.size());
+            auto captured = captureValue(state.element, entry, nullptr, fieldPath(state.path, index), state.depth + 1);
+            if (!captured) {
+                state.failure = std::move(captured.error());
+            } else if (state.is_mapping) {
+                state.mapping.emplace(key, std::move(*captured));
+            } else {
+                state.sequence.push_back(std::move(*captured));
+            }
+        });
+        if (context.failure) {
+            return std::unexpected(std::move(*context.failure));
+        }
+        return context.is_mapping ? ArchiveValue{std::move(context.mapping)}
+                                  : ArchiveValue{std::move(context.sequence)};
+    }
+    if (isEnum(nested_type)) {
+        const auto &type = *nested_type;
+        if (type.enum_ops.get != nullptr) {
+            const auto current = type.enum_ops.get(value);
+            const auto entry = std::ranges::find(type.enum_entries, current, &reflect::EnumEntry::value);
+            if (entry != type.enum_entries.end()) {
+                return ArchiveValue{std::string(entry->name)};
+            }
+        }
+    } else if (nested_type != nullptr && property.kind == reflect::PropertyKind::Reflected) {
+        const ArchiveValue::Mapping empty;
+        return captureFields(*nested_type, value, extensions == nullptr ? empty : *extensions, path, depth + 1);
+    } else if (property.format_scalar != nullptr) {
+        auto text = property.format_scalar(value);
+        return property.kind == reflect::PropertyKind::String ? ArchiveValue{std::move(text)}
+                                                              : ArchiveValue{PlainScalar{std::move(text)}};
+    }
+    return std::unexpected(ArchiveError{ArchiveErrorCode::UnsupportedProperty, std::string(path)});
+}
+
+ValueResult captureCustom(const reflect::TypeInfo &type, const void *object, const ArchiveValue::Mapping &extensions,
+                          std::string_view path, unsigned depth) {
+    if (!hasCopyOperations(type)) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::UnsupportedProperty, std::string(path)});
+    }
+    auto working = allocateObject(type);
+    type.ops.copy_construct(working.get(), object);
+    working.get_deleter().constructed = true;
+    struct Context {
+        ArchiveValue::Mapping fields;
+        std::set<std::string, std::less<>> names;
+        std::string_view path;
+        unsigned depth;
+        std::optional<ArchiveError> failure;
+    } context{extensions, {}, path, depth, {}};
+    auto archive = ArchiveAccess::make(
+        false, &context, [](void *opaque, std::string_view name, const reflect::PropertyInfo &property, void *value) {
+            auto &state = *static_cast<Context *>(opaque);
+            if (state.failure) {
+                return false;
+            }
+            const auto field_path = fieldPath(state.path, name);
+            if (name.empty() || !state.names.emplace(name).second) {
+                state.failure = ArchiveError{ArchiveErrorCode::InvalidInput, field_path};
+                return false;
+            }
+            const auto existing = state.fields.find(name);
+            const auto *nested = existing == state.fields.end() ? nullptr : fieldExtensions(property, existing->second);
+            if (existing != state.fields.end() && nested == nullptr) {
+                return true;
+            }
+            auto saved = captureValue(property, value, nested, field_path, state.depth);
+            if (!saved) {
+                state.failure = std::move(saved.error());
+                return false;
+            }
+            state.fields.insert_or_assign(std::string(name), std::move(*saved));
+            return true;
+        });
+    type.serialize(working.get(), archive);
+    if (context.failure) {
+        return std::unexpected(std::move(*context.failure));
+    }
+    return ArchiveValue{std::move(context.fields)};
+}
+
+ValueResult captureFields(const reflect::TypeInfo &type, const void *object, const ArchiveValue::Mapping &extensions,
+                          std::string_view path, unsigned depth) {
+    if (depth > max_archive_depth) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, std::string(path)});
+    }
+    if (type.serialize != nullptr) {
+        return captureCustom(type, object, extensions, path, depth);
+    }
+    ArchiveValue::Mapping fields = extensions;
+    if (type.base != nullptr && type.base_access.get_const != nullptr) {
+        auto base = captureFields(*type.base, type.base_access.get_const(object), fields, path, depth + 1);
+        if (!base) {
+            return base;
+        }
+        fields = std::get<ArchiveValue::Mapping>(std::move(base->value));
+        for (const auto &property : type.properties) {
+            if (!extensions.contains(property.name)) {
+                fields.erase(std::string(property.name));
+            }
+        }
+    }
+    for (const auto &property : type.properties) {
+        if (reflect::hasFlag(property.flags, reflect::PropertyFlags::Transient)) {
+            fields.erase(std::string(property.name));
+            if (!property.former_name.empty()) {
+                fields.erase(std::string(property.former_name));
+            }
+            continue;
+        }
+        const auto existing = fields.find(property.name);
+        const auto *nested_extensions =
+            existing == fields.end() ? nullptr : fieldExtensions(property, existing->second);
+        if (existing != fields.end() && nested_extensions == nullptr) {
+            continue;
+        }
+        if (property.get_const == nullptr) {
+            return std::unexpected(ArchiveError{ArchiveErrorCode::UnsupportedProperty, fieldPath(path, property.name)});
+        }
+        auto captured = captureValue(property, property.get_const(object), nested_extensions,
+                                     fieldPath(path, property.name), depth);
+        if (!captured) {
+            return captured;
+        }
+        fields.insert_or_assign(std::string(property.name), std::move(*captured));
+    }
+    return ArchiveValue{std::move(fields)};
+}
+
+struct PropertyMatch {
+    const reflect::PropertyInfo *property;
+    void *owner;
+};
+
+PropertyMatch findProperty(const reflect::TypeInfo &type, void *object, std::string_view name) {
+    PropertyMatch former{};
+    const auto *current = &type;
+    for (unsigned depth = 0; current != nullptr && depth <= max_archive_depth; ++depth) {
+        for (const auto &property : current->properties) {
+            if (property.name == name) {
+                return {&property, object};
+            }
+            if (former.property == nullptr && !name.empty() && property.former_name == name) {
+                former = {&property, object};
+            }
+        }
+        if (current->base == nullptr || current->base_access.get_mutable == nullptr) {
+            break;
+        }
+        object = current->base_access.get_mutable(object);
+        current = current->base;
+    }
+    return former;
+}
+
+using ApplyResult = std::expected<void, ArchiveError>;
+
+ApplyResult applyFields(const ArchiveValue::Mapping &fields, const reflect::TypeInfo &type, void *object,
+                        LoadPolicy policy, LoadResult &result, std::string_view path, unsigned depth);
+
+ApplyResult applyValue(const reflect::PropertyInfo &property, const ArchiveValue &value, void *member,
+                       LoadPolicy policy, LoadResult &result, std::string_view path, unsigned depth) {
+    if (depth > max_archive_depth) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, std::string(path)});
+    }
+    const auto *nested_type = property.nestedType();
+    if (const auto *ops = property.container) {
+        const auto *mapping = std::get_if<ArchiveValue::Mapping>(&value.value);
+        const auto *sequence = std::get_if<ArchiveValue::Sequence>(&value.value);
+        if ((ops->is_mapping && mapping == nullptr) || (!ops->is_mapping && sequence == nullptr)) {
+            return std::unexpected(ArchiveError{ArchiveErrorCode::TypeMismatch, std::string(path)});
+        }
+        struct Context {
+            const reflect::ContainerOps &ops;
+            reflect::PropertyInfo element;
+            const ArchiveValue::Mapping *mapping;
+            const ArchiveValue::Sequence *sequence;
+            std::string_view path;
+            unsigned depth;
+            ApplyResult status{};
+        } context{*ops, ops->element(nested_type), mapping, sequence, path, depth};
+        const auto count = ops->is_mapping ? mapping->size() : sequence->size();
+        if (ops->replace(member, count, &context, [](void *replacement, void *opaque) {
+                auto &state = *static_cast<Context *>(opaque);
+                std::size_t index = 0;
+                auto apply_entry = [&](std::string_view key, const ArchiveValue &entry) {
+                    const auto label = state.mapping == nullptr ? std::to_string(index) : std::string(key);
+                    void *target = state.ops.write(replacement, index++, key);
+                    LoadResult nested;
+                    state.status = applyValue(state.element, entry, target, LoadPolicy::Strict, nested,
+                                              fieldPath(state.path, label), state.depth + 1);
+                    return state.status.has_value();
+                };
+                if (state.mapping != nullptr) {
+                    for (const auto &[key, entry] : *state.mapping) {
+                        if (!apply_entry(key, entry)) {
+                            return false;
+                        }
+                    }
+                } else {
+                    for (const auto &entry : *state.sequence) {
+                        if (!apply_entry({}, entry)) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            })) {
+            return {};
+        }
+        if (!context.status) {
+            return std::move(context.status);
+        }
+        return std::unexpected(ArchiveError{ArchiveErrorCode::TypeMismatch, std::string(path)});
+    }
+    if (isEnum(nested_type)) {
+        const auto *text = std::get_if<std::string>(&value.value);
+        const auto &type = *nested_type;
+        if (text != nullptr && type.enum_ops.set != nullptr) {
+            const auto entry = std::ranges::find(type.enum_entries, *text, &reflect::EnumEntry::name);
+            if (entry != type.enum_entries.end()) {
+                type.enum_ops.set(member, entry->value);
+                return {};
+            }
+        }
+    } else if (nested_type != nullptr && property.kind == reflect::PropertyKind::Reflected) {
+        if (const auto *mapping = std::get_if<ArchiveValue::Mapping>(&value.value)) {
+            return applyFields(*mapping, *nested_type, member, policy, result, path, depth + 1);
+        }
+    } else if (property.parse_scalar != nullptr) {
+        if (property.kind == reflect::PropertyKind::String) {
+            if (const auto *text = std::get_if<std::string>(&value.value);
+                text != nullptr && property.parse_scalar(*text, member)) {
+                return {};
+            }
+        } else if (const auto *text = std::get_if<PlainScalar>(&value.value);
+                   text != nullptr && property.parse_scalar(text->text, member)) {
+            return {};
+        }
+    } else {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::UnsupportedProperty, std::string(path)});
+    }
+    return std::unexpected(ArchiveError{ArchiveErrorCode::TypeMismatch, std::string(path)});
+}
+
+ApplyResult applyCustom(const ArchiveValue::Mapping &fields, const reflect::TypeInfo &type, void *object,
+                        LoadPolicy policy, LoadResult &result, std::string_view path, unsigned depth) {
+    struct Context {
+        const ArchiveValue::Mapping &fields;
+        std::set<std::string, std::less<>> names;
+        LoadPolicy policy;
+        LoadResult &result;
+        std::string_view path;
+        unsigned depth;
+        ApplyResult failure{};
+    } context{fields, {}, policy, result, path, depth};
+    auto archive = ArchiveAccess::make(
+        true, &context, [](void *opaque, std::string_view name, const reflect::PropertyInfo &property, void *member) {
+            auto &state = *static_cast<Context *>(opaque);
+            if (!state.failure) {
+                return false;
+            }
+            const auto field_path = fieldPath(state.path, name);
+            if (name.empty() || !state.names.emplace(name).second) {
+                state.failure = std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, field_path});
+                return false;
+            }
+            const auto field = state.fields.find(name);
+            if (field == state.fields.end()) {
+                return true;
+            }
+
+            LoadResult nested;
+            auto applied = applyValue(property, field->second, member, state.policy, nested, field_path, state.depth);
+            if (applied) {
+                if (!nested.extensions.empty()) {
+                    state.result.extensions.emplace(name, ArchiveValue{std::move(nested.extensions)});
+                }
+                for (auto &diagnostic : nested.diagnostics) {
+                    state.result.diagnostics.push_back(std::move(diagnostic));
+                }
+            } else if (state.policy == LoadPolicy::Strict) {
+                state.failure = std::unexpected(std::move(applied.error()));
+            } else {
+                state.result.extensions.emplace(name, field->second);
+                state.result.diagnostics.push_back(std::move(applied.error()));
+            }
+            return applied.has_value();
+        });
+    type.serialize(object, archive);
+    if (!context.failure) {
+        return context.failure;
+    }
+    for (const auto &[name, value] : fields) {
+        if (context.names.contains(name)) {
+            continue;
+        }
+        ArchiveError diagnostic{ArchiveErrorCode::UnknownField, fieldPath(path, name)};
+        if (policy == LoadPolicy::Strict) {
+            return std::unexpected(std::move(diagnostic));
+        }
+        result.extensions.emplace(name, value);
+        result.diagnostics.push_back(std::move(diagnostic));
+    }
+    return {};
+}
+
+std::expected<void, ArchiveError> applyFields(const ArchiveValue::Mapping &fields, const reflect::TypeInfo &type,
+                                              void *object, LoadPolicy policy, LoadResult &result,
+                                              std::string_view path, unsigned depth) {
+    if (depth > max_archive_depth) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, std::string(path)});
+    }
+    if (type.serialize != nullptr) {
+        return applyCustom(fields, type, object, policy, result, path, depth);
+    }
+    for (const auto &[name, value] : fields) {
+        auto [property, owner] = findProperty(type, object, name);
+        const auto member_path = fieldPath(path, name);
+        if (property != nullptr && reflect::hasFlag(property->flags, reflect::PropertyFlags::Transient)) {
+            continue;
+        }
+        if (property != nullptr && name != property->name && fields.contains(property->name)) {
+            property = nullptr;
+        }
+        ArchiveError error{ArchiveErrorCode::UnknownField, member_path};
+        if (property != nullptr && property->get_mutable != nullptr) {
+            LoadResult nested;
+            auto applied =
+                applyValue(*property, value, property->get_mutable(owner), policy, nested, member_path, depth);
+            if (applied) {
+                if (!nested.extensions.empty()) {
+                    result.extensions.emplace(property->name, ArchiveValue{std::move(nested.extensions)});
+                }
+                for (auto &diagnostic : nested.diagnostics) {
+                    result.diagnostics.push_back(std::move(diagnostic));
+                }
+                continue;
+            }
+            error = std::move(applied.error());
+        } else if (property != nullptr) {
+            error.code = ArchiveErrorCode::UnsupportedProperty;
+        }
+        if (policy == LoadPolicy::Strict) {
+            return std::unexpected(std::move(error));
+        }
+        result.extensions.emplace(property == nullptr ? std::string_view(name) : property->name, value);
+        result.diagnostics.push_back(std::move(error));
+    }
+    return {};
+}
 
 } // namespace
 
@@ -252,7 +539,8 @@ bool validateValue(const ArchiveValue &value, unsigned depth) {
 }
 
 std::expected<ArchiveDocument, ArchiveError> captureObject(const reflect::TypeInfo &type, const void *object,
-                                                           const ArchiveValue::Mapping &extensions) {
+                                                           const ArchiveValue::Mapping &extensions,
+                                                           CapturePolicy policy) {
     if (object == nullptr || type.name.empty() || type.version == 0) {
         return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, "/"});
     }
@@ -261,8 +549,27 @@ std::expected<ArchiveDocument, ArchiveError> captureObject(const reflect::TypeIn
         if (!fields) {
             return std::unexpected(std::move(fields.error()));
         }
-        return ArchiveDocument{std::string(type.name), type.version,
-                               std::get<ArchiveValue::Mapping>(std::move(fields->value))};
+        auto mapping = std::get<ArchiveValue::Mapping>(std::move(fields->value));
+        if (policy == CapturePolicy::OmitDefaults) {
+            if (type.size == 0 || !std::has_single_bit(type.alignment) || type.ops.construct == nullptr ||
+                type.ops.destroy == nullptr) {
+                return std::unexpected(ArchiveError{ArchiveErrorCode::UnsupportedProperty, "/"});
+            }
+            auto default_value = allocateObject(type);
+            type.ops.construct(default_value.get());
+            default_value.get_deleter().constructed = true;
+            auto defaults = captureFields(type, default_value.get(), {}, "", 0);
+            if (!defaults) {
+                return std::unexpected(std::move(defaults.error()));
+            }
+            const auto &default_fields = std::get<ArchiveValue::Mapping>(defaults->value);
+            std::erase_if(mapping, [&](const auto &entry) {
+                const auto found = default_fields.find(entry.first);
+                return !extensions.contains(entry.first) && found != default_fields.end() &&
+                       found->second == entry.second;
+            });
+        }
+        return ArchiveDocument{std::string(type.name), type.version, std::move(mapping)};
     } catch (...) {
         return std::unexpected(ArchiveError{ArchiveErrorCode::OperationFailed, {}});
     }
@@ -270,8 +577,7 @@ std::expected<ArchiveDocument, ArchiveError> captureObject(const reflect::TypeIn
 
 std::expected<LoadResult, ArchiveError> applyObject(const ArchiveDocument &document, const reflect::TypeInfo &type,
                                                     void *object, LoadPolicy policy, UpgradeFields upgrade) {
-    if (object == nullptr || document.version == 0 || type.version == 0 || type.size == 0 ||
-        !std::has_single_bit(type.alignment) || type.ops.copy_construct == nullptr || type.ops.destroy == nullptr ||
+    if (object == nullptr || document.version == 0 || type.version == 0 || !hasCopyOperations(type) ||
         type.ops.swap == nullptr) {
         return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, "/"});
     }
@@ -292,9 +598,7 @@ std::expected<LoadResult, ArchiveError> applyObject(const ArchiveDocument &docum
             fields = &migrated;
         }
 
-        const auto allocation_alignment = std::max(type.alignment, alignof(std::max_align_t));
-        std::unique_ptr<void, ObjectDeleter> working(::operator new(type.size, std::align_val_t(allocation_alignment)),
-                                                     ObjectDeleter{type, allocation_alignment});
+        auto working = allocateObject(type);
         type.ops.copy_construct(working.get(), object);
         working.get_deleter().constructed = true;
         LoadResult result;

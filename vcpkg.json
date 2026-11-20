@@ -6,6 +6,7 @@
     "doctest",
     "glm",
     "mimalloc",
-    "sdl3"
+    "sdl3",
+    "xxhash"
   ]
 }

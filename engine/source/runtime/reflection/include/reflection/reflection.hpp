@@ -1,40 +1,45 @@
 #pragma once
 
+#include "core/guid.hpp"
+#include "core/math.hpp"
+#include "core/name.hpp"
 #include "reflection/export.hpp"
 
 #include <charconv>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+namespace star::serialization {
+class Archive;
+}
+
 namespace star::reflect {
 
 using TypeId = std::uint64_t;
 using ModuleId = std::uint64_t;
+inline constexpr ModuleId builtin_module = 0;
 
-[[nodiscard]] constexpr TypeId makeTypeId(std::string_view name) {
-    TypeId hash = 14695981039346656037ull;
-    for (const unsigned char character : name) {
-        hash ^= character;
-        hash *= 1099511628211ull;
-    }
-    return hash;
-}
+[[nodiscard]] STAR_REFLECTION_API TypeId makeTypeId(std::string_view name) noexcept;
 
 enum class TypeKind : std::uint8_t {
     Struct,
     Class,
     Enum,
+    Primitive,
 };
 
 enum class PropertyKind : std::uint8_t {
@@ -61,6 +66,7 @@ constexpr bool hasFlag(PropertyFlags value, PropertyFlags flag) {
 }
 
 struct TypeInfo;
+struct ContainerOps;
 
 struct PropertyInfo {
     std::string_view name;
@@ -72,6 +78,23 @@ struct PropertyInfo {
     std::string (*format_scalar)(const void *member) = nullptr;
     bool (*parse_scalar)(std::string_view text, void *member) = nullptr;
     std::string_view former_name{};
+    std::string_view metadata{};
+    const ContainerOps *container = nullptr;
+    const TypeInfo *(*resolve_nested_type)() = nullptr;
+
+    [[nodiscard]] const TypeInfo *nestedType() const {
+        return resolve_nested_type == nullptr ? nested_type : resolve_nested_type();
+    }
+};
+
+struct ContainerOps {
+    bool is_mapping;
+    PropertyInfo (*element)(const TypeInfo *nested_type);
+    std::size_t (*size)(const void *container);
+    void (*visit)(const void *container, void *context,
+                  void (*entry)(void *context, std::string_view key, const void *value));
+    bool (*replace)(void *container, std::size_t size, void *context, bool (*fill)(void *replacement, void *context));
+    void *(*write)(void *container, std::size_t index, std::string_view key);
 };
 
 struct TypeOps {
@@ -80,6 +103,27 @@ struct TypeOps {
     void (*copy_construct)(void *destination, const void *source);
     bool (*equals)(const void *left, const void *right);
     void (*swap)(void *left, void *right) noexcept = nullptr;
+};
+
+struct EnumEntry {
+    std::string_view name;
+    std::uint64_t value;
+};
+
+struct EnumOps {
+    std::uint64_t (*get)(const void *object);
+    void (*set)(void *object, std::uint64_t value);
+};
+
+struct FunctionInfo {
+    std::string_view name;
+    std::string_view metadata;
+    bool (*invoke)(void *object) noexcept;
+};
+
+struct BaseAccess {
+    const void *(*get_const)(const void *object);
+    void *(*get_mutable)(void *object);
 };
 
 struct TypeInfo {
@@ -94,12 +138,21 @@ struct TypeInfo {
     std::uint32_t version;
     const TypeInfo *base;
     std::string_view former_name{};
+    std::span<const EnumEntry> enum_entries{};
+    EnumOps enum_ops{};
+    std::span<const FunctionInfo> functions{};
+    std::string_view metadata{};
+    BaseAccess base_access{};
+    void (*serialize)(void *object, serialization::Archive &archive) = nullptr;
 };
+
+[[nodiscard]] STAR_REFLECTION_API std::span<const TypeInfo *const> builtinTypes();
 
 enum class RegistryErrorCode : std::uint8_t {
     DuplicateType,
     TypeOwnerMismatch,
     InvalidType,
+    AllocationFailed,
 };
 
 struct RegistryError {
@@ -136,7 +189,8 @@ template <typename T> consteval PropertyKind propertyKind() {
         return PropertyKind::UnsignedInteger;
     } else if constexpr (std::is_floating_point_v<T>) {
         return PropertyKind::FloatingPoint;
-    } else if constexpr (std::is_same_v<T, std::string>) {
+    } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, Guid> || std::is_same_v<T, Name> ||
+                         std::is_same_v<T, std::filesystem::path>) {
         return PropertyKind::String;
     } else {
         return PropertyKind::Reflected;
@@ -168,6 +222,13 @@ template <typename T> std::string formatScalar(const void *member) {
     const auto &value = *static_cast<const T *>(member);
     if constexpr (std::is_same_v<T, std::string>) {
         return value;
+    } else if constexpr (std::is_same_v<T, Guid>) {
+        return value.toString();
+    } else if constexpr (std::is_same_v<T, Name>) {
+        return std::string(value.getString());
+    } else if constexpr (std::is_same_v<T, std::filesystem::path>) {
+        const auto text = value.generic_u8string();
+        return std::string(reinterpret_cast<const char *>(text.data()), text.size());
     } else if constexpr (std::is_same_v<T, bool>) {
         return value ? "true" : "false";
     } else {
@@ -189,6 +250,17 @@ template <typename T> bool parseScalar(std::string_view text, void *member) {
     auto &destination = *static_cast<T *>(member);
     if constexpr (std::is_same_v<T, std::string>) {
         destination = text;
+    } else if constexpr (std::is_same_v<T, Guid>) {
+        const auto parsed = Guid::parse(text);
+        if (!parsed) {
+            return false;
+        }
+        destination = *parsed;
+    } else if constexpr (std::is_same_v<T, Name>) {
+        destination = Name(text);
+    } else if constexpr (std::is_same_v<T, std::filesystem::path>) {
+        std::u8string bytes(text.begin(), text.end());
+        destination = std::filesystem::path(bytes, std::filesystem::path::generic_format);
     } else if constexpr (std::is_same_v<T, bool>) {
         if (text == "true" || text == "True" || text == "TRUE") {
             destination = true;
@@ -249,20 +321,110 @@ template <typename T> void swapObjects(void *left, void *right) noexcept {
 
 } // namespace detail
 
+template <typename T> constexpr PropertyInfo makeValueInfo(const TypeInfo *nested_type = nullptr);
+
+namespace detail {
+
+STAR_REFLECTION_API const TypeInfo *vector2Type();
+STAR_REFLECTION_API const TypeInfo *vector3Type();
+STAR_REFLECTION_API const TypeInfo *quaternionType();
+
+template <typename T> constexpr const ContainerOps *containerOps() {
+    if constexpr (requires(T &container, const T &source, std::size_t index) {
+                      requires std::is_same_v<decltype(source[index]), const typename T::value_type &>;
+                      requires std::is_same_v<decltype(container[index]), typename T::value_type &>;
+                      { source.size() } -> std::same_as<std::size_t>;
+                  } && (requires(T &container, std::size_t count) { container.resize(count); } ||
+                        requires { typename std::tuple_size<T>::type; })) {
+        using Element = typename T::value_type;
+        static constexpr ContainerOps ops{
+            false,
+            &makeValueInfo<Element>,
+            [](const void *container) { return static_cast<const T *>(container)->size(); },
+            [](const void *container, void *context, auto entry) {
+                for (const auto &item : *static_cast<const T *>(container)) {
+                    entry(context, {}, &item);
+                }
+            },
+            [](void *container, std::size_t count, void *context, auto fill) {
+                T replacement{};
+                if constexpr (requires { replacement.resize(count); }) {
+                    replacement.resize(count);
+                } else if (count != replacement.size()) {
+                    return false;
+                }
+                if (!fill(&replacement, context)) {
+                    return false;
+                }
+                *static_cast<T *>(container) = std::move(replacement);
+                return true;
+            },
+            [](void *container, std::size_t index, std::string_view) -> void * {
+                return &(*static_cast<T *>(container))[index];
+            }};
+        return &ops;
+    } else if constexpr (requires(T &container, std::string key) {
+                             requires std::is_same_v<typename T::key_type, std::string>;
+                             typename T::mapped_type;
+                             container.try_emplace(std::move(key));
+                         }) {
+        using Element = typename T::mapped_type;
+        static constexpr ContainerOps ops{
+            true,
+            &makeValueInfo<Element>,
+            [](const void *container) { return static_cast<const T *>(container)->size(); },
+            [](const void *container, void *context, auto entry) {
+                for (const auto &[key, item] : *static_cast<const T *>(container)) {
+                    entry(context, key, &item);
+                }
+            },
+            [](void *container, std::size_t, void *context, auto fill) {
+                T replacement{};
+                if (!fill(&replacement, context)) {
+                    return false;
+                }
+                *static_cast<T *>(container) = std::move(replacement);
+                return true;
+            },
+            [](void *container, std::size_t, std::string_view key) -> void * {
+                return &static_cast<T *>(container)->try_emplace(std::string(key)).first->second;
+            }};
+        return &ops;
+    }
+    return nullptr;
+}
+
+} // namespace detail
+
+template <typename T> constexpr PropertyInfo makeValueInfo(const TypeInfo *nested_type) {
+    constexpr auto kind = detail::propertyKind<T>();
+    PropertyInfo property{"", kind, PropertyFlags::None, nested_type, nullptr, nullptr};
+    if constexpr (kind != PropertyKind::Reflected) {
+        property.format_scalar = &detail::formatScalar<T>;
+        property.parse_scalar = &detail::parseScalar<T>;
+    } else {
+        property.container = detail::containerOps<T>();
+        if (nested_type == nullptr) {
+            if constexpr (std::is_same_v<T, math::Vector2>) {
+                property.resolve_nested_type = &detail::vector2Type;
+            } else if constexpr (std::is_same_v<T, math::Vector3>) {
+                property.resolve_nested_type = &detail::vector3Type;
+            } else if constexpr (std::is_same_v<T, math::Quaternion>) {
+                property.resolve_nested_type = &detail::quaternionType;
+            }
+        }
+    }
+    return property;
+}
+
 template <typename Owner, typename Member, Member Owner::*MemberPointer>
 constexpr PropertyInfo makeProperty(std::string_view name, PropertyFlags flags = PropertyFlags::None,
                                     const TypeInfo *nested_type = nullptr, std::string_view former_name = {}) {
-    constexpr auto kind = detail::propertyKind<Member>();
-    PropertyInfo property{name,
-                          kind,
-                          flags,
-                          nested_type,
-                          &detail::getMutable<Owner, Member, MemberPointer>,
-                          &detail::getConst<Owner, Member, MemberPointer>};
-    if constexpr (kind != PropertyKind::Reflected) {
-        property.format_scalar = &detail::formatScalar<Member>;
-        property.parse_scalar = &detail::parseScalar<Member>;
-    }
+    auto property = makeValueInfo<Member>(nested_type);
+    property.name = name;
+    property.flags = flags;
+    property.get_mutable = &detail::getMutable<Owner, Member, MemberPointer>;
+    property.get_const = &detail::getConst<Owner, Member, MemberPointer>;
     property.former_name = former_name;
     return property;
 }
@@ -274,6 +436,20 @@ template <typename T> constexpr TypeOps makeTypeOps() {
         ops.swap = &detail::swapObjects<T>;
     }
     return ops;
+}
+
+template <typename E> constexpr EnumOps makeEnumOps() {
+    return EnumOps{[](const void *object) { return static_cast<std::uint64_t>(*static_cast<const E *>(object)); },
+                   [](void *object, std::uint64_t value) {
+                       *static_cast<E *>(object) = static_cast<E>(static_cast<std::underlying_type_t<E>>(value));
+                   }};
+}
+
+template <typename Derived, typename Base> constexpr BaseAccess makeBaseAccess() {
+    return BaseAccess{[](const void *object) -> const void * {
+                          return static_cast<const Base *>(static_cast<const Derived *>(object));
+                      },
+                      [](void *object) -> void * { return static_cast<Base *>(static_cast<Derived *>(object)); }};
 }
 
 } // namespace star::reflect
