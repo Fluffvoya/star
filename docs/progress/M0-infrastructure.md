@@ -103,6 +103,11 @@
 - 新增普通文件只读映射与借用的字节视图。
 - 详细范围和验证结果见 [M0 Platform 只读文件映射阶段报告](M0-platform-mapped-file.md)。
 
+### 公共头文件独立编译（后续增量）
+
+- CTest 新增 `public-headers`，以消费者的编译设置逐个验证 Core、Jobs 和 Platform 的公共头。
+- 详细范围和验证结果见 [M0 公共头文件独立编译阶段报告](M0-public-headers.md)。
+
 ## 本地验证
 
 验证环境：
@@ -147,7 +152,6 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 - Platform 尚未覆盖输入、文件监视、崩溃处理和线程工具。
 - `STAR_SHIPPING_DEPS` 目前只启用策略提示；vcpkg manifest、固定 baseline 和静态依赖 triplet 尚未落地。
 - 当前依赖系统中未发现 glm，因此数学相关设施尚未提供。
-- 公共头文件独立编译检查尚未纳入自动化测试。
 - 测试入口使用仓库内的轻量测试支持，doctest 尚未接入。
 - `clang-tidy` 未完成本地检查：当前 Clang 23 无法解析 GCC 16 生成的 C++23 module mapper 参数；这不是源码诊断通过。
 
@@ -157,4 +161,3 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 2. 补齐 Core 的其余容器和全局分配设施，逐步覆盖 M0 清单。
 3. 确定 vcpkg baseline 与静态依赖 triplet，使 Profile/Shipping 的依赖策略可复现。
 4. 在 Windows x64 和 macOS arm64 实机执行本地预设、测试和窗口示例。
-5. 将公共头文件独立编译检查纳入 CTest。
