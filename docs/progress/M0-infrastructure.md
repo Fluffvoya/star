@@ -118,6 +118,11 @@
 - 新增设置调用线程原生名称的接口。
 - 详细范围和验证结果见 [M0 Platform 线程命名阶段报告](M0-platform-thread-names.md)。
 
+### Jobs 工作线程配置（后续增量）
+
+- 新增 `STAR_JOBS_WORKERS` 启动配置和独立 CTest 验证入口。
+- 详细范围和验证结果见 [M0 Jobs 工作线程配置阶段报告](M0-jobs-worker-count.md)。
+
 ## 本地验证
 
 验证环境：

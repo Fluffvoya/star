@@ -40,6 +40,11 @@ target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_
 target_sources(StarCoreTests PRIVATE spsc_queue_tests.cpp)
 target_link_libraries(StarCoreTests PRIVATE Threads::Threads)
 target_sources(StarJobsTests PRIVATE task_graph_tests.cpp)
+add_executable(StarJobsWorkerCountTests jobs_worker_count_tests.cpp test_main.cpp)
+target_link_libraries(StarJobsWorkerCountTests PRIVATE Star::Jobs)
+set_target_properties(StarJobsWorkerCountTests PROPERTIES OUTPUT_NAME "star-jobs-worker-count-tests")
+add_test(NAME jobs-worker-count COMMAND StarJobsWorkerCountTests)
+set_tests_properties(jobs-worker-count PROPERTIES ENVIRONMENT "STAR_JOBS_WORKERS=2")
 target_sources(StarPlatformTests PRIVATE platform_thread_tests.cpp)
 target_link_libraries(StarPlatformTests PRIVATE Threads::Threads)
 
