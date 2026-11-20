@@ -16,6 +16,7 @@
 #else
 #include <array>
 #include <pthread.h>
+#include <sched.h>
 #endif
 
 namespace star {
@@ -72,6 +73,43 @@ std::expected<void, std::error_code> setCurrentThreadName(std::string_view name)
     }
 #endif
     return {};
+}
+
+std::expected<void, std::error_code> setCurrentThreadAffinity(std::span<const std::uint32_t> cpu_indices) noexcept {
+    if (cpu_indices.empty()) {
+        return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+    }
+
+#if defined(_WIN32)
+    DWORD_PTR mask = 0;
+    for (const std::uint32_t cpu_index : cpu_indices) {
+        if (cpu_index >= sizeof(DWORD_PTR) * 8) {
+            return std::unexpected(std::make_error_code(std::errc::result_out_of_range));
+        }
+        mask |= static_cast<DWORD_PTR>(1) << cpu_index;
+    }
+    if (SetThreadAffinityMask(GetCurrentThread(), mask) == 0) {
+        return std::unexpected(std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+    }
+    return {};
+#elif defined(__APPLE__)
+    static_cast<void>(cpu_indices);
+    return std::unexpected(std::make_error_code(std::errc::operation_not_supported));
+#else
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (const std::uint32_t cpu_index : cpu_indices) {
+        if (cpu_index >= CPU_SETSIZE) {
+            return std::unexpected(std::make_error_code(std::errc::result_out_of_range));
+        }
+        CPU_SET(cpu_index, &set);
+    }
+    const int result = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    if (result != 0) {
+        return std::unexpected(std::error_code(result, std::generic_category()));
+    }
+    return {};
+#endif
 }
 
 } // namespace star
