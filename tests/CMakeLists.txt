@@ -41,6 +41,24 @@ endforeach()
 add_test(NAME public-headers COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
     --target StarPublicHeadersCheck --config "$<CONFIG>")
 
+if(TARGET StarHeaderTool)
+    add_executable(StarGeneratedReflectionTests generated_reflection_tests.cpp test_main.cpp)
+    target_link_libraries(StarGeneratedReflectionTests PRIVATE Star::Serialization)
+    set_target_properties(StarGeneratedReflectionTests PROPERTIES OUTPUT_NAME star-generated-reflection-tests)
+    star_generate_reflection(StarGeneratedReflectionTests generated_tests 37
+        HEADERS fixtures/reflected_types.hpp
+        INCLUDE_DIRS "${PROJECT_SOURCE_DIR}/engine/source/runtime/reflection/include")
+    add_test(NAME generated-reflection COMMAND StarGeneratedReflectionTests)
+    add_test(NAME generated-reflection-incremental
+        COMMAND "${CMAKE_COMMAND}"
+            "-Dwork=${CMAKE_CURRENT_BINARY_DIR}/generated-reflection-incremental"
+            "-Dtool=$<TARGET_FILE:StarHeaderTool>"
+            "-Droot=${PROJECT_SOURCE_DIR}"
+            "-Dcompiler=${CMAKE_CXX_COMPILER}"
+            "-Dninja=${CMAKE_MAKE_PROGRAM}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/generated_reflection_incremental.cmake")
+endif()
+
 find_package(Threads REQUIRED)
 find_package(SDL3 3.2 REQUIRED CONFIG)
 target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_tests.cpp delegate_tests.cpp global_allocator_tests.cpp math_tests.cpp small_vector_tests.cpp)

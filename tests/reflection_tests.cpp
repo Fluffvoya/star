@@ -22,31 +22,31 @@ struct Player final : Base {
 constexpr star::reflect::PropertyInfo base_properties[] = {
     star::reflect::makeProperty<Base, int, &Base::base_value>("base_value"),
 };
-constexpr star::reflect::TypeInfo base_type{star::reflect::makeTypeId("tests::Base"),
-                                            "tests::Base",
-                                            star::reflect::TypeKind::Class,
-                                            sizeof(Base),
-                                            alignof(Base),
-                                            base_properties,
-                                            star::reflect::makeTypeOps<Base>(),
-                                            42,
-                                            1,
-                                            nullptr};
+const star::reflect::TypeInfo base_type{star::reflect::makeTypeId("tests::Base"),
+                                        "tests::Base",
+                                        star::reflect::TypeKind::Class,
+                                        sizeof(Base),
+                                        alignof(Base),
+                                        base_properties,
+                                        star::reflect::makeTypeOps<Base>(),
+                                        42,
+                                        1,
+                                        nullptr};
 
 constexpr star::reflect::PropertyInfo player_properties[] = {
     star::reflect::makeProperty<Player, float, &Player::speed>("speed"),
     star::reflect::makeProperty<Player, std::string, &Player::name>("name"),
 };
-constexpr star::reflect::TypeInfo player_type{star::reflect::makeTypeId("tests::Player"),
-                                              "tests::Player",
-                                              star::reflect::TypeKind::Class,
-                                              sizeof(Player),
-                                              alignof(Player),
-                                              player_properties,
-                                              star::reflect::makeTypeOps<Player>(),
-                                              42,
-                                              1,
-                                              &base_type};
+const star::reflect::TypeInfo player_type{star::reflect::makeTypeId("tests::Player"),
+                                          "tests::Player",
+                                          star::reflect::TypeKind::Class,
+                                          sizeof(Player),
+                                          alignof(Player),
+                                          player_properties,
+                                          star::reflect::makeTypeOps<Player>(),
+                                          42,
+                                          1,
+                                          &base_type};
 
 } // namespace
 
@@ -56,6 +56,7 @@ STAR_TEST(reflectionRegistryRegistersAndRemovesModuleTypes) {
 
     STAR_CHECK(registry.registerModule(42, types).has_value());
     STAR_CHECK(registry.find("tests::Base") == &base_type);
+    STAR_CHECK(star::reflect::makeTypeId("tests::Player") == 0x235597914afc1f80ULL);
     STAR_CHECK(registry.find(star::reflect::makeTypeId("tests::Player")) == &player_type);
 
     const auto derived = registry.derivedFrom(base_type);
