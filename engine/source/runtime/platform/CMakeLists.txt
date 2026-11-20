@@ -7,10 +7,12 @@ find_package(SDL3 3.2 REQUIRED CONFIG)
 star_add_module(Platform platform
     include/platform/clock.hpp
     include/platform/dynamic_library.hpp
+    include/platform/mapped_file.hpp
     include/platform/platform.hpp
     include/platform/window.hpp
     src/clock.cpp
     src/dynamic_library.cpp
+    src/mapped_file.cpp
     src/platform.cpp
     src/window.cpp
 )
