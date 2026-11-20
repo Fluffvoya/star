@@ -40,6 +40,8 @@ target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_
 target_sources(StarCoreTests PRIVATE spsc_queue_tests.cpp)
 target_link_libraries(StarCoreTests PRIVATE Threads::Threads)
 target_sources(StarJobsTests PRIVATE task_graph_tests.cpp)
+target_sources(StarPlatformTests PRIVATE platform_thread_tests.cpp)
+target_link_libraries(StarPlatformTests PRIVATE Threads::Threads)
 
 add_library(StarPlatformTestModule MODULE platform_test_module.cpp)
 set_target_properties(StarPlatformTestModule PROPERTIES OUTPUT_NAME star-platform-test-module)

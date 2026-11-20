@@ -3,6 +3,7 @@
 #include "platform/clock.hpp"
 #include "platform/dynamic_library.hpp"
 #include "platform/mapped_file.hpp"
+#include "platform/thread.hpp"
 #include "platform/window.hpp"
 
 #include <expected>
