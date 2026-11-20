@@ -6,6 +6,14 @@
 #include <new>
 #include <string_view>
 
+#if defined(STAR_WITH_MIMALLOC)
+#include <mimalloc.h>
+#endif
+
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
+
 namespace star {
 
 std::expected<GlobalAllocator, GlobalAllocatorError> GlobalAllocator::fromEnvironment() noexcept {
@@ -41,10 +49,19 @@ std::expected<void *, GlobalAllocatorError> GlobalAllocator::allocate(std::size_
         return mi_malloc_aligned(size, alignment);
     }
 #endif
-    if (alignment <= __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
-        return ::operator new(size, std::nothrow);
+    if (alignment <= alignof(std::max_align_t)) {
+        return std::malloc(size);
     }
-    return ::operator new(size, std::align_val_t(alignment), std::nothrow);
+
+#if defined(_WIN32)
+    return _aligned_malloc(size, alignment);
+#else
+    void *address = nullptr;
+    if (posix_memalign(&address, alignment, size) != 0) {
+        return nullptr;
+    }
+    return address;
+#endif
 }
 
 void GlobalAllocator::deallocate(void *address, std::size_t alignment) const noexcept {
@@ -57,11 +74,16 @@ void GlobalAllocator::deallocate(void *address, std::size_t alignment) const noe
         return;
     }
 #endif
-    if (alignment <= __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
-        ::operator delete(address);
-    } else {
-        ::operator delete(address, std::align_val_t(alignment));
+    if (alignment <= alignof(std::max_align_t)) {
+        std::free(address);
+        return;
     }
+
+#if defined(_WIN32)
+    _aligned_free(address);
+#else
+    std::free(address);
+#endif
 }
 
 } // namespace star

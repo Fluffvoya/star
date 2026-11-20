@@ -8,8 +8,9 @@
 
 - `GlobalAllocator` 提供统一的对齐分配和释放入口，默认使用系统分配器。
 - `STAR_ALLOCATOR` 支持 `system` 和 `mimalloc` 两个值。当前构建未接入 mimalloc 时，选择 `mimalloc` 返回 `Unavailable`，未知值返回 `InvalidEnvironment`。
-- 分配入口验证零大小和非二次幂对齐，系统分配路径使用 C++ 对齐 `operator new/delete`。
+- 分配入口验证零大小和非二次幂对齐，系统分配路径使用 C 运行库分配函数，避免被全局入口递归调用。
 - Core 公共入口导出 `GlobalAllocator`，后续第三方库和可执行文件可在同一接口上接入专用分配器。
+- 单体构建中的全局 `operator new/delete` 已接入 `GlobalAllocator`，共享库构建保留宿主进程的分配入口。
 
 ## 验证
 
@@ -18,6 +19,6 @@
 - Core 通过 AddressSanitizer、LeakSanitizer 和 UndefinedBehaviorSanitizer。公共头独立编译，`clang-format --dry-run --Werror` 和 `git diff --check` 通过。
 - 待验平台为 Windows x64 和 macOS arm64。
 
-## 尚未完成
+## 依赖策略
 
-本阶段没有在可执行文件中替换全局 `operator new/delete`，也没有引入 mimalloc 依赖。后续固定依赖和发布构建策略确定后，再接入单一进程级分配器以及第三方库分配回调。
+`vcpkg.json` 和 `vcpkg-configuration.json` 固定了 Shipping 依赖基线。CMake 在发现 mimalloc 时接入对应目标，未发现时保留系统分配路径。

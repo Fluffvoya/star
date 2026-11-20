@@ -23,6 +23,9 @@ Initialize the pinned YAML parser and its dependencies after cloning the reposit
 git submodule update --init --recursive
 ```
 
+Shipping and Profile dependency versions are pinned by the repository vcpkg manifest. Configure those builds with
+the vcpkg toolchain on the target host.
+
 On Linux, configure and validate the current scaffold with:
 
 ```sh

@@ -6,6 +6,10 @@ option(STAR_BUILD_TESTS "Build local tests" ON)
 option(STAR_MONOLITHIC "Build engine modules as static libraries" OFF)
 option(STAR_SHIPPING_DEPS "Use shipping dependency policy" OFF)
 
+if(STAR_SHIPPING_DEPS AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    message(STATUS "Star: shipping dependency policy requested without a vcpkg toolchain; using discovered packages")
+endif()
+
 get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(is_multi_config)
     set(CMAKE_CONFIGURATION_TYPES "Debug;Development;Profile;Shipping" CACHE STRING "Supported configurations" FORCE)
@@ -64,6 +68,7 @@ if(STAR_BUILD_TESTS)
 endif()
 
 include(cmake/StarModule.cmake)
+include(cmake/Dependencies.cmake)
 add_subdirectory(engine/source/runtime/core)
 add_subdirectory(engine/source/runtime/jobs)
 add_subdirectory(engine/source/runtime/platform)

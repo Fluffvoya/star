@@ -56,7 +56,11 @@ STAR_TEST(globalAllocatorDefaultsToSystemAndValidatesEnvironment) {
     {
         const EnvironmentGuard guard("mimalloc");
         const auto allocator = star::GlobalAllocator::fromEnvironment();
+#if defined(STAR_WITH_MIMALLOC)
+        STAR_CHECK(allocator && allocator->getKind() == star::GlobalAllocatorKind::Mimalloc);
+#else
         STAR_CHECK(!allocator && allocator.error() == star::GlobalAllocatorError::Unavailable);
+#endif
     }
 }
 

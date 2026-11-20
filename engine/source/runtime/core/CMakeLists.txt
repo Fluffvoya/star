@@ -23,9 +23,11 @@ star_add_module(Core core
     src/cvar.cpp
     src/guid.cpp
     src/global_allocator.cpp
+    src/global_new_delete.cpp
     src/log.cpp
     src/name.cpp
     src/tracked_allocator.cpp
 )
 
 target_link_libraries(StarCore PRIVATE ryml)
+star_find_mimalloc(StarCore)
