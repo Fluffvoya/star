@@ -1,3 +1,5 @@
+add_custom_target(StarPublicHeadersCheck)
+
 foreach(module IN ITEMS Core Jobs Platform)
     string(TOLOWER "${module}" module_slug)
     set(target "Star${module}Tests")
@@ -8,7 +10,30 @@ foreach(module IN ITEMS Core Jobs Platform)
     set_target_properties(${target} PROPERTIES OUTPUT_NAME "star-${test_name}")
 
     add_test(NAME ${test_name} COMMAND ${target})
+
+    get_target_property(module_source_dir Star${module} SOURCE_DIR)
+    set(include_dir "${module_source_dir}/include")
+    file(GLOB_RECURSE public_headers RELATIVE "${include_dir}" CONFIGURE_DEPENDS
+        "${include_dir}/*.h" "${include_dir}/*.hpp")
+    list(APPEND public_headers "${module_slug}/export.hpp")
+
+    set(header_target "Star${module}PublicHeadersCheck")
+    add_library(${header_target} OBJECT EXCLUDE_FROM_ALL)
+    target_link_libraries(${header_target} PRIVATE Star::${module})
+    set_target_properties(${header_target} PROPERTIES
+        DISABLE_PRECOMPILE_HEADERS ON
+        UNITY_BUILD OFF
+    )
+    foreach(header IN LISTS public_headers)
+        set(check_source "${CMAKE_CURRENT_BINARY_DIR}/public-headers/${module_slug}/${header}.cpp")
+        file(GENERATE OUTPUT "${check_source}" CONTENT "#include \"${header}\"\n")
+        target_sources(${header_target} PRIVATE "${check_source}")
+    endforeach()
+    add_dependencies(StarPublicHeadersCheck ${header_target})
 endforeach()
+
+add_test(NAME public-headers COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
+    --target StarPublicHeadersCheck --config "$<CONFIG>")
 
 find_package(Threads REQUIRED)
 target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_tests.cpp delegate_tests.cpp global_allocator_tests.cpp math_tests.cpp small_vector_tests.cpp)
