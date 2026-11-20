@@ -15,5 +15,13 @@ target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_
 target_link_libraries(StarCoreTests PRIVATE Threads::Threads)
 target_sources(StarJobsTests PRIVATE task_graph_tests.cpp)
 
+add_library(StarPlatformTestModule MODULE platform_test_module.cpp)
+set_target_properties(StarPlatformTestModule PROPERTIES OUTPUT_NAME star-platform-test-module)
+add_dependencies(StarPlatformTests StarPlatformTestModule)
+target_compile_definitions(StarPlatformTests PRIVATE STAR_PLATFORM_TEST_MODULE="$<TARGET_FILE_NAME:StarPlatformTestModule>")
+
 set_tests_properties(jobs-tests platform-tests PROPERTIES TIMEOUT 30)
-set_tests_properties(platform-tests PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+set_tests_properties(platform-tests PROPERTIES
+    ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy"
+    WORKING_DIRECTORY "$<TARGET_FILE_DIR:StarPlatformTestModule>"
+)

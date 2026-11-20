@@ -1,6 +1,7 @@
 #pragma once
 
 #include "platform/clock.hpp"
+#include "platform/dynamic_library.hpp"
 #include "platform/window.hpp"
 
 #include <expected>

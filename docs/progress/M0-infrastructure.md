@@ -93,6 +93,11 @@
 - 新增供外部库提交单任务回调并等待完成的接口。
 - 详细范围和限制见 [M0 Jobs 外部任务适配阶段报告](M0-external-tasks.md)。
 
+### Platform 动态库（后续增量）
+
+- 新增动态库加载、函数符号查找和自动释放。
+- 详细范围和验证结果见 [M0 Platform 动态库阶段报告](M0-platform-dynamic-library.md)。
+
 ## 本地验证
 
 验证环境：
@@ -134,7 +139,7 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 - M0 的整体验收尚未完成；Windows x64 和 macOS arm64 仅声明了预设，尚未实机构建和运行。
 - Core 的全局 `operator new/delete` 替换、mimalloc 接入、其余容器和数学扩展尚待实现。启动器尚待接入配置路径与命令行入口。
 - 日志目前只输出到控制台，文件、编辑器面板、平台调试输出和后台写出尚未实现。
-- Platform 尚未覆盖输入、动态库加载、文件监视、内存映射、崩溃处理和线程工具。
+- Platform 尚未覆盖输入、文件监视、内存映射、崩溃处理和线程工具。
 - `STAR_SHIPPING_DEPS` 目前只启用策略提示；vcpkg manifest、固定 baseline 和静态依赖 triplet 尚未落地。
 - 当前依赖系统中未发现 glm，因此数学相关设施尚未提供。
 - 公共头文件独立编译检查尚未纳入自动化测试。
