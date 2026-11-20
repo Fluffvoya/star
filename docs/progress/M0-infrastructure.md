@@ -123,6 +123,11 @@
 - 新增 `STAR_JOBS_WORKERS` 启动配置和独立 CTest 验证入口。
 - 详细范围和验证结果见 [M0 Jobs 工作线程配置阶段报告](M0-jobs-worker-count.md)。
 
+### Platform 输入事件（后续增量）
+
+- 新增 SDL3 键盘、鼠标移动、鼠标按钮和滚轮事件转发。
+- 详细范围和验证结果见 [M0 Platform 输入事件阶段报告](M0-platform-input-events.md)。
+
 ## 本地验证
 
 验证环境：
@@ -164,7 +169,7 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 - M0 的整体验收尚未完成；Windows x64 和 macOS arm64 仅声明了预设，尚未实机构建和运行。
 - Core 的全局 `operator new/delete` 替换、mimalloc 接入、其余容器和数学扩展尚待实现。启动器尚待接入配置路径与命令行入口。
 - 日志目前只输出到控制台，文件、编辑器面板、平台调试输出和后台写出尚未实现。
-- Platform 尚未覆盖输入、文件监视、崩溃处理和线程亲和性。
+- Platform 尚未覆盖文件监视、崩溃处理和线程亲和性。
 - `STAR_SHIPPING_DEPS` 目前只启用策略提示；vcpkg manifest、固定 baseline 和静态依赖 triplet 尚未落地。
 - 当前依赖系统中未发现 glm，因此数学相关设施尚未提供。
 - 测试入口使用仓库内的轻量测试支持，doctest 尚未接入。

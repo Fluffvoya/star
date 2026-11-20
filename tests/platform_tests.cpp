@@ -2,6 +2,8 @@
 
 #include "platform/platform.hpp"
 
+#include <SDL3/SDL.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <span>
@@ -26,6 +28,43 @@ STAR_TEST(platformCreatesHeadlessWindow) {
     STAR_CHECK((*window)->getHeight() == 180);
     STAR_CHECK((*window)->getTitle() == "Star Platform Test");
     STAR_CHECK((*window)->pollEvents().empty());
+}
+
+STAR_TEST(platformPollsKeyboardAndMouseEvents) {
+    auto platform = star::PlatformContext::initialize();
+    STAR_CHECK(platform.has_value());
+    auto window = star::createWindow(star::WindowDescriptor{"Input Test", 320, 180});
+    STAR_CHECK(window.has_value());
+
+    int window_count = 0;
+    SDL_Window **windows = SDL_GetWindows(&window_count);
+    STAR_CHECK(windows != nullptr && window_count >= 1);
+    const SDL_WindowID window_id = SDL_GetWindowID(windows[window_count - 1]);
+    SDL_free(windows);
+
+    SDL_Event key{};
+    key.type = SDL_EVENT_KEY_DOWN;
+    key.key.windowID = window_id;
+    key.key.scancode = SDL_SCANCODE_A;
+    key.key.mod = SDL_KMOD_CTRL;
+    STAR_CHECK(SDL_PushEvent(&key) == 1);
+
+    SDL_Event motion{};
+    motion.type = SDL_EVENT_MOUSE_MOTION;
+    motion.motion.windowID = window_id;
+    motion.motion.state = SDL_BUTTON_LMASK;
+    motion.motion.x = 12.0F;
+    motion.motion.y = 34.0F;
+    motion.motion.xrel = 2.0F;
+    motion.motion.yrel = -1.0F;
+    STAR_CHECK(SDL_PushEvent(&motion) == 1);
+
+    const auto events = (*window)->pollEvents();
+    STAR_CHECK(events.size() == 2);
+    STAR_CHECK(events[0].type == star::WindowEventType::KeyDown);
+    STAR_CHECK(events[0].code == SDL_SCANCODE_A && events[0].modifiers == SDL_KMOD_CTRL);
+    STAR_CHECK(events[1].type == star::WindowEventType::MouseMotion);
+    STAR_CHECK(events[1].x == 12.0F && events[1].yrel == -1.0F);
 }
 
 STAR_TEST(frameClockReportsElapsedTime) {

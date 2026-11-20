@@ -62,6 +62,63 @@ std::span<const WindowEvent> Window::pollEvents() {
                 static_cast<std::uint32_t>(m_implementation->width),
                 static_cast<std::uint32_t>(m_implementation->height),
             });
+            continue;
+        }
+
+        if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
+            event.key.windowID == m_implementation->id) {
+            m_implementation->events.push_back(WindowEvent{
+                event.type == SDL_EVENT_KEY_DOWN ? WindowEventType::KeyDown : WindowEventType::KeyUp,
+                0,
+                0,
+                static_cast<std::uint32_t>(event.key.scancode),
+                static_cast<std::uint32_t>(event.key.mod),
+            });
+            continue;
+        }
+
+        if (event.type == SDL_EVENT_MOUSE_MOTION && event.motion.windowID == m_implementation->id) {
+            m_implementation->events.push_back(WindowEvent{
+                WindowEventType::MouseMotion,
+                0,
+                0,
+                0,
+                static_cast<std::uint32_t>(event.motion.state),
+                event.motion.x,
+                event.motion.y,
+                event.motion.xrel,
+                event.motion.yrel,
+            });
+            continue;
+        }
+
+        if ((event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+            event.button.windowID == m_implementation->id) {
+            m_implementation->events.push_back(WindowEvent{
+                event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? WindowEventType::MouseButtonDown
+                                                          : WindowEventType::MouseButtonUp,
+                0,
+                0,
+                event.button.button,
+                event.button.clicks,
+                event.button.x,
+                event.button.y,
+            });
+            continue;
+        }
+
+        if (event.type == SDL_EVENT_MOUSE_WHEEL && event.wheel.windowID == m_implementation->id) {
+            m_implementation->events.push_back(WindowEvent{
+                WindowEventType::MouseWheel,
+                0,
+                0,
+                0,
+                static_cast<std::uint32_t>(event.wheel.direction),
+                event.wheel.x,
+                event.wheel.y,
+                event.wheel.mouse_x,
+                event.wheel.mouse_y,
+            });
         }
     }
 

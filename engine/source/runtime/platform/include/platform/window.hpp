@@ -18,12 +18,24 @@ struct PlatformError {
 enum class WindowEventType : std::uint8_t {
     CloseRequested,
     Resized,
+    KeyDown,
+    KeyUp,
+    MouseMotion,
+    MouseButtonDown,
+    MouseButtonUp,
+    MouseWheel,
 };
 
 struct WindowEvent {
     WindowEventType type = WindowEventType::CloseRequested;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t code = 0;
+    std::uint32_t modifiers = 0;
+    float x = 0.0F;
+    float y = 0.0F;
+    float xrel = 0.0F;
+    float yrel = 0.0F;
 };
 
 struct WindowDescriptor {

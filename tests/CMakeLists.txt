@@ -36,6 +36,7 @@ add_test(NAME public-headers COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_
     --target StarPublicHeadersCheck --config "$<CONFIG>")
 
 find_package(Threads REQUIRED)
+find_package(SDL3 3.2 REQUIRED CONFIG)
 target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_tests.cpp delegate_tests.cpp global_allocator_tests.cpp math_tests.cpp small_vector_tests.cpp)
 target_sources(StarCoreTests PRIVATE spsc_queue_tests.cpp)
 target_link_libraries(StarCoreTests PRIVATE Threads::Threads)
@@ -46,7 +47,7 @@ set_target_properties(StarJobsWorkerCountTests PROPERTIES OUTPUT_NAME "star-jobs
 add_test(NAME jobs-worker-count COMMAND StarJobsWorkerCountTests)
 set_tests_properties(jobs-worker-count PROPERTIES ENVIRONMENT "STAR_JOBS_WORKERS=2")
 target_sources(StarPlatformTests PRIVATE platform_thread_tests.cpp)
-target_link_libraries(StarPlatformTests PRIVATE Threads::Threads)
+target_link_libraries(StarPlatformTests PRIVATE Threads::Threads SDL3::SDL3)
 
 add_library(StarPlatformTestModule MODULE platform_test_module.cpp)
 set_target_properties(StarPlatformTestModule PROPERTIES OUTPUT_NAME star-platform-test-module)
