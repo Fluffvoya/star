@@ -2,12 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
-#include <fstream>
 #include <iostream>
-#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string_view>
+#include <utility>
 
 namespace star::header_tool {
 
@@ -42,38 +41,123 @@ unsigned offset(CXSourceLocation location) {
 struct Marker {
     std::string macro;
     std::string metadata;
+    CXSourceLocation location;
     unsigned start;
-    unsigned end;
 };
 
 struct Context {
-    std::string source;
+    CXFile file;
+    std::string_view source;
     std::vector<Marker> markers;
     std::vector<Declaration> &declarations;
     bool valid = true;
 };
 
-bool onlyTrivia(std::string_view text) {
-    while (!text.empty()) {
-        if (std::isspace(static_cast<unsigned char>(text.front())) != 0) {
-            text.remove_prefix(1);
-        } else if (text.starts_with("//")) {
-            const auto end = text.find('\n');
-            if (end == std::string_view::npos) {
-                return true;
-            }
-            text.remove_prefix(end);
-        } else if (text.starts_with("/*")) {
-            const auto end = text.find("*/", 2);
-            if (end == std::string_view::npos) {
-                return false;
-            }
-            text.remove_prefix(end + 2);
-        } else {
-            return false;
-        }
+bool isInFile(CXSourceLocation location, CXFile file) {
+    CXFile actual = nullptr;
+    clang_getExpansionLocation(location, &actual, nullptr, nullptr, nullptr);
+    return actual != nullptr && clang_File_isEqual(actual, file) != 0;
+}
+
+bool isStdType(CXType type, std::string_view name) {
+    const auto decl = clang_getTypeDeclaration(type);
+    if (takeString(clang_getCursorSpelling(decl)) != name) {
+        return false;
     }
-    return true;
+    auto scope = clang_getCursorSemanticParent(decl);
+    while (clang_Cursor_isInlineNamespace(scope)) {
+        scope = clang_getCursorSemanticParent(scope);
+    }
+    return takeString(clang_getCursorSpelling(scope)) == "std" &&
+           clang_getCursorKind(clang_getCursorSemanticParent(scope)) == CXCursor_TranslationUnit;
+}
+
+CXType templateType(CXType type, unsigned index) {
+    return clang_getCanonicalType(clang_Type_getTemplateArgumentAsType(type, index));
+}
+
+bool isString(CXType type) {
+    if (!isStdType(type, "basic_string")) {
+        return false;
+    }
+    const auto character = templateType(type, 0);
+    const auto traits = templateType(type, 1);
+    const auto allocator = templateType(type, 2);
+    return (character.kind == CXType_Char_S || character.kind == CXType_Char_U) && isStdType(traits, "char_traits") &&
+           clang_equalTypes(character, templateType(traits, 0)) && isStdType(allocator, "allocator") &&
+           clang_equalTypes(character, templateType(allocator, 0));
+}
+
+bool isFilesystemPath(CXType type) {
+    const auto decl = clang_getTypeDeclaration(type);
+    if (takeString(clang_getCursorSpelling(decl)) != "path") {
+        return false;
+    }
+    auto scope = clang_getCursorSemanticParent(decl);
+    while (clang_Cursor_isInlineNamespace(scope)) {
+        scope = clang_getCursorSemanticParent(scope);
+    }
+    if (takeString(clang_getCursorSpelling(scope)) != "filesystem") {
+        return false;
+    }
+    scope = clang_getCursorSemanticParent(scope);
+    while (clang_Cursor_isInlineNamespace(scope)) {
+        scope = clang_getCursorSemanticParent(scope);
+    }
+    return takeString(clang_getCursorSpelling(scope)) == "std" &&
+           clang_getCursorKind(clang_getCursorSemanticParent(scope)) == CXCursor_TranslationUnit;
+}
+
+// An empty name identifies a type handled directly by Reflection.
+std::optional<std::string> propertyType(CXType type) {
+    type = clang_getCanonicalType(type);
+    if (clang_isConstQualifiedType(type) || clang_isVolatileQualifiedType(type)) {
+        return std::nullopt;
+    }
+    switch (type.kind) {
+    case CXType_Bool:
+    case CXType_Char_U:
+    case CXType_UChar:
+    case CXType_UShort:
+    case CXType_UInt:
+    case CXType_ULong:
+    case CXType_ULongLong:
+    case CXType_Char_S:
+    case CXType_SChar:
+    case CXType_Short:
+    case CXType_Int:
+    case CXType_Long:
+    case CXType_LongLong:
+    case CXType_Float:
+    case CXType_Double:
+    case CXType_LongDouble:
+        return std::string{};
+    case CXType_Record:
+    case CXType_Enum:
+        break;
+    default:
+        return std::nullopt;
+    }
+
+    const auto name = qualifiedName(clang_getTypeDeclaration(type));
+    if (isString(type) || isFilesystemPath(type) || name == "star::Guid" || name == "star::Name" ||
+        name == "star::math::Vector2" || name == "star::math::Vector3" || name == "star::math::Quaternion") {
+        return std::string{};
+    }
+    if (isStdType(type, "vector") || isStdType(type, "deque") || isStdType(type, "array")) {
+        const auto element = templateType(type, 0);
+        if (element.kind == CXType_Bool && isStdType(type, "vector")) {
+            return std::nullopt;
+        }
+        return propertyType(element);
+    }
+    if (isStdType(type, "map") || isStdType(type, "unordered_map")) {
+        return isString(templateType(type, 0)) ? propertyType(templateType(type, 1)) : std::nullopt;
+    }
+    if (name.empty() || clang_Type_getNumTemplateArguments(type) >= 0) {
+        return std::nullopt;
+    }
+    return name;
 }
 
 std::optional<std::string> memberMetadata(CXCursor cursor, std::string_view prefix) {
@@ -98,68 +182,80 @@ std::optional<std::string> memberMetadata(CXCursor cursor, std::string_view pref
     return annotation.value;
 }
 
-void diagnose(CXCursor cursor, std::string_view message) {
+std::string sourcePosition(CXSourceLocation location) {
     CXFile file = nullptr;
     unsigned line = 0;
     unsigned column = 0;
-    clang_getExpansionLocation(clang_getCursorLocation(cursor), &file, &line, &column, nullptr);
-    std::cerr << takeString(clang_getFileName(file)) << ':' << line << ':' << column << ": error: " << message << '\n';
+    clang_getExpansionLocation(location, &file, &line, &column, nullptr);
+    return takeString(clang_getFileName(file)) + ':' + std::to_string(line) + ':' + std::to_string(column);
 }
 
-CXChildVisitResult visitType(CXCursor cursor, CXCursor, CXClientData data) {
-    auto &context = *static_cast<Context *>(data);
-    if (!clang_Location_isFromMainFile(clang_getCursorLocation(cursor))) {
-        return CXChildVisit_Continue;
+void diagnose(CXSourceLocation location, std::string_view message) {
+    std::cerr << sourcePosition(location) << ": error: " << message << '\n';
+}
+
+void diagnose(CXCursor cursor, std::string_view message) { diagnose(clang_getCursorLocation(cursor), message); }
+
+const Marker *markerAt(const Context &context, CXSourceLocation location) {
+    if (!isInFile(location, context.file)) {
+        return nullptr;
     }
-    const auto kind = clang_getCursorKind(cursor);
-    if (kind == CXCursor_Namespace) {
-        return CXChildVisit_Recurse;
-    }
-    std::string_view macro;
-    std::string_view type_kind;
-    switch (kind) {
-    case CXCursor_ClassDecl:
-        macro = "STAR_CLASS";
+    const auto start = offset(location);
+    const auto marker = std::ranges::lower_bound(context.markers, start, {}, &Marker::start);
+    return marker != context.markers.end() && marker->start == start ? &*marker : nullptr;
+}
+
+bool hasGeneratedBody(CXCursor cursor, const Context &context) {
+    struct Body {
+        const Context &context;
+        bool found = false;
+    } body{context};
+    clang_visitChildren(
+        cursor,
+        [](CXCursor child, CXCursor, CXClientData data) {
+            auto &state = *static_cast<Body *>(data);
+            if (clang_getCursorKind(child) == CXCursor_FriendDecl) {
+                const auto *marker = markerAt(state.context, clang_getCursorLocation(child));
+                if (marker != nullptr && marker->macro == "STAR_GENERATED_BODY") {
+                    state.found = true;
+                    return CXChildVisit_Break;
+                }
+            }
+            return CXChildVisit_Continue;
+        },
+        &body);
+    return body.found;
+}
+
+void collectType(CXCursor cursor, const Marker &marker, Context &context) {
+    const auto cursor_kind = clang_getCursorKind(cursor);
+    std::string type_kind;
+    if (cursor_kind == CXCursor_ClassDecl && marker.macro == "STAR_CLASS") {
         type_kind = "Class";
-        break;
-    case CXCursor_StructDecl:
-        macro = "STAR_STRUCT";
+    } else if (cursor_kind == CXCursor_StructDecl && marker.macro == "STAR_STRUCT") {
         type_kind = "Struct";
-        break;
-    case CXCursor_EnumDecl:
-        macro = "STAR_ENUM";
+    } else if (cursor_kind == CXCursor_EnumDecl && marker.macro == "STAR_ENUM") {
         type_kind = "Enum";
-        break;
-    default:
-        return CXChildVisit_Continue;
+    }
+    if (type_kind.empty() || !clang_isCursorDefinition(cursor)) {
+        diagnose(marker.location, marker.macro + " must precede a matching type definition");
+        context.valid = false;
+        return;
     }
 
-    const auto range = clang_getCursorExtent(cursor);
-    const auto start = offset(clang_getRangeStart(range));
-    const auto end = offset(clang_getRangeEnd(range));
-    const auto marker =
-        std::ranges::find_if(context.markers.rbegin(), context.markers.rend(), [&](const Marker &entry) {
-            return entry.macro == macro && entry.end <= start &&
-                   onlyTrivia(std::string_view(context.source).substr(entry.end, start - entry.end));
-        });
-    if (marker == context.markers.rend() || !clang_isCursorDefinition(cursor)) {
-        return CXChildVisit_Recurse;
-    }
     const std::string name = qualifiedName(cursor);
     if (name.empty()) {
         diagnose(cursor, "reflected types require a named namespace or global scope");
         context.valid = false;
-        return CXChildVisit_Continue;
+        return;
     }
-    const bool has_body = std::ranges::any_of(context.markers, [&](const Marker &entry) {
-        return entry.macro == "STAR_GENERATED_BODY" && entry.start > start && entry.end < end;
-    });
-    if (kind == CXCursor_ClassDecl && !has_body) {
+    const bool has_body = hasGeneratedBody(cursor, context);
+    if (cursor_kind == CXCursor_ClassDecl && !has_body) {
         diagnose(cursor, "STAR_CLASS requires STAR_GENERATED_BODY()");
         context.valid = false;
     }
 
-    Declaration declaration{name, std::string(type_kind), marker->metadata, {}, {}, {}};
+    Declaration declaration{name, std::move(type_kind), marker.metadata, {}, {}, {}};
     struct MemberContext {
         Declaration &declaration;
         bool has_body;
@@ -181,10 +277,20 @@ CXChildVisitResult visitType(CXCursor cursor, CXCursor, CXClientData data) {
                     state.valid = false;
                 }
                 state.declaration.base = base;
-            } else if (member_kind == CXCursor_FieldDecl || member_kind == CXCursor_CXXMethod) {
-                const bool function = member_kind == CXCursor_CXXMethod;
-                auto metadata = memberMetadata(child, function ? "star:function:" : "star:property:");
+            } else if (clang_isDeclaration(member_kind)) {
+                auto metadata = memberMetadata(child, "star:property:");
+                const bool function = !metadata.has_value();
+                if (function) {
+                    metadata = memberMetadata(child, "star:function:");
+                }
                 if (!metadata) {
+                    return CXChildVisit_Continue;
+                }
+                if ((!function && member_kind != CXCursor_FieldDecl) ||
+                    (function && member_kind != CXCursor_CXXMethod)) {
+                    diagnose(child, function ? "STAR_FUNCTION requires a method"
+                                             : "STAR_PROPERTY requires a non-static data member");
+                    state.valid = false;
                     return CXChildVisit_Continue;
                 }
                 if (!state.has_body && clang_getCXXAccessSpecifier(child) != CX_CXXPublic) {
@@ -208,31 +314,57 @@ CXChildVisitResult visitType(CXCursor cursor, CXCursor, CXClientData data) {
                     state.valid = false;
                     return CXChildVisit_Continue;
                 }
-                const auto member_decl = clang_getTypeDeclaration(member_type);
-                const auto type_name = qualifiedName(member_decl);
-                const auto template_name = takeString(clang_getCursorSpelling(member_decl));
-                std::string element_type;
-                if (type_name.starts_with("std::")) {
-                    int index = -1;
-                    if (template_name == "vector" || template_name == "array") {
-                        index = 0;
-                    } else if (template_name == "map" || template_name == "unordered_map") {
-                        index = 1;
-                    }
-                    if (index >= 0) {
-                        const auto element =
-                            clang_Type_getTemplateArgumentAsType(member_type, static_cast<unsigned>(index));
-                        element_type = qualifiedName(clang_getTypeDeclaration(clang_getCanonicalType(element)));
-                    }
+                const auto nested = function ? std::optional<std::string>{std::string{}} : propertyType(member_type);
+                const auto spelled = takeString(clang_getTypeSpelling(clang_getCursorType(child)));
+                if (!nested) {
+                    diagnose(child, "unsupported reflected property type '" + spelled + "'");
+                    state.valid = false;
+                    return CXChildVisit_Continue;
                 }
-                state.declaration.members.push_back(
-                    {member_name, type_name, std::move(*metadata), function, std::move(element_type)});
+                state.declaration.members.push_back({member_name, std::move(*metadata), function, *nested, spelled,
+                                                     sourcePosition(clang_getCursorLocation(child))});
             }
             return CXChildVisit_Continue;
         },
         &members);
     context.declarations.push_back(std::move(declaration));
-    return CXChildVisit_Recurse;
+}
+
+void visitScope(CXCursor scope, Context &context) {
+    struct Scope {
+        Context &context;
+        const Marker *pending = nullptr;
+    } state{context};
+    clang_visitChildren(
+        scope,
+        [](CXCursor child, CXCursor, CXClientData data) {
+            auto &scope_state = *static_cast<Scope *>(data);
+            auto &current = scope_state.context;
+            const auto kind = clang_getCursorKind(child);
+            const auto location = clang_getCursorLocation(child);
+            if (!clang_isDeclaration(kind) || !isInFile(location, current.file)) {
+                return CXChildVisit_Continue;
+            }
+
+            const auto *previous = std::exchange(scope_state.pending, nullptr);
+            if (previous != nullptr) {
+                collectType(child, *previous, current);
+            }
+            if (kind == CXCursor_StaticAssert) {
+                if (const auto *marker = markerAt(current, location); marker != nullptr) {
+                    scope_state.pending = marker;
+                }
+            } else if (kind == CXCursor_Namespace || kind == CXCursor_LinkageSpec || kind == CXCursor_ClassDecl ||
+                       kind == CXCursor_StructDecl) {
+                visitScope(child, current);
+            }
+            return CXChildVisit_Continue;
+        },
+        &state);
+    if (state.pending != nullptr) {
+        diagnose(state.pending->location, state.pending->macro + " must precede a type definition in the same scope");
+        context.valid = false;
+    }
 }
 
 std::string literal(std::string_view text) {
@@ -323,17 +455,20 @@ std::string escapeDependency(std::string_view path) {
 
 bool collectDeclarations(CXTranslationUnit unit, const std::filesystem::path &path,
                          std::vector<Declaration> &declarations) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
+    const auto file = clang_getFile(unit, path.string().c_str());
+    std::size_t size = 0;
+    const char *source = file == nullptr ? nullptr : clang_getFileContents(unit, file, &size);
+    if (source == nullptr) {
+        std::cerr << path << ":1:1: error: unable to read reflection input\n";
         return false;
     }
-    Context context{std::string(std::istreambuf_iterator<char>(input), {}), {}, declarations};
+    Context context{file, std::string_view(source, size), {}, declarations};
     const auto cursor = clang_getTranslationUnitCursor(unit);
     clang_visitChildren(
         cursor,
         [](CXCursor child, CXCursor, CXClientData data) {
             if (clang_getCursorKind(child) != CXCursor_MacroExpansion ||
-                !clang_Location_isFromMainFile(clang_getCursorLocation(child))) {
+                !isInFile(clang_getCursorLocation(child), static_cast<Context *>(data)->file)) {
                 return CXChildVisit_Continue;
             }
             auto &state = *static_cast<Context *>(data);
@@ -349,15 +484,33 @@ bool collectDeclarations(CXTranslationUnit unit, const std::filesystem::path &pa
             const auto open = invocation.find('(');
             const auto close = invocation.rfind(')');
             if (open != std::string_view::npos && close > open && close != std::string_view::npos) {
-                state.markers.push_back(
-                    {std::move(macro), std::string(invocation.substr(open + 1, close - open - 1)), start, end});
+                state.markers.push_back({std::move(macro), std::string(invocation.substr(open + 1, close - open - 1)),
+                                         clang_getCursorLocation(child), start});
             }
             return CXChildVisit_Continue;
         },
         &context);
     std::ranges::sort(context.markers, {}, &Marker::start);
-    clang_visitChildren(cursor, &visitType, &context);
+    visitScope(cursor, context);
     return context.valid;
+}
+
+bool validateProperties(const std::vector<Declaration> &declarations) {
+    std::set<std::string_view, std::less<>> names;
+    for (const auto &declaration : declarations) {
+        names.insert(declaration.name);
+    }
+    bool valid = true;
+    for (const auto &declaration : declarations) {
+        for (const auto &member : declaration.members) {
+            if (!member.nested_type.empty() && !names.contains(member.nested_type)) {
+                std::cerr << member.location << ": error: unsupported reflected property type '" << member.spelled_type
+                          << "' (" << member.nested_type << " has no reflection metadata in this module)\n";
+                valid = false;
+            }
+        }
+    }
+    return valid;
 }
 
 std::string generateHeader(const std::string &module) {
@@ -402,7 +555,7 @@ std::string generateSource(const std::string &module, std::uint64_t owner, const
                     output << " | PropertyFlags::" << flag;
                 }
             }
-            const auto nested = typeExpression(member.element_type.empty() ? member.type : member.element_type);
+            const auto nested = typeExpression(member.nested_type);
             output << ", nullptr, " << stringOption(member.metadata, "FormerName")
                    << "); property.metadata = " << literal(member.metadata) << ";";
             if (nested != "nullptr") {

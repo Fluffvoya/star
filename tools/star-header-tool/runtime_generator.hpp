@@ -12,10 +12,11 @@ namespace star::header_tool {
 
 struct Member {
     std::string name;
-    std::string type;
     std::string metadata;
     bool function = false;
-    std::string element_type;
+    std::string nested_type;
+    std::string spelled_type;
+    std::string location;
 };
 
 struct Declaration {
@@ -29,6 +30,7 @@ struct Declaration {
 
 bool collectDeclarations(CXTranslationUnit unit, const std::filesystem::path &path,
                          std::vector<Declaration> &declarations);
+bool validateProperties(const std::vector<Declaration> &declarations);
 std::string generateHeader(const std::string &module);
 std::string generateSource(const std::string &module, std::uint64_t owner, const std::filesystem::path &header,
                            const std::vector<std::filesystem::path> &inputs, std::vector<Declaration> declarations);

@@ -365,6 +365,9 @@ int main(int argc, char **argv) try {
                 return 1;
             }
         }
+        if (!star::header_tool::validateProperties(declarations)) {
+            return 1;
+        }
         const auto source = star::header_tool::generateSource(options.module, options.owner, options.output,
                                                               options.inputs, std::move(declarations));
         return writeIfChanged(options.output, star::header_tool::generateHeader(options.module)) &&

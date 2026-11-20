@@ -25,11 +25,13 @@ set(marked_header [=[
 
 #if REFLECT_SAMPLE
 STAR_STRUCT()
+#else
+struct InactiveBranch {};
+#endif
 struct IncrementalSample {
     STAR_PROPERTY()
     int value;
 };
-#endif
 ]=])
 
 file(WRITE "${input}" "${marked_header}")
@@ -90,14 +92,43 @@ file(WRITE "${input}" "${unmarked_header}")
 rebuild(TRUE FALSE)
 rebuild(FALSE FALSE)
 
+function(expectDiagnostic line pattern)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" --build "${work}/build" --target generate
+        RESULT_VARIABLE status
+        OUTPUT_VARIABLE output
+        ERROR_VARIABLE diagnostics
+    )
+    if(status EQUAL 0 OR NOT "${output}\n${diagnostics}" MATCHES "input.hpp:${line}:[0-9]+: error: ${pattern}")
+        message(FATAL_ERROR "Expected a source diagnostic: ${output}\n${diagnostics}")
+    endif()
+endfunction()
+
 file(WRITE "${input}" "#include \"reflection/annotations.hpp\"\nSTAR_CLASS()\nclass MissingBody {};\n")
-execute_process(
-    COMMAND "${CMAKE_COMMAND}" --build "${work}/build" --target generate
-    RESULT_VARIABLE status
-    OUTPUT_VARIABLE output
-    ERROR_VARIABLE diagnostics
-)
-if(status EQUAL 0 OR NOT "${output}\n${diagnostics}" MATCHES
-    "input.hpp:3:[0-9]+: error: STAR_CLASS requires STAR_GENERATED_BODY")
-    message(FATAL_ERROR "Expected a source diagnostic: ${output}\n${diagnostics}")
+expectDiagnostic(3 "STAR_CLASS requires STAR_GENERATED_BODY")
+
+file(SHA256 "${generated}" valid_generated)
+file(WRITE "${input}" [=[
+#include "reflection/annotations.hpp"
+struct Unregistered {};
+STAR_STRUCT()
+struct Invalid {
+    STAR_PROPERTY() int *pointer = nullptr;
+};
+]=])
+expectDiagnostic(5 "unsupported reflected property type.*int")
+
+file(WRITE "${input}" [=[
+#include "reflection/annotations.hpp"
+struct Unregistered {};
+STAR_STRUCT()
+struct Invalid {
+    STAR_PROPERTY() Unregistered record;
+};
+]=])
+expectDiagnostic(5 "unsupported reflected property type.*Unregistered")
+
+file(SHA256 "${generated}" generated_after_failure)
+if(NOT valid_generated STREQUAL generated_after_failure)
+    message(FATAL_ERROR "Invalid input replaced a generated file")
 endif()
