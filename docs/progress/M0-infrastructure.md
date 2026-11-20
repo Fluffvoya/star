@@ -88,6 +88,11 @@
 - 新增统一系统分配入口、对齐分配和 `STAR_ALLOCATOR` 选择解析。
 - 详细范围和限制见 [M0 Core 全局分配器选择阶段报告](M0-global-allocator.md)。
 
+### Jobs 外部任务适配（后续增量）
+
+- 新增供外部库提交单任务回调并等待完成的接口。
+- 详细范围和限制见 [M0 Jobs 外部任务适配阶段报告](M0-external-tasks.md)。
+
 ## 本地验证
 
 验证环境：
@@ -138,7 +143,7 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 
 ## 下一步
 
-1. 抽象外部物理任务系统适配层，为 Jolt 和 Box2D 接入预留稳定接口。
+1. 在接入 Jolt 和 Box2D 时实现各自的任务依赖、范围划分和工作线程索引约定。
 2. 补齐 Core 的其余容器和全局分配设施，逐步覆盖 M0 清单。
 3. 确定 vcpkg baseline 与静态依赖 triplet，使 Profile/Shipping 的依赖策略可复现。
 4. 在 Windows x64 和 macOS arm64 实机执行本地预设、测试和窗口示例。
