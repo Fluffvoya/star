@@ -2,7 +2,9 @@
 
 #include "platform/platform.hpp"
 
+#include <algorithm>
 #include <filesystem>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -92,6 +94,43 @@ STAR_TEST(dynamicLibraryReportsInvalidPathsAndSymbols) {
     STAR_CHECK(moved.isOpen());
     const auto closed_symbol = library->findFunction("starTestNextValue");
     STAR_CHECK(!closed_symbol.has_value() && closed_symbol.error().code == DynamicLibraryErrorCode::NotOpen);
+}
+
+STAR_TEST(mappedFileReadsBytesAndTransfersOwnership) {
+    constexpr std::string_view k_contents = "Star mapping\n";
+    const auto expected_bytes = std::as_bytes(std::span(k_contents));
+
+    auto original = star::MappedFile::open("star-platform-map.txt");
+    STAR_CHECK(original.has_value());
+    const auto original_view = original->getBytes();
+    STAR_CHECK(std::ranges::equal(original_view, expected_bytes));
+
+    star::MappedFile moved(std::move(*original));
+    STAR_CHECK(original->getBytes().empty());
+    STAR_CHECK(moved.getBytes().data() == original_view.data());
+
+    auto replacement = star::MappedFile::open("star-platform-map.txt");
+    STAR_CHECK(replacement.has_value());
+    *replacement = std::move(moved);
+    STAR_CHECK(moved.getBytes().empty());
+    STAR_CHECK(replacement->getBytes().data() == original_view.data());
+    STAR_CHECK(std::ranges::equal(original_view, expected_bytes));
+}
+
+STAR_TEST(mappedFileAcceptsEmptyFilesAndRejectsInvalidInputs) {
+    using namespace std::string_view_literals;
+
+    const auto empty = star::MappedFile::open("star-platform-map-empty.txt");
+    STAR_CHECK(empty.has_value() && empty->getBytes().empty());
+
+    const auto invalid_path = star::MappedFile::open("star-platform-map.txt\0suffix"sv);
+    STAR_CHECK(!invalid_path.has_value() && invalid_path.error() == std::errc::invalid_argument);
+
+    const auto missing_file = star::MappedFile::open("star-platform-map.missing");
+    STAR_CHECK(!missing_file.has_value() && missing_file.error() == std::errc::no_such_file_or_directory);
+
+    const auto directory = star::MappedFile::open(".");
+    STAR_CHECK(!directory.has_value() && directory.error() == std::errc::operation_not_supported);
 }
 
 } // namespace
