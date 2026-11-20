@@ -3,6 +3,7 @@ project(StarEngine VERSION 0.1.0 DESCRIPTION "Star Engine" LANGUAGES CXX)
 
 option(STAR_BUILD_SAMPLES "Build sample programs" ON)
 option(STAR_BUILD_TESTS "Build local tests" ON)
+option(STAR_BUILD_HEADER_TOOL "Build StarHeaderTool" ON)
 option(STAR_MONOLITHIC "Build engine modules as static libraries" OFF)
 option(STAR_SHIPPING_DEPS "Use shipping dependency policy" OFF)
 
@@ -70,8 +71,13 @@ endif()
 include(cmake/StarModule.cmake)
 include(cmake/Dependencies.cmake)
 add_subdirectory(engine/source/runtime/core)
+add_subdirectory(engine/source/runtime/reflection)
 add_subdirectory(engine/source/runtime/jobs)
 add_subdirectory(engine/source/runtime/platform)
+
+if(STAR_BUILD_HEADER_TOOL)
+    add_subdirectory(tools/star-header-tool)
+endif()
 
 if(STAR_BUILD_SAMPLES)
     add_subdirectory(samples/hello-window)
