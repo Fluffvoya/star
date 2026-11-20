@@ -88,6 +88,7 @@
 - 新增统一系统分配入口、对齐分配和 `STAR_ALLOCATOR` 选择解析。
 - 详细范围和限制见 [M0 Core 全局分配器选择阶段报告](M0-global-allocator.md)。
 - 发布依赖与进程级全局分配入口见 [M0 发布依赖与全局分配器阶段报告](M0-shipping-dependencies.md)。
+- 示例启动器的配置入口见 [M0 配置启动入口阶段报告](M0-config-launcher.md)。
 
 ### Jobs 外部任务适配（后续增量）
 
@@ -173,7 +174,7 @@ Jobs 后续增量的 `jobs-tests` 已在相同 Linux 预设中通过。
 ## 尚未完成
 
 - M0 的整体验收尚未完成；Windows x64 和 macOS arm64 仅声明了预设，尚未实机构建和运行。
-- 启动器尚待接入配置路径与命令行入口。
+- 正式启动器尚待接入默认配置路径，当前窗口示例已接入配置文件和命令行覆盖。
 - 日志目前只输出到控制台，文件、编辑器面板、平台调试输出和后台写出尚未实现。
 - Platform 尚未覆盖文件监视和崩溃处理。
 - `STAR_SHIPPING_DEPS` 已提供 vcpkg manifest 和固定 baseline，具体平台的静态 triplet 仍需在目标主机配置。

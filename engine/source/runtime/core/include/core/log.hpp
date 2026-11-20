@@ -3,6 +3,8 @@
 #include "core/export.hpp"
 #include "core/name.hpp"
 
+#include <expected>
+#include <filesystem>
 #include <format>
 #include <string_view>
 #include <utility>
@@ -31,6 +33,12 @@ class STAR_CORE_API LogCategory final {
 };
 
 namespace log {
+
+enum class SinkError : unsigned char { FileOpen };
+
+STAR_CORE_API std::expected<void, SinkError> setFileSink(const std::filesystem::path &path) noexcept;
+STAR_CORE_API void clearFileSink() noexcept;
+STAR_CORE_API void flush() noexcept;
 
 STAR_CORE_API void write(const LogCategory &category, LogLevel level, std::string_view message);
 

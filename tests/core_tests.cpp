@@ -5,6 +5,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -51,6 +54,23 @@ STAR_TEST(nameInternsAndComparesById) {
     STAR_CHECK(first.getId() == second.getId());
     STAR_CHECK(first.getString() == "PlayerCharacter");
     STAR_CHECK(star::Name{}.isEmpty());
+}
+
+STAR_TEST(logFileSinkWritesFormattedLines) {
+    const auto path = std::filesystem::temp_directory_path() / "star-core-log-test.log";
+    std::error_code error;
+    std::filesystem::remove(path, error);
+
+    const star::LogCategory category("CoreTest", star::LogLevel::Trace);
+    STAR_CHECK(star::log::setFileSink(path));
+    star::log::info(category, "message={}", 42);
+    star::log::flush();
+    star::log::clearFileSink();
+
+    std::ifstream file(path);
+    const std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    STAR_CHECK(contents.find("message=42") != std::string::npos);
+    std::filesystem::remove(path, error);
 }
 
 STAR_TEST(slotMapKeepsHandlesAcrossDenseMovesAndRejectsStaleHandles) {

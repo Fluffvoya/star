@@ -4,8 +4,12 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <span>
+#include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -30,10 +34,51 @@ const star::LogCategory k_log_category("HelloWindow", k_category_level);
     return 0;
 }
 
+[[nodiscard]] std::filesystem::path parsePathOption(int argc, char **argv, std::string_view prefix) {
+    for (int index = 1; index < argc; ++index) {
+        const std::string_view argument(argv[index]);
+        if (argument.starts_with(prefix)) {
+            return std::filesystem::path(argument.substr(prefix.size()));
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] bool loadConfiguration(int argc, char **argv) {
+    std::vector<std::string_view> arguments;
+    arguments.reserve(static_cast<std::size_t>(argc > 1 ? argc - 1 : 0));
+    for (int index = 1; index < argc; ++index) {
+        arguments.emplace_back(argv[index]);
+    }
+
+    star::ConfigFiles files;
+    files.engine = parsePathOption(argc, argv, "--engine-config=");
+    files.project = parsePathOption(argc, argv, "--project-config=");
+    files.platform = parsePathOption(argc, argv, "--platform-config=");
+    files.user = parsePathOption(argc, argv, "--user-config=");
+
+    const auto config = star::Config::load(files, std::span(arguments));
+    if (!config) {
+        star::log::error(k_log_category, "Configuration load failed at layer {}",
+                         static_cast<int>(config.error().layer));
+        return false;
+    }
+    if (const auto applied = config->applyCVars(); !applied) {
+        star::log::error(k_log_category, "Configuration CVar application failed: {}",
+                         static_cast<int>(applied.error()));
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
     const std::uint64_t frame_limit = parseFrameLimit(argc, argv);
+
+    if (!loadConfiguration(argc, argv)) {
+        return 1;
+    }
 
     auto platform = star::PlatformContext::initialize();
     if (!platform) {
