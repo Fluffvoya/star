@@ -27,6 +27,7 @@ using VkCommandBuffer = struct VkCommandBuffer_T *;
 using VkFence = struct VkFence_T *;
 using VkBuffer = struct VkBuffer_T *;
 using VkDeviceMemory = struct VkDeviceMemory_T *;
+using VkImage = struct VkImage_T *;
 using VkResult = std::int32_t;
 
 constexpr VkResult vkSuccess = 0;
@@ -44,6 +45,7 @@ constexpr std::uint32_t vkStructureTypeCommandBufferAllocateInfo = 40;
 constexpr std::uint32_t vkStructureTypeCommandBufferBeginInfo = 42;
 constexpr std::uint32_t vkStructureTypeMemoryAllocateInfo = 5;
 constexpr std::uint32_t vkStructureTypeBufferCreateInfo = 12;
+constexpr std::uint32_t vkStructureTypeImageCreateInfo = 14;
 constexpr VkFlags vkQueueGraphicsBit = 1U;
 constexpr VkFlags vkQueueComputeBit = 2U;
 constexpr VkFlags vkQueueTransferBit = 4U;
@@ -155,6 +157,30 @@ struct VkBufferCreateInfo {
     const std::uint32_t *pQueueFamilyIndices;
 };
 
+struct VkExtent3D {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t depth;
+};
+
+struct VkImageCreateInfo {
+    std::uint32_t sType;
+    const void *pNext;
+    VkFlags flags;
+    std::uint32_t imageType;
+    std::uint32_t format;
+    VkExtent3D extent;
+    std::uint32_t mipLevels;
+    std::uint32_t arrayLayers;
+    std::uint32_t samples;
+    std::uint32_t tiling;
+    VkFlags usage;
+    std::uint32_t sharingMode;
+    std::uint32_t queueFamilyIndexCount;
+    const std::uint32_t *pQueueFamilyIndices;
+    std::uint32_t initialLayout;
+};
+
 struct VkMemoryRequirements {
     std::uint64_t size;
     std::uint64_t alignment;
@@ -227,6 +253,12 @@ using VkAllocateMemory = VkResult (*)(VkDevice device, const VkMemoryAllocateInf
 using VkFreeMemory = void (*)(VkDevice device, VkDeviceMemory memory, const void *allocator);
 using VkBindBufferMemory = VkResult (*)(VkDevice device, VkBuffer buffer, VkDeviceMemory memory,
                                         std::uint64_t memoryOffset);
+using VkCreateImage = VkResult (*)(VkDevice device, const VkImageCreateInfo *createInfo, const void *allocator,
+                                    VkImage *image);
+using VkDestroyImage = void (*)(VkDevice device, VkImage image, const void *allocator);
+using VkGetImageMemoryRequirements = void (*)(VkDevice device, VkImage image, VkMemoryRequirements *requirements);
+using VkBindImageMemory = VkResult (*)(VkDevice device, VkImage image, VkDeviceMemory memory,
+                                       std::uint64_t memoryOffset);
 using VkGetPhysicalDeviceMemoryProperties = void (*)(VkPhysicalDevice physicalDevice,
                                                       VkPhysicalDeviceMemoryProperties *properties);
 
@@ -550,6 +582,85 @@ std::expected<void, VulkanProbeError> VulkanContext::createTransientBuffer(std::
     }
     freeMemory(m_impl->device, memory, nullptr);
     cleanupBuffer();
+    return {};
+}
+
+std::expected<void, VulkanProbeError> VulkanContext::createTransientTexture(std::uint32_t width,
+                                                                              std::uint32_t height) noexcept {
+    if (width == 0 || height == 0 || !isValid() || m_impl->getDeviceProcAddr == nullptr ||
+        m_impl->getInstanceProcAddr == nullptr || m_impl->physicalDevice == nullptr) {
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+    const auto createImage = reinterpret_cast<VkCreateImage>(m_impl->getDeviceProcAddr(m_impl->device, "vkCreateImage"));
+    const auto destroyImage =
+        reinterpret_cast<VkDestroyImage>(m_impl->getDeviceProcAddr(m_impl->device, "vkDestroyImage"));
+    const auto getImageMemoryRequirements = reinterpret_cast<VkGetImageMemoryRequirements>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkGetImageMemoryRequirements"));
+    const auto allocateMemory =
+        reinterpret_cast<VkAllocateMemory>(m_impl->getDeviceProcAddr(m_impl->device, "vkAllocateMemory"));
+    const auto freeMemory = reinterpret_cast<VkFreeMemory>(m_impl->getDeviceProcAddr(m_impl->device, "vkFreeMemory"));
+    const auto bindImageMemory = reinterpret_cast<VkBindImageMemory>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkBindImageMemory"));
+    const auto getMemoryProperties = reinterpret_cast<VkGetPhysicalDeviceMemoryProperties>(
+        m_impl->getInstanceProcAddr(m_impl->instance, "vkGetPhysicalDeviceMemoryProperties"));
+    if (createImage == nullptr || destroyImage == nullptr || getImageMemoryRequirements == nullptr ||
+        allocateMemory == nullptr || freeMemory == nullptr || bindImageMemory == nullptr || getMemoryProperties == nullptr) {
+        return std::unexpected(VulkanProbeError::MissingEntryPoint);
+    }
+
+    const VkImageCreateInfo imageInfo{
+        vkStructureTypeImageCreateInfo,
+        nullptr,
+        0,
+        1,
+        37,
+        VkExtent3D{width, height, 1},
+        1,
+        1,
+        1,
+        0,
+        0x00000006U,
+        0,
+        0,
+        nullptr,
+        0,
+    };
+    VkImage image = nullptr;
+    if (createImage(m_impl->device, &imageInfo, nullptr, &image) != vkSuccess || image == nullptr) {
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+    const auto cleanupImage = [&]() noexcept { destroyImage(m_impl->device, image, nullptr); };
+
+    VkMemoryRequirements requirements{};
+    getImageMemoryRequirements(m_impl->device, image, &requirements);
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    getMemoryProperties(m_impl->physicalDevice, &memoryProperties);
+    std::optional<std::uint32_t> memoryTypeIndex;
+    for (std::uint32_t index = 0; index < memoryProperties.memoryTypeCount; ++index) {
+        if ((requirements.memoryTypeBits & (1U << index)) != 0) {
+            memoryTypeIndex = index;
+            break;
+        }
+    }
+    if (!memoryTypeIndex.has_value()) {
+        cleanupImage();
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+
+    const VkMemoryAllocateInfo allocateInfo{
+        vkStructureTypeMemoryAllocateInfo, nullptr, requirements.size, *memoryTypeIndex};
+    VkDeviceMemory memory = nullptr;
+    if (allocateMemory(m_impl->device, &allocateInfo, nullptr, &memory) != vkSuccess || memory == nullptr) {
+        cleanupImage();
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+    if (bindImageMemory(m_impl->device, image, memory, 0) != vkSuccess) {
+        freeMemory(m_impl->device, memory, nullptr);
+        cleanupImage();
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+    freeMemory(m_impl->device, memory, nullptr);
+    cleanupImage();
     return {};
 }
 

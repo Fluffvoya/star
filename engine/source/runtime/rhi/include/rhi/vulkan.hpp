@@ -56,6 +56,8 @@ class STAR_RHI_API VulkanContext final {
     [[nodiscard]] bool isValid() const noexcept;
     [[nodiscard]] std::expected<void, VulkanProbeError> submitEmptyCommandBuffer() noexcept;
     [[nodiscard]] std::expected<void, VulkanProbeError> createTransientBuffer(std::uint64_t size) noexcept;
+    [[nodiscard]] std::expected<void, VulkanProbeError>
+    createTransientTexture(std::uint32_t width, std::uint32_t height) noexcept;
 
   private:
     struct Impl;

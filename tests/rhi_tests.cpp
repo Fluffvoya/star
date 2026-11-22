@@ -128,4 +128,17 @@ STAR_TEST(vulkanContextAllocatesAndReleasesTransientBufferMemory) {
     STAR_CHECK(context->createTransientBuffer(256));
 }
 
+STAR_TEST(vulkanContextAllocatesAndReleasesTransientTextureMemory) {
+    auto context = star::rhi::createVulkanContext();
+    if (!context) {
+        STAR_CHECK(context.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
+                   context.error() == star::rhi::VulkanProbeError::PhysicalDeviceUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::QueueFamilyUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::DeviceCreationFailed);
+        return;
+    }
+    STAR_CHECK(context->createTransientTexture(4, 4));
+}
+
 } // namespace
