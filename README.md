@@ -9,6 +9,8 @@ work.
 
 See the [M1 progress reports](docs/progress/m1/README.md) for reflection and serialization status.
 
+See the [M2 progress reports](docs/progress/m2/README.md) for RHI and Vulkan status.
+
 The current runtime modules provide Core utilities, an SDL3-backed Platform layer, and a Jobs scheduler with
 asynchronous runs, priority queues, parallel-for helpers, and nested-safe job waiting. See the
 [M0 Jobs progress report](docs/progress/M0-jobs.md) for its current API constraints and validation status.
