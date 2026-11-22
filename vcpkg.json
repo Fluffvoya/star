@@ -7,6 +7,9 @@
     "glm",
     "mimalloc",
     "sdl3",
+    { "name": "volk", "platform": "linux | windows" },
+    { "name": "vulkan-headers", "platform": "linux | windows" },
+    { "name": "vulkan-memory-allocator", "platform": "linux | windows" },
     "xxhash"
   ]
 }

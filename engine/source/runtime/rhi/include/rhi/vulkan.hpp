@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rhi/export.hpp"
+#include "rhi/rhi.hpp"
 
 #include <cstdint>
 #include <expected>
@@ -56,8 +56,8 @@ class STAR_RHI_API VulkanContext final {
     [[nodiscard]] bool isValid() const noexcept;
     [[nodiscard]] std::expected<void, VulkanProbeError> submitEmptyCommandBuffer() noexcept;
     [[nodiscard]] std::expected<void, VulkanProbeError> createTransientBuffer(std::uint64_t size) noexcept;
-    [[nodiscard]] std::expected<void, VulkanProbeError>
-    createTransientTexture(std::uint32_t width, std::uint32_t height) noexcept;
+    [[nodiscard]] std::expected<void, VulkanProbeError> createTransientTexture(std::uint32_t width,
+                                                                               std::uint32_t height) noexcept;
 
   private:
     struct Impl;
@@ -74,5 +74,8 @@ probeVulkan(const VulkanProbeOptions &options = {});
 
 [[nodiscard]] STAR_RHI_API std::expected<VulkanContext, VulkanProbeError>
 createVulkanContext(const VulkanProbeOptions &options = {});
+
+[[nodiscard]] STAR_RHI_API std::expected<std::unique_ptr<Device>, DeviceError>
+createVulkanDevice(const DeviceCreateInfo &createInfo = {});
 
 } // namespace star::rhi

@@ -83,6 +83,8 @@ enum class DeviceError : std::uint8_t {
     InvalidState,
     Unsupported,
     OutOfMemory,
+    BackendUnavailable,
+    BackendFailure,
 };
 
 struct BufferDesc {
@@ -130,8 +132,20 @@ struct BufferBarrier {
     BufferHandle buffer;
 };
 
+enum class TextureState : std::uint8_t {
+    Undefined,
+    Sampled,
+    Storage,
+    ColorAttachment,
+    DepthAttachment,
+    CopySource,
+    CopyDestination,
+};
+
 struct TextureBarrier {
     TextureHandle texture;
+    TextureState before = TextureState::Undefined;
+    TextureState after = TextureState::Undefined;
 };
 
 class STAR_RHI_API CommandList {
@@ -144,6 +158,9 @@ class STAR_RHI_API CommandList {
     virtual void beginDebugMarker(std::string_view name) noexcept = 0;
     virtual void endDebugMarker() noexcept = 0;
     virtual void writeTimestamp(std::uint32_t queryIndex) noexcept = 0;
+    [[nodiscard]] virtual std::expected<double, DeviceError> readTimestampNanoseconds(std::uint32_t) noexcept {
+        return std::unexpected(DeviceError::Unsupported);
+    }
 
   protected:
     CommandList() = default;

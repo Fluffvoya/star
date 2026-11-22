@@ -1,11 +1,13 @@
 #include "test_support.hpp"
 
-#include "rhi/rhi.hpp"
 #include "rhi/render_graph.hpp"
+#include "rhi/rhi.hpp"
 #include "rhi/shader_compiler.hpp"
 #include "rhi/vulkan.hpp"
 
 #include <array>
+#include <cmath>
+#include <cstdlib>
 #include <memory>
 
 namespace {
@@ -141,6 +143,46 @@ STAR_TEST(vulkanContextAllocatesAndReleasesTransientTextureMemory) {
         return;
     }
     STAR_CHECK(context->createTransientTexture(4, 4));
+}
+
+STAR_TEST(vulkanDeviceSubmitsResourceTransitionsAndRetiresHandles) {
+    using namespace star::rhi;
+    const bool validation = std::getenv("STAR_TEST_VULKAN_VALIDATION") != nullptr;
+    auto device = createVulkanDevice({.enableValidation = validation});
+    if (!device) {
+        STAR_CHECK(device.error() == DeviceError::BackendUnavailable && !validation &&
+                   std::getenv("STAR_TEST_REQUIRE_VULKAN") == nullptr);
+        return;
+    }
+    STAR_CHECK(!validation || (*device)->getCapabilities().supportsValidation);
+    const auto buffer = (*device)->createBuffer(
+        {.size = 64, .usage = BufferUsage::CopySource, .memory = MemoryType::Upload, .debugName = "rhi-test-buffer"});
+    const auto texture = (*device)->createTexture({.width = 4,
+                                                   .height = 4,
+                                                   .usage = TextureUsage::CopyDestination | TextureUsage::Sampled,
+                                                   .debugName = "rhi-test-texture"});
+    STAR_CHECK(buffer && texture);
+    auto commands = (*device)->beginCommandList(QueueType::Graphics);
+    STAR_CHECK(commands);
+    (*commands)->beginDebugMarker("RHI texture transitions");
+    (*commands)->writeTimestamp(0);
+    const std::array prepare{TextureBarrier{*texture, TextureState::Undefined, TextureState::CopyDestination}};
+    const std::array sample{TextureBarrier{*texture, TextureState::CopyDestination, TextureState::Sampled}};
+    (*commands)->barrier({}, prepare);
+    (*commands)->barrier({}, sample);
+    (*commands)->writeTimestamp(1);
+    (*commands)->endDebugMarker();
+    const std::array list{*commands};
+    STAR_CHECK((*device)->submit(QueueType::Graphics, list, {}));
+    STAR_CHECK(!(*device)->submit(QueueType::Graphics, list, {}));
+    if ((*device)->getCapabilities().supportsTimestampQueries) {
+        const auto timestamp = (*commands)->readTimestampNanoseconds(1);
+        STAR_CHECK(timestamp && std::isfinite(*timestamp) && *timestamp >= 0.0);
+    }
+    STAR_CHECK((*device)->destroy(*buffer) && (*device)->destroy(*texture));
+    (*device)->beginFrame();
+    STAR_CHECK(!(*device)->isAlive(*buffer) && !(*device)->isAlive(*texture));
+    STAR_CHECK(!(*device)->destroy(*texture));
 }
 
 STAR_TEST(shaderCompilerProducesValidatedSpirvWhenToolsAreAvailable) {
