@@ -2,9 +2,11 @@ find_package(SDL3 3.2 REQUIRED CONFIG)
 
 star_add_module(RHI rhi
     include/rhi/rhi.hpp
+    include/rhi/render_graph.hpp
     include/rhi/shader_compiler.hpp
     include/rhi/vulkan.hpp
     src/null_device.cpp
+    src/render_graph.cpp
     src/shader_compiler.cpp
     src/vulkan_probe.cpp
 )

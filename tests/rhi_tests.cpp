@@ -1,6 +1,7 @@
 #include "test_support.hpp"
 
 #include "rhi/rhi.hpp"
+#include "rhi/render_graph.hpp"
 #include "rhi/shader_compiler.hpp"
 #include "rhi/vulkan.hpp"
 
@@ -158,6 +159,29 @@ void main() {
     }
     STAR_CHECK(!module->words.empty());
     STAR_CHECK(module->words.front() == 0x07230203U);
+}
+
+STAR_TEST(renderGraphOrdersDependenciesAndCullsUnusedPasses) {
+    star::rhi::RenderGraph graph;
+    const auto input = graph.createTexture("Input", {.width = 4, .height = 4});
+    const auto output = graph.createTexture("Output", {.width = 4, .height = 4});
+    const auto unused = graph.createTexture("Unused", {.width = 4, .height = 4});
+    STAR_CHECK(input && output && unused);
+
+    const std::array<star::rhi::RenderResourceUse, 1> write_input{{{*input, true}}};
+    const std::array<star::rhi::RenderResourceUse, 2> read_write_output{{{*input, false}, {*output, true}}};
+    const std::array<star::rhi::RenderResourceUse, 1> write_unused{{{*unused, true}}};
+    STAR_CHECK(graph.addPass({"Prepare", star::rhi::RenderPassType::Raster, write_input}));
+    STAR_CHECK(graph.addPass({"Composite", star::rhi::RenderPassType::Raster, read_write_output}));
+    STAR_CHECK(graph.addPass({"Unused", star::rhi::RenderPassType::Compute, write_unused}));
+
+    const std::array<star::rhi::RenderTextureHandle, 1> outputs{*output};
+    const auto compiled = graph.compile(outputs);
+    STAR_CHECK(compiled);
+    STAR_CHECK(compiled->passOrder.size() == 2);
+    STAR_CHECK(compiled->passOrder[0].id == 0 && compiled->passOrder[1].id == 1);
+    STAR_CHECK(compiled->barriers.size() == 1);
+    STAR_CHECK(compiled->lifetimes.size() == 2);
 }
 
 } // namespace
