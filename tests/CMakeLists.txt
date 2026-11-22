@@ -1,6 +1,6 @@
 add_custom_target(StarPublicHeadersCheck)
 
-foreach(module IN ITEMS Core Reflection Serialization Jobs Platform)
+foreach(module IN ITEMS Core Reflection Serialization RHI Jobs Platform)
     string(TOLOWER "${module}" module_slug)
     set(target "Star${module}Tests")
     set(test_name "${module_slug}-tests")

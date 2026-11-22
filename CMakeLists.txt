@@ -74,6 +74,7 @@ include(cmake/Dependencies.cmake)
 add_subdirectory(engine/source/runtime/core)
 add_subdirectory(engine/source/runtime/reflection)
 add_subdirectory(engine/source/runtime/serialization)
+add_subdirectory(engine/source/runtime/rhi)
 add_subdirectory(engine/source/runtime/jobs)
 add_subdirectory(engine/source/runtime/platform)
 
@@ -83,6 +84,7 @@ endif()
 
 if(STAR_BUILD_SAMPLES)
     add_subdirectory(samples/hello-window)
+    add_subdirectory(samples/vulkan-mesh)
 endif()
 
 if(STAR_BUILD_TESTS AND BUILD_TESTING)
