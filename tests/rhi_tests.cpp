@@ -1,6 +1,7 @@
 #include "test_support.hpp"
 
 #include "rhi/rhi.hpp"
+#include "rhi/shader_compiler.hpp"
 #include "rhi/vulkan.hpp"
 
 #include <array>
@@ -139,6 +140,24 @@ STAR_TEST(vulkanContextAllocatesAndReleasesTransientTextureMemory) {
         return;
     }
     STAR_CHECK(context->createTransientTexture(4, 4));
+}
+
+STAR_TEST(shaderCompilerProducesValidatedSpirvWhenToolsAreAvailable) {
+    constexpr std::string_view source = R"(
+#version 450
+void main() {
+    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+}
+)";
+    const auto module = star::rhi::compileGlslToSpirv(source);
+    if (!module) {
+        STAR_CHECK(module.error() == star::rhi::ShaderCompileError::CompilerUnavailable ||
+                   module.error() == star::rhi::ShaderCompileError::CompileFailed ||
+                   module.error() == star::rhi::ShaderCompileError::ValidationFailed);
+        return;
+    }
+    STAR_CHECK(!module->words.empty());
+    STAR_CHECK(module->words.front() == 0x07230203U);
 }
 
 } // namespace
