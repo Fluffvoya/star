@@ -84,6 +84,7 @@ endif()
 
 if(STAR_BUILD_SAMPLES)
     add_subdirectory(samples/hello-window)
+    add_subdirectory(samples/vulkan-mesh)
 endif()
 
 if(STAR_BUILD_TESTS AND BUILD_TESTING)
