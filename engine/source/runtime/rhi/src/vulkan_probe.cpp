@@ -25,6 +25,8 @@ using VkQueue = struct VkQueue_T *;
 using VkCommandPool = struct VkCommandPool_T *;
 using VkCommandBuffer = struct VkCommandBuffer_T *;
 using VkFence = struct VkFence_T *;
+using VkBuffer = struct VkBuffer_T *;
+using VkDeviceMemory = struct VkDeviceMemory_T *;
 using VkResult = std::int32_t;
 
 constexpr VkResult vkSuccess = 0;
@@ -40,6 +42,8 @@ constexpr std::uint32_t vkStructureTypeFenceCreateInfo = 8;
 constexpr std::uint32_t vkStructureTypeCommandPoolCreateInfo = 39;
 constexpr std::uint32_t vkStructureTypeCommandBufferAllocateInfo = 40;
 constexpr std::uint32_t vkStructureTypeCommandBufferBeginInfo = 42;
+constexpr std::uint32_t vkStructureTypeMemoryAllocateInfo = 5;
+constexpr std::uint32_t vkStructureTypeBufferCreateInfo = 12;
 constexpr VkFlags vkQueueGraphicsBit = 1U;
 constexpr VkFlags vkQueueComputeBit = 2U;
 constexpr VkFlags vkQueueTransferBit = 4U;
@@ -140,6 +144,47 @@ struct VkFenceCreateInfo {
     VkFlags flags;
 };
 
+struct VkBufferCreateInfo {
+    std::uint32_t sType;
+    const void *pNext;
+    VkFlags flags;
+    std::uint64_t size;
+    VkFlags usage;
+    std::uint32_t sharingMode;
+    std::uint32_t queueFamilyIndexCount;
+    const std::uint32_t *pQueueFamilyIndices;
+};
+
+struct VkMemoryRequirements {
+    std::uint64_t size;
+    std::uint64_t alignment;
+    std::uint32_t memoryTypeBits;
+};
+
+struct VkMemoryAllocateInfo {
+    std::uint32_t sType;
+    const void *pNext;
+    std::uint64_t allocationSize;
+    std::uint32_t memoryTypeIndex;
+};
+
+struct VkMemoryType {
+    VkFlags propertyFlags;
+    std::uint32_t heapIndex;
+};
+
+struct VkMemoryHeap {
+    std::uint64_t size;
+    VkFlags flags;
+};
+
+struct VkPhysicalDeviceMemoryProperties {
+    std::uint32_t memoryTypeCount;
+    VkMemoryType memoryTypes[32];
+    std::uint32_t memoryHeapCount;
+    VkMemoryHeap memoryHeaps[16];
+};
+
 using VkVoidFunction = void (*)();
 using VkGetInstanceProcAddr = VkVoidFunction (*)(VkInstance instance, const char *name);
 using VkEnumerateInstanceVersion = VkResult (*)(std::uint32_t *version);
@@ -173,6 +218,17 @@ using VkQueueSubmit = VkResult (*)(VkQueue queue, std::uint32_t submitCount, con
                                     VkFence fence);
 using VkWaitForFences = VkResult (*)(VkDevice device, std::uint32_t fenceCount, const VkFence *fences,
                                      VkBool32 waitAll, std::uint64_t timeout);
+using VkCreateBuffer = VkResult (*)(VkDevice device, const VkBufferCreateInfo *createInfo, const void *allocator,
+                                     VkBuffer *buffer);
+using VkDestroyBuffer = void (*)(VkDevice device, VkBuffer buffer, const void *allocator);
+using VkGetBufferMemoryRequirements = void (*)(VkDevice device, VkBuffer buffer, VkMemoryRequirements *requirements);
+using VkAllocateMemory = VkResult (*)(VkDevice device, const VkMemoryAllocateInfo *allocateInfo, const void *allocator,
+                                      VkDeviceMemory *memory);
+using VkFreeMemory = void (*)(VkDevice device, VkDeviceMemory memory, const void *allocator);
+using VkBindBufferMemory = VkResult (*)(VkDevice device, VkBuffer buffer, VkDeviceMemory memory,
+                                        std::uint64_t memoryOffset);
+using VkGetPhysicalDeviceMemoryProperties = void (*)(VkPhysicalDevice physicalDevice,
+                                                      VkPhysicalDeviceMemoryProperties *properties);
 
 template <typename Function> [[nodiscard]] Function loadGlobal(VkGetInstanceProcAddr getProcAddr, const char *name) {
     return reinterpret_cast<Function>(getProcAddr(nullptr, name));
@@ -310,8 +366,10 @@ struct VulkanContext::Impl {
     VkInstance instance = nullptr;
     VkDevice device = nullptr;
     VkQueue graphicsQueue = nullptr;
+    VkPhysicalDevice physicalDevice = nullptr;
     VkDestroyInstance destroyInstance = nullptr;
     VkDestroyDevice destroyDevice = nullptr;
+    VkGetInstanceProcAddr getInstanceProcAddr = nullptr;
     VkGetDeviceProcAddr getDeviceProcAddr = nullptr;
     bool loaderLoaded = false;
 };
@@ -420,6 +478,77 @@ std::expected<void, VulkanProbeError> VulkanContext::submitEmptyCommandBuffer() 
         return std::unexpected(VulkanProbeError::SubmissionFailed);
     }
     destroyFence(m_impl->device, fence, nullptr);
+    cleanupBuffer();
+    return {};
+}
+
+std::expected<void, VulkanProbeError> VulkanContext::createTransientBuffer(std::uint64_t size) noexcept {
+    if (size == 0 || !isValid() || m_impl->getDeviceProcAddr == nullptr || m_impl->getInstanceProcAddr == nullptr ||
+        m_impl->physicalDevice == nullptr) {
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+    const auto createBuffer = reinterpret_cast<VkCreateBuffer>(m_impl->getDeviceProcAddr(m_impl->device, "vkCreateBuffer"));
+    const auto destroyBuffer =
+        reinterpret_cast<VkDestroyBuffer>(m_impl->getDeviceProcAddr(m_impl->device, "vkDestroyBuffer"));
+    const auto getBufferMemoryRequirements = reinterpret_cast<VkGetBufferMemoryRequirements>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkGetBufferMemoryRequirements"));
+    const auto allocateMemory =
+        reinterpret_cast<VkAllocateMemory>(m_impl->getDeviceProcAddr(m_impl->device, "vkAllocateMemory"));
+    const auto freeMemory = reinterpret_cast<VkFreeMemory>(m_impl->getDeviceProcAddr(m_impl->device, "vkFreeMemory"));
+    const auto bindBufferMemory = reinterpret_cast<VkBindBufferMemory>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkBindBufferMemory"));
+    const auto getMemoryProperties = reinterpret_cast<VkGetPhysicalDeviceMemoryProperties>(
+        m_impl->getInstanceProcAddr(m_impl->instance, "vkGetPhysicalDeviceMemoryProperties"));
+    if (createBuffer == nullptr || destroyBuffer == nullptr || getBufferMemoryRequirements == nullptr ||
+        allocateMemory == nullptr || freeMemory == nullptr || bindBufferMemory == nullptr || getMemoryProperties == nullptr) {
+        return std::unexpected(VulkanProbeError::MissingEntryPoint);
+    }
+
+    const VkBufferCreateInfo bufferInfo{
+        vkStructureTypeBufferCreateInfo,
+        nullptr,
+        0,
+        size,
+        0x00000080U,
+        0,
+        0,
+        nullptr,
+    };
+    VkBuffer buffer = nullptr;
+    if (createBuffer(m_impl->device, &bufferInfo, nullptr, &buffer) != vkSuccess || buffer == nullptr) {
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+    const auto cleanupBuffer = [&]() noexcept { destroyBuffer(m_impl->device, buffer, nullptr); };
+
+    VkMemoryRequirements requirements{};
+    getBufferMemoryRequirements(m_impl->device, buffer, &requirements);
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    getMemoryProperties(m_impl->physicalDevice, &memoryProperties);
+    std::optional<std::uint32_t> memoryTypeIndex;
+    for (std::uint32_t index = 0; index < memoryProperties.memoryTypeCount; ++index) {
+        if ((requirements.memoryTypeBits & (1U << index)) != 0) {
+            memoryTypeIndex = index;
+            break;
+        }
+    }
+    if (!memoryTypeIndex.has_value()) {
+        cleanupBuffer();
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+
+    const VkMemoryAllocateInfo allocateInfo{
+        vkStructureTypeMemoryAllocateInfo, nullptr, requirements.size, *memoryTypeIndex};
+    VkDeviceMemory memory = nullptr;
+    if (allocateMemory(m_impl->device, &allocateInfo, nullptr, &memory) != vkSuccess || memory == nullptr) {
+        cleanupBuffer();
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+    if (bindBufferMemory(m_impl->device, buffer, memory, 0) != vkSuccess) {
+        freeMemory(m_impl->device, memory, nullptr);
+        cleanupBuffer();
+        return std::unexpected(VulkanProbeError::ResourceCreationFailed);
+    }
+    freeMemory(m_impl->device, memory, nullptr);
     cleanupBuffer();
     return {};
 }
@@ -628,9 +757,11 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         impl->info = VulkanDeviceInfo{apiVersion, physicalDeviceCount, graphicsFamily, computeFamily, copyFamily};
         impl->instance = instance;
         impl->device = device;
+        impl->physicalDevice = selectedPhysicalDevice;
         impl->graphicsQueue = graphicsQueue;
         impl->destroyInstance = destroyInstance;
         impl->destroyDevice = destroyDevice;
+        impl->getInstanceProcAddr = getProcAddr;
         impl->getDeviceProcAddr = loadInstance<VkGetDeviceProcAddr>(getProcAddr, instance, "vkGetDeviceProcAddr");
         if (impl->getDeviceProcAddr == nullptr) {
             destroyDevice(device, nullptr);

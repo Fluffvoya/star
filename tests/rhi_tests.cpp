@@ -115,4 +115,17 @@ STAR_TEST(vulkanContextSubmitsAndWaitsForEmptyCommandBuffer) {
     STAR_CHECK(submit);
 }
 
+STAR_TEST(vulkanContextAllocatesAndReleasesTransientBufferMemory) {
+    auto context = star::rhi::createVulkanContext();
+    if (!context) {
+        STAR_CHECK(context.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
+                   context.error() == star::rhi::VulkanProbeError::PhysicalDeviceUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::QueueFamilyUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::DeviceCreationFailed);
+        return;
+    }
+    STAR_CHECK(context->createTransientBuffer(256));
+}
+
 } // namespace

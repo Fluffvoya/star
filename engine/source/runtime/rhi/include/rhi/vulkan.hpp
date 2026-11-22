@@ -20,6 +20,7 @@ enum class VulkanProbeError : std::uint8_t {
     DeviceCreationFailed,
     CommandCreationFailed,
     SubmissionFailed,
+    ResourceCreationFailed,
     OutOfMemory,
 };
 
@@ -54,6 +55,7 @@ class STAR_RHI_API VulkanContext final {
     [[nodiscard]] const VulkanDeviceInfo &getInfo() const noexcept;
     [[nodiscard]] bool isValid() const noexcept;
     [[nodiscard]] std::expected<void, VulkanProbeError> submitEmptyCommandBuffer() noexcept;
+    [[nodiscard]] std::expected<void, VulkanProbeError> createTransientBuffer(std::uint64_t size) noexcept;
 
   private:
     struct Impl;
