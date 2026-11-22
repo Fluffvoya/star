@@ -1,25 +1,39 @@
 #include <clang-c/Index.h>
 
+#include "generation_cache.hpp"
 #include "runtime_generator.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <map>
-#include <regex>
+#include <optional>
 #include <set>
-#include <sstream>
+#include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
 
-constexpr std::string_view tool_version = "star-header-tool-1";
+using star::header_tool::CachedGeneration;
+using star::header_tool::Dependencies;
+using star::header_tool::fingerprint;
+using star::header_tool::fingerprintArguments;
+using star::header_tool::fingerprintFile;
+using star::header_tool::GeneratedFiles;
+using star::header_tool::writeIfChanged;
+
+constexpr std::string_view tool_version = "star-header-tool-2";
+
+struct DependencyState {
+    std::set<std::filesystem::path> paths;
+    Dependencies fingerprints;
+    bool cacheable = true;
+};
 
 struct Options {
     std::vector<std::filesystem::path> inputs;
@@ -31,18 +45,7 @@ struct Options {
     std::string module;
     std::uint64_t owner = 0;
     std::vector<std::string> clang_arguments;
-};
-
-struct ReflectedDeclaration {
-    std::string kind;
-    std::string name;
-    std::string annotation;
-    std::vector<std::string> properties;
-};
-
-struct ParseContext {
-    std::vector<ReflectedDeclaration> &declarations;
-    const std::map<std::string, std::string> &source_markers;
+    bool verbose = false;
 };
 
 std::string cursorString(CXString value) {
@@ -52,125 +55,95 @@ std::string cursorString(CXString value) {
     return result;
 }
 
-bool readFile(const std::filesystem::path &path, std::string &contents) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        return false;
-    }
-    contents.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    return file.good() || file.eof();
-}
-
-std::uint64_t hashBytes(std::uint64_t hash, std::string_view bytes) {
-    for (const unsigned char byte : bytes) {
-        hash ^= byte;
-        hash *= 1099511628211ull;
-    }
-    return hash;
-}
-
-std::string hashInputs(const Options &options, const std::set<std::filesystem::path> &dependencies) {
-    std::uint64_t hash = 14695981039346656037ull;
-    hash = hashBytes(hash, tool_version);
-    for (const auto &directory : options.include_directories) {
-        hash = hashBytes(hash, directory.generic_string());
-    }
-    for (const auto &path : dependencies) {
-        std::string contents;
-        if (!readFile(path, contents)) {
-            continue;
-        }
-        hash = hashBytes(hash, path.generic_string());
-        hash = hashBytes(hash, contents);
-    }
-    std::ostringstream stream;
-    stream << std::hex << hash;
-    return stream.str();
-}
-
-void collectDependencies(const std::filesystem::path &path, std::set<std::filesystem::path> &dependencies) {
-    const auto absolute = std::filesystem::absolute(path).lexically_normal();
-    if (!dependencies.insert(absolute).second) {
-        return;
-    }
-    std::string source;
-    if (!readFile(absolute, source)) {
-        return;
-    }
-    static const std::regex include_pattern(R"include(^\s*#\s*include\s*"([^"]+)")include");
-    std::istringstream lines(source);
-    std::string line;
-    while (std::getline(lines, line)) {
-        std::smatch match;
-        if (!std::regex_search(line, match, include_pattern)) {
-            continue;
-        }
-        const auto included = absolute.parent_path() / match[1].str();
-        if (std::filesystem::exists(included)) {
-            collectDependencies(included, dependencies);
-        }
-    }
-}
-
-std::string annotation(CXCursor cursor) {
-    std::string result;
-    clang_visitChildren(
-        cursor,
-        [](CXCursor child, CXCursor, CXClientData data) {
-            if (clang_getCursorKind(child) == CXCursor_AnnotateAttr) {
-                *static_cast<std::string *>(data) = cursorString(clang_getCursorDisplayName(child));
-                return CXChildVisit_Break;
-            }
-            return CXChildVisit_Continue;
-        },
-        &result);
-    return result;
-}
-
-CXChildVisitResult visitDeclaration(CXCursor cursor, CXCursor, CXClientData data) {
-    auto &context = *static_cast<ParseContext *>(data);
-    auto &declarations = context.declarations;
-    const auto name = cursorString(clang_getCursorSpelling(cursor));
-    auto declaration_annotation = annotation(cursor);
-    if (declaration_annotation.empty()) {
-        const auto marker = context.source_markers.find(name);
-        if (marker != context.source_markers.end()) {
-            declaration_annotation = marker->second;
-        }
-    }
-    if (declaration_annotation.starts_with("star:class:") || declaration_annotation.starts_with("star:struct:") ||
-        declaration_annotation.starts_with("star:enum:")) {
-        const auto kind = declaration_annotation.substr(5, declaration_annotation.find(':', 5) - 5);
-        declarations.push_back({kind, name, declaration_annotation, {}});
-        auto &declaration = declarations.back();
-        clang_visitChildren(
-            cursor,
-            [](CXCursor child, CXCursor, CXClientData child_data) {
-                auto &properties = *static_cast<std::vector<std::string> *>(child_data);
-                const auto child_annotation = annotation(child);
-                if (child_annotation.starts_with("star:property:")) {
-                    properties.push_back(cursorString(clang_getCursorSpelling(child)));
-                }
-                return CXChildVisit_Continue;
-            },
-            &declaration.properties);
-    }
-    return CXChildVisit_Recurse;
-}
-
-bool parseFile(const std::filesystem::path &path, const Options &options,
-               std::vector<ReflectedDeclaration> &declarations,
-               std::vector<star::header_tool::Declaration> &runtime_declarations,
-               std::set<std::filesystem::path> &dependencies) {
-    CXIndex clang_index = clang_createIndex(0, 0);
-    std::vector<std::string> argument_storage{"-x", "c++", "-std=c++23", "-DSTAR_REFLECTION_PARSER"};
+std::vector<std::string> clangArguments(const Options &options) {
+    std::vector<std::string> arguments{"-x", "c++", "-std=c++23", "-DSTAR_REFLECTION_PARSER"};
 #ifdef STAR_CLANG_RESOURCE_DIR
-    argument_storage.emplace_back("-resource-dir=" STAR_CLANG_RESOURCE_DIR);
+    arguments.emplace_back("-resource-dir=" STAR_CLANG_RESOURCE_DIR);
 #endif
     for (const auto &directory : options.include_directories) {
-        argument_storage.push_back("-I" + directory.string());
+        arguments.push_back("-I" + directory.string());
     }
-    argument_storage.insert(argument_storage.end(), options.clang_arguments.begin(), options.clang_arguments.end());
+    arguments.insert(arguments.end(), options.clang_arguments.begin(), options.clang_arguments.end());
+    return arguments;
+}
+
+std::filesystem::path absolutePath(const std::filesystem::path &path) {
+    return std::filesystem::absolute(path).lexically_normal();
+}
+
+std::optional<std::uint64_t> generationKey(const Options &options, std::span<const std::string> arguments,
+                                           const std::filesystem::path &executable) {
+    std::vector<std::string> parts{std::string(tool_version),
+                                   cursorString(clang_getClangVersion()),
+                                   std::filesystem::current_path().generic_string(),
+                                   options.module,
+                                   std::to_string(options.owner),
+                                   absolutePath(options.output).generic_string()};
+    parts.push_back(options.source.empty() ? "" : absolutePath(options.source).generic_string());
+    parts.push_back(std::to_string(options.inputs.size()));
+    for (const auto &path : options.inputs) {
+        parts.push_back(absolutePath(path).generic_string());
+    }
+    parts.push_back(std::to_string(arguments.size()));
+    parts.insert(parts.end(), arguments.begin(), arguments.end());
+    for (const auto &argument : arguments) {
+        // These options can hide inputs from clang_getInclusions().
+        if (argument.starts_with('@') || argument.starts_with("-include-pch") || argument.starts_with("-ivfsoverlay") ||
+            argument.starts_with("-fmodule")) {
+            return std::nullopt;
+        }
+    }
+    for (const char *variable :
+         {"PATH", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "OBJC_INCLUDE_PATH", "OBJCPLUS_INCLUDE_PATH",
+          "INCLUDE", "SDKROOT", "DEVELOPER_DIR", "MACOSX_DEPLOYMENT_TARGET", "VCToolsInstallDir", "WindowsSdkDir",
+          "WindowsSDKVersion", "SOURCE_DATE_EPOCH"}) {
+        const char *value = std::getenv(variable);
+        parts.emplace_back(value == nullptr ? "" : value);
+    }
+    if (const auto binary = fingerprintFile(executable)) {
+        parts.push_back(std::to_string(*binary));
+    }
+    return fingerprintArguments(parts);
+}
+
+void collectDependencies(CXTranslationUnit unit, const std::filesystem::path &input, DependencyState &state) {
+    const auto input_path = absolutePath(input);
+    state.paths.insert(input_path);
+    struct Context {
+        CXTranslationUnit unit;
+        DependencyState &state;
+    } context{unit, state};
+    clang_getInclusions(
+        unit,
+        [](CXFile file, CXSourceLocation *, unsigned, CXClientData data) {
+            auto &inclusion = *static_cast<Context *>(data);
+            auto &dependencies = inclusion.state;
+            const auto name = cursorString(clang_getFileName(file));
+            if (name.empty()) {
+                dependencies.cacheable = false;
+                return;
+            }
+            const auto path = std::filesystem::absolute(name);
+            dependencies.paths.insert(path);
+            std::size_t size = 0;
+            const char *bytes = clang_getFileContents(inclusion.unit, file, &size);
+            if (bytes == nullptr) {
+                dependencies.cacheable = false;
+                return;
+            }
+            const auto hash = fingerprint(std::string_view(bytes, size));
+            const auto [entry, inserted] = dependencies.fingerprints.try_emplace(path, hash);
+            if (!inserted && entry->second != hash) {
+                dependencies.cacheable = false;
+            }
+        },
+        &context);
+    state.cacheable = state.cacheable && state.fingerprints.contains(input_path);
+}
+
+bool parseFile(const std::filesystem::path &path, std::span<const std::string> argument_storage,
+               std::vector<star::header_tool::Declaration> &declarations, DependencyState &dependencies) {
+    CXIndex clang_index = clang_createIndex(0, 0);
     std::vector<const char *> arguments;
     arguments.reserve(argument_storage.size());
     for (const auto &argument : argument_storage) {
@@ -196,71 +169,15 @@ bool parseFile(const std::filesystem::path &path, const Options &options,
         }
         clang_disposeDiagnostic(diagnostic);
     }
-    if (valid && !options.source.empty()) {
-        valid = star::header_tool::collectDeclarations(unit, path, runtime_declarations);
-        dependencies.insert(std::filesystem::absolute(path).lexically_normal());
-        clang_getInclusions(
-            unit,
-            [](CXFile file, CXSourceLocation *, unsigned, CXClientData data) {
-                auto &paths = *static_cast<std::set<std::filesystem::path> *>(data);
-                const auto included_path = cursorString(clang_getFileName(file));
-                if (!included_path.empty()) {
-                    paths.insert(std::filesystem::absolute(included_path).lexically_normal());
-                }
-            },
-            &dependencies);
-    } else if (valid) {
-        std::string source;
-        std::map<std::string, std::string> source_markers;
-        if (readFile(path, source)) {
-            static const std::regex marker_pattern(
-                R"marker(STAR_(CLASS|STRUCT|ENUM)\s*\(([^)]*)\)\s*(class|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*))marker");
-            for (std::sregex_iterator iterator(source.begin(), source.end(), marker_pattern), end; iterator != end;
-                 ++iterator) {
-                const auto &match = *iterator;
-                std::string kind = match[1].str();
-                std::ranges::transform(kind, kind.begin(), [](unsigned char character) {
-                    return static_cast<char>(std::tolower(character));
-                });
-                source_markers.emplace(match[4].str(), "star:" + kind + ":" + match[2].str());
-            }
-        }
-        ParseContext context{declarations, source_markers};
-        clang_visitChildren(clang_getTranslationUnitCursor(unit), &visitDeclaration, &context);
+    if (valid) {
+        collectDependencies(unit, path, dependencies);
+    }
+    if (valid) {
+        valid = star::header_tool::collectDeclarations(unit, path, declarations);
     }
     clang_disposeTranslationUnit(unit);
     clang_disposeIndex(clang_index);
     return valid;
-}
-
-std::string generate(const std::vector<ReflectedDeclaration> &declarations) {
-    auto sorted = declarations;
-    std::ranges::sort(sorted, [](const auto &left, const auto &right) { return left.name < right.name; });
-    std::ostringstream output;
-    output << "#pragma once\n#include <string_view>\n\nnamespace star::generated {\n\n";
-    for (const auto &declaration : sorted) {
-        auto escape = [](std::string_view value) {
-            std::string escaped;
-            escaped.reserve(value.size());
-            for (const char character : value) {
-                if (character == '\\' || character == '"') {
-                    escaped.push_back('\\');
-                }
-                escaped.push_back(character);
-            }
-            return escaped;
-        };
-        output << "inline constexpr std::string_view " << declaration.kind << "_" << declaration.name
-               << "_annotation = \"" << escape(declaration.annotation) << "\";\n";
-        output << "inline constexpr std::string_view " << declaration.kind << "_" << declaration.name
-               << "_properties[] = {";
-        for (const auto &property : declaration.properties) {
-            output << "\"" << escape(property) << "\", ";
-        }
-        output << "};\n\n";
-    }
-    output << "} // namespace star::generated\n";
-    return output.str();
 }
 
 bool parseOptions(int argc, char **argv, Options &options) {
@@ -273,7 +190,9 @@ bool parseOptions(int argc, char **argv, Options &options) {
             destination = argv[++index];
             return true;
         };
-        if (argument == "--input") {
+        if (argument == "--verbose") {
+            options.verbose = true;
+        } else if (argument == "--input") {
             std::filesystem::path input;
             if (!nextValue(input)) {
                 return false;
@@ -318,28 +237,31 @@ bool parseOptions(int argc, char **argv, Options &options) {
     if (options.inputs.empty() || options.output.empty()) {
         return false;
     }
+    std::set<std::filesystem::path> output_paths;
+    for (const auto &path : {options.output, options.source, options.depfile, options.cache}) {
+        if (!path.empty() && !output_paths.insert(absolutePath(path)).second) {
+            return false;
+        }
+    }
+    for (const auto &input : options.inputs) {
+        if (output_paths.contains(absolutePath(input))) {
+            return false;
+        }
+    }
     if (options.source.empty()) {
         return options.depfile.empty() && options.module.empty() && options.owner == 0;
     }
-    return options.cache.empty() && options.output != options.source && options.output != options.depfile &&
-           options.source != options.depfile && options.owner != 0 && !options.module.empty() &&
-           options.module.front() >= 'a' && options.module.front() <= 'z' &&
+    return options.owner != 0 && !options.module.empty() && options.module.front() >= 'a' &&
+           options.module.front() <= 'z' &&
            options.module.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") == std::string::npos;
 }
 
-bool writeIfChanged(const std::filesystem::path &path, std::string_view contents) {
-    std::string existing;
-    if (readFile(path, existing) && existing == contents) {
-        return true;
-    }
-    if (!path.parent_path().empty()) {
-        std::filesystem::create_directories(path.parent_path());
-    }
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    output << contents;
-    output.close();
-    if (!output) {
-        std::cerr << path << ": error: unable to write generated output\n";
+bool publish(const Options &options, const GeneratedFiles &files, const std::set<std::filesystem::path> &paths) {
+    if (!writeIfChanged(options.output, files.header) ||
+        (!options.source.empty() && !writeIfChanged(options.source, files.source)) ||
+        (!options.depfile.empty() &&
+         !writeIfChanged(options.depfile, star::header_tool::generateDepfile(options.source, paths)))) {
+        std::cerr << "star-header-tool: error: unable to write generated output\n";
         return false;
     }
     return true;
@@ -351,60 +273,54 @@ int main(int argc, char **argv) try {
     Options options;
     if (!parseOptions(argc, argv, options)) {
         std::cerr << "usage: star-header-tool --input <header> [--input <header> ...] --output <file> "
-                     "[--cache <file> | --source <file> --module <identifier> --owner <id> [--depfile <file>]] "
-                     "[--include-dir <directory>] [--clang-arg <argument>]\n";
+                     "[--cache <file>] [--source <file> --module <identifier> --owner <id> [--depfile <file>]] "
+                     "[--include-dir <directory>] [--clang-arg <argument>] [--verbose]\n";
         return 2;
     }
 
-    std::set<std::filesystem::path> dependencies;
-    if (!options.source.empty()) {
-        std::vector<ReflectedDeclaration> legacy;
-        std::vector<star::header_tool::Declaration> declarations;
-        for (const auto &input : options.inputs) {
-            if (!parseFile(input, options, legacy, declarations, dependencies)) {
-                return 1;
+    const auto arguments = clangArguments(options);
+    const auto key = options.cache.empty() ? std::nullopt : generationKey(options, arguments, argv[0]);
+    if (key) {
+        if (const auto cached = star::header_tool::readCache(options.cache, *key)) {
+            if (options.verbose) {
+                std::cout << "StarHeaderTool: cache hit\n";
             }
-        }
-        const auto source = star::header_tool::generateSource(options.module, options.owner, options.output,
-                                                              options.inputs, std::move(declarations));
-        return writeIfChanged(options.output, star::header_tool::generateHeader(options.module)) &&
-                       writeIfChanged(options.source, source) &&
-                       (options.depfile.empty() || writeIfChanged(options.depfile, star::header_tool::generateDepfile(
-                                                                                       options.source, dependencies)))
-                   ? 0
-                   : 1;
-    }
-
-    for (const auto &input : options.inputs) {
-        collectDependencies(input, dependencies);
-    }
-    const std::string fingerprint = hashInputs(options, dependencies);
-    if (!options.cache.empty()) {
-        std::ifstream cache(options.cache);
-        std::string cached;
-        std::getline(cache, cached);
-        if (cached == fingerprint && std::filesystem::exists(options.output)) {
-            return 0;
+            std::set<std::filesystem::path> paths;
+            for (const auto &entry : cached->dependencies) {
+                paths.insert(entry.first);
+            }
+            return publish(options, cached->files, paths) ? 0 : 1;
         }
     }
 
-    std::vector<ReflectedDeclaration> declarations;
-    std::vector<star::header_tool::Declaration> runtime_declarations;
+    const bool runtime = !options.source.empty();
+    DependencyState dependencies;
+    std::vector<star::header_tool::Declaration> declarations;
     for (const auto &input : options.inputs) {
-        if (!parseFile(input, options, declarations, runtime_declarations, dependencies)) {
+        if (!parseFile(input, arguments, declarations, dependencies)) {
             return 1;
         }
     }
-    const std::string generated = generate(declarations);
-    if (!writeIfChanged(options.output, generated)) {
+
+    if (!star::header_tool::validateProperties(declarations)) {
         return 1;
     }
-    if (!options.cache.empty()) {
-        if (!options.cache.parent_path().empty()) {
-            std::filesystem::create_directories(options.cache.parent_path());
-        }
-        std::ofstream cache(options.cache, std::ios::binary | std::ios::trunc);
-        cache << fingerprint << '\n';
+    GeneratedFiles files;
+    if (runtime) {
+        files.header = star::header_tool::generateHeader(options.module);
+        files.source = star::header_tool::generateSource(options.module, options.owner, options.output, options.inputs,
+                                                         std::move(declarations));
+    } else {
+        files.header = star::header_tool::generateAnnotationHeader(std::move(declarations));
+    }
+    if (!publish(options, files, dependencies.paths)) {
+        return 1;
+    }
+    if (key && dependencies.cacheable &&
+        !star::header_tool::writeCache(options.cache, *key,
+                                       CachedGeneration{std::move(dependencies.fingerprints), std::move(files)})) {
+        std::cerr << options.cache << ": error: unable to write reflection cache\n";
+        return 1;
     }
     return 0;
 } catch (const std::exception &exception) {

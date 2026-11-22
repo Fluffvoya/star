@@ -8,6 +8,7 @@ function(star_generate_reflection target module owner)
     set(source "${generated_dir}/${module}.gen.cpp")
     set(header "${generated_dir}/${module}.gen.hpp")
     set(depfile "${generated_dir}/${module}.d")
+    set(cache "${CMAKE_CURRENT_BINARY_DIR}/header-tool-cache/${module}.cache")
     set(headers)
     set(arguments)
     foreach(input IN LISTS args_HEADERS)
@@ -25,7 +26,7 @@ function(star_generate_reflection target module owner)
     add_custom_command(
         OUTPUT "${source}" "${header}"
         COMMAND StarHeaderTool ${arguments} --module "${module}" --owner "${owner}"
-                --output "${header}" --source "${source}" --depfile "${depfile}"
+                --output "${header}" --source "${source}" --depfile "${depfile}" --cache "${cache}"
         DEPENDS StarHeaderTool ${headers}
         DEPFILE "${depfile}"
         VERBATIM

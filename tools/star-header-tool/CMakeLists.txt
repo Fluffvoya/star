@@ -17,7 +17,7 @@ if(STAR_CLANG_DRIVER)
     )
 endif()
 
-add_executable(StarHeaderTool main.cpp runtime_generator.cpp runtime_generator.hpp)
+add_executable(StarHeaderTool main.cpp generation_cache.cpp generation_cache.hpp runtime_generator.cpp runtime_generator.hpp)
 target_compile_features(StarHeaderTool PRIVATE cxx_std_23)
 target_include_directories(StarHeaderTool PRIVATE "${STAR_LIBCLANG_INCLUDE_DIR}")
 target_link_libraries(StarHeaderTool PRIVATE "${STAR_LIBCLANG_LIBRARY}")
