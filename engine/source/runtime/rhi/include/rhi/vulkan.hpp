@@ -18,6 +18,8 @@ enum class VulkanProbeError : std::uint8_t {
     PhysicalDeviceUnavailable,
     QueueFamilyUnavailable,
     DeviceCreationFailed,
+    CommandCreationFailed,
+    SubmissionFailed,
     OutOfMemory,
 };
 
@@ -51,6 +53,7 @@ class STAR_RHI_API VulkanContext final {
 
     [[nodiscard]] const VulkanDeviceInfo &getInfo() const noexcept;
     [[nodiscard]] bool isValid() const noexcept;
+    [[nodiscard]] std::expected<void, VulkanProbeError> submitEmptyCommandBuffer() noexcept;
 
   private:
     struct Impl;

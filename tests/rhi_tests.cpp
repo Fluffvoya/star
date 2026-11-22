@@ -88,7 +88,7 @@ STAR_TEST(vulkanProbeReportsLoaderOrRuntimeAvailability) {
 }
 
 STAR_TEST(vulkanContextCreatesLogicalDeviceWhenRuntimeIsAvailable) {
-    const auto context = star::rhi::createVulkanContext();
+    auto context = star::rhi::createVulkanContext();
     if (!context) {
         STAR_CHECK(context.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
                    context.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
@@ -99,6 +99,20 @@ STAR_TEST(vulkanContextCreatesLogicalDeviceWhenRuntimeIsAvailable) {
     }
     STAR_CHECK(context->isValid());
     STAR_CHECK(context->getInfo().physicalDeviceCount > 0);
+}
+
+STAR_TEST(vulkanContextSubmitsAndWaitsForEmptyCommandBuffer) {
+    auto context = star::rhi::createVulkanContext();
+    if (!context) {
+        STAR_CHECK(context.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
+                   context.error() == star::rhi::VulkanProbeError::PhysicalDeviceUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::QueueFamilyUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::DeviceCreationFailed);
+        return;
+    }
+    const auto submit = context->submitEmptyCommandBuffer();
+    STAR_CHECK(submit);
 }
 
 } // namespace

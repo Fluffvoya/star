@@ -5,6 +5,7 @@
 #include <cstring>
 #include <array>
 #include <algorithm>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <optional>
@@ -16,10 +17,14 @@ namespace star::rhi {
 namespace {
 
 using VkFlags = std::uint32_t;
+using VkBool32 = std::uint32_t;
 using VkInstance = struct VkInstance_T *;
 using VkPhysicalDevice = struct VkPhysicalDevice_T *;
 using VkDevice = struct VkDevice_T *;
 using VkQueue = struct VkQueue_T *;
+using VkCommandPool = struct VkCommandPool_T *;
+using VkCommandBuffer = struct VkCommandBuffer_T *;
+using VkFence = struct VkFence_T *;
 using VkResult = std::int32_t;
 
 constexpr VkResult vkSuccess = 0;
@@ -30,6 +35,11 @@ constexpr std::uint32_t vkStructureTypeApplicationInfo = 0;
 constexpr std::uint32_t vkStructureTypeInstanceCreateInfo = 1;
 constexpr std::uint32_t vkStructureTypeDeviceQueueCreateInfo = 2;
 constexpr std::uint32_t vkStructureTypeDeviceCreateInfo = 3;
+constexpr std::uint32_t vkStructureTypeSubmitInfo = 4;
+constexpr std::uint32_t vkStructureTypeFenceCreateInfo = 8;
+constexpr std::uint32_t vkStructureTypeCommandPoolCreateInfo = 39;
+constexpr std::uint32_t vkStructureTypeCommandBufferAllocateInfo = 40;
+constexpr std::uint32_t vkStructureTypeCommandBufferBeginInfo = 42;
 constexpr VkFlags vkQueueGraphicsBit = 1U;
 constexpr VkFlags vkQueueComputeBit = 2U;
 constexpr VkFlags vkQueueTransferBit = 4U;
@@ -90,6 +100,46 @@ struct VkDeviceCreateInfo {
     const void *pEnabledFeatures;
 };
 
+struct VkCommandPoolCreateInfo {
+    std::uint32_t sType;
+    const void *pNext;
+    VkFlags flags;
+    std::uint32_t queueFamilyIndex;
+};
+
+struct VkCommandBufferAllocateInfo {
+    std::uint32_t sType;
+    const void *pNext;
+    VkCommandPool commandPool;
+    std::uint32_t level;
+    std::uint32_t commandBufferCount;
+};
+
+struct VkCommandBufferBeginInfo {
+    std::uint32_t sType;
+    const void *pNext;
+    VkFlags flags;
+    const void *pInheritanceInfo;
+};
+
+struct VkSubmitInfo {
+    std::uint32_t sType;
+    const void *pNext;
+    std::uint32_t waitSemaphoreCount;
+    const void *pWaitSemaphores;
+    const void *pWaitDstStageMask;
+    std::uint32_t commandBufferCount;
+    const VkCommandBuffer *pCommandBuffers;
+    std::uint32_t signalSemaphoreCount;
+    const void *pSignalSemaphores;
+};
+
+struct VkFenceCreateInfo {
+    std::uint32_t sType;
+    const void *pNext;
+    VkFlags flags;
+};
+
 using VkVoidFunction = void (*)();
 using VkGetInstanceProcAddr = VkVoidFunction (*)(VkInstance instance, const char *name);
 using VkEnumerateInstanceVersion = VkResult (*)(std::uint32_t *version);
@@ -106,6 +156,23 @@ using VkCreateDevice = VkResult (*)(VkPhysicalDevice physicalDevice, const VkDev
 using VkDestroyDevice = void (*)(VkDevice device, const void *allocator);
 using VkGetDeviceQueue = void (*)(VkDevice device, std::uint32_t queueFamilyIndex, std::uint32_t queueIndex,
                                   VkQueue *queue);
+using VkGetDeviceProcAddr = VkVoidFunction (*)(VkDevice device, const char *name);
+using VkCreateCommandPool = VkResult (*)(VkDevice device, const VkCommandPoolCreateInfo *createInfo,
+                                          const void *allocator, VkCommandPool *commandPool);
+using VkDestroyCommandPool = void (*)(VkDevice device, VkCommandPool commandPool, const void *allocator);
+using VkAllocateCommandBuffers = VkResult (*)(VkDevice device, const VkCommandBufferAllocateInfo *allocateInfo,
+                                               VkCommandBuffer *commandBuffers);
+using VkFreeCommandBuffers = void (*)(VkDevice device, VkCommandPool commandPool, std::uint32_t count,
+                                      const VkCommandBuffer *commandBuffers);
+using VkBeginCommandBuffer = VkResult (*)(VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo *beginInfo);
+using VkEndCommandBuffer = VkResult (*)(VkCommandBuffer commandBuffer);
+using VkCreateFence = VkResult (*)(VkDevice device, const VkFenceCreateInfo *createInfo, const void *allocator,
+                                    VkFence *fence);
+using VkDestroyFence = void (*)(VkDevice device, VkFence fence, const void *allocator);
+using VkQueueSubmit = VkResult (*)(VkQueue queue, std::uint32_t submitCount, const VkSubmitInfo *submits,
+                                    VkFence fence);
+using VkWaitForFences = VkResult (*)(VkDevice device, std::uint32_t fenceCount, const VkFence *fences,
+                                     VkBool32 waitAll, std::uint64_t timeout);
 
 template <typename Function> [[nodiscard]] Function loadGlobal(VkGetInstanceProcAddr getProcAddr, const char *name) {
     return reinterpret_cast<Function>(getProcAddr(nullptr, name));
@@ -242,8 +309,10 @@ struct VulkanContext::Impl {
     VulkanDeviceInfo info;
     VkInstance instance = nullptr;
     VkDevice device = nullptr;
+    VkQueue graphicsQueue = nullptr;
     VkDestroyInstance destroyInstance = nullptr;
     VkDestroyDevice destroyDevice = nullptr;
+    VkGetDeviceProcAddr getDeviceProcAddr = nullptr;
     bool loaderLoaded = false;
 };
 
@@ -282,6 +351,78 @@ const VulkanDeviceInfo &VulkanContext::getInfo() const noexcept {
 }
 
 bool VulkanContext::isValid() const noexcept { return m_impl != nullptr && m_impl->device != nullptr; }
+
+std::expected<void, VulkanProbeError> VulkanContext::submitEmptyCommandBuffer() noexcept {
+    if (!isValid() || m_impl->getDeviceProcAddr == nullptr || m_impl->graphicsQueue == nullptr) {
+        return std::unexpected(VulkanProbeError::SubmissionFailed);
+    }
+    const auto createCommandPool = reinterpret_cast<VkCreateCommandPool>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkCreateCommandPool"));
+    const auto destroyCommandPool = reinterpret_cast<VkDestroyCommandPool>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkDestroyCommandPool"));
+    const auto allocateCommandBuffers = reinterpret_cast<VkAllocateCommandBuffers>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkAllocateCommandBuffers"));
+    const auto freeCommandBuffers = reinterpret_cast<VkFreeCommandBuffers>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkFreeCommandBuffers"));
+    const auto beginCommandBuffer = reinterpret_cast<VkBeginCommandBuffer>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkBeginCommandBuffer"));
+    const auto endCommandBuffer = reinterpret_cast<VkEndCommandBuffer>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkEndCommandBuffer"));
+    const auto createFence = reinterpret_cast<VkCreateFence>(m_impl->getDeviceProcAddr(m_impl->device, "vkCreateFence"));
+    const auto destroyFence = reinterpret_cast<VkDestroyFence>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkDestroyFence"));
+    const auto queueSubmit = reinterpret_cast<VkQueueSubmit>(m_impl->getDeviceProcAddr(m_impl->device, "vkQueueSubmit"));
+    const auto waitForFences = reinterpret_cast<VkWaitForFences>(
+        m_impl->getDeviceProcAddr(m_impl->device, "vkWaitForFences"));
+    if (createCommandPool == nullptr || destroyCommandPool == nullptr || allocateCommandBuffers == nullptr ||
+        freeCommandBuffers == nullptr || beginCommandBuffer == nullptr || endCommandBuffer == nullptr ||
+        createFence == nullptr || destroyFence == nullptr || queueSubmit == nullptr || waitForFences == nullptr) {
+        return std::unexpected(VulkanProbeError::MissingEntryPoint);
+    }
+
+    const VkCommandPoolCreateInfo poolInfo{
+        vkStructureTypeCommandPoolCreateInfo, nullptr, 0, m_impl->info.graphicsQueueFamily};
+    VkCommandPool commandPool = nullptr;
+    if (createCommandPool(m_impl->device, &poolInfo, nullptr, &commandPool) != vkSuccess || commandPool == nullptr) {
+        return std::unexpected(VulkanProbeError::CommandCreationFailed);
+    }
+    const auto cleanupPool = [&]() noexcept { destroyCommandPool(m_impl->device, commandPool, nullptr); };
+
+    const VkCommandBufferAllocateInfo allocateInfo{
+        vkStructureTypeCommandBufferAllocateInfo, nullptr, commandPool, 0, 1};
+    VkCommandBuffer commandBuffer = nullptr;
+    if (allocateCommandBuffers(m_impl->device, &allocateInfo, &commandBuffer) != vkSuccess || commandBuffer == nullptr) {
+        cleanupPool();
+        return std::unexpected(VulkanProbeError::CommandCreationFailed);
+    }
+    const auto cleanupBuffer = [&]() noexcept {
+        freeCommandBuffers(m_impl->device, commandPool, 1, &commandBuffer);
+        cleanupPool();
+    };
+
+    const VkCommandBufferBeginInfo beginInfo{vkStructureTypeCommandBufferBeginInfo, nullptr, 0, nullptr};
+    if (beginCommandBuffer(commandBuffer, &beginInfo) != vkSuccess || endCommandBuffer(commandBuffer) != vkSuccess) {
+        cleanupBuffer();
+        return std::unexpected(VulkanProbeError::CommandCreationFailed);
+    }
+    const VkFenceCreateInfo fenceInfo{vkStructureTypeFenceCreateInfo, nullptr, 0};
+    VkFence fence = nullptr;
+    if (createFence(m_impl->device, &fenceInfo, nullptr, &fence) != vkSuccess || fence == nullptr) {
+        cleanupBuffer();
+        return std::unexpected(VulkanProbeError::CommandCreationFailed);
+    }
+    const VkSubmitInfo submitInfo{vkStructureTypeSubmitInfo, nullptr, 0, nullptr, nullptr, 1, &commandBuffer, 0,
+                                  nullptr};
+    if (queueSubmit(m_impl->graphicsQueue, 1, &submitInfo, fence) != vkSuccess ||
+        waitForFences(m_impl->device, 1, &fence, 1, std::numeric_limits<std::uint64_t>::max()) != vkSuccess) {
+        destroyFence(m_impl->device, fence, nullptr);
+        cleanupBuffer();
+        return std::unexpected(VulkanProbeError::SubmissionFailed);
+    }
+    destroyFence(m_impl->device, fence, nullptr);
+    cleanupBuffer();
+    return {};
+}
 
 std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanProbeOptions &options) {
     static std::mutex loadMutex;
@@ -487,8 +628,16 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         impl->info = VulkanDeviceInfo{apiVersion, physicalDeviceCount, graphicsFamily, computeFamily, copyFamily};
         impl->instance = instance;
         impl->device = device;
+        impl->graphicsQueue = graphicsQueue;
         impl->destroyInstance = destroyInstance;
         impl->destroyDevice = destroyDevice;
+        impl->getDeviceProcAddr = loadInstance<VkGetDeviceProcAddr>(getProcAddr, instance, "vkGetDeviceProcAddr");
+        if (impl->getDeviceProcAddr == nullptr) {
+            destroyDevice(device, nullptr);
+            destroyInstance(instance, nullptr);
+            unload();
+            return std::unexpected(VulkanProbeError::MissingEntryPoint);
+        }
         impl->loaderLoaded = true;
         return VulkanContext(std::move(impl));
     } catch (...) {
