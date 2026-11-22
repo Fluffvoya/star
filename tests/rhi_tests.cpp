@@ -87,4 +87,18 @@ STAR_TEST(vulkanProbeReportsLoaderOrRuntimeAvailability) {
     STAR_CHECK(probe->apiVersion >= (1U << 22U));
 }
 
+STAR_TEST(vulkanContextCreatesLogicalDeviceWhenRuntimeIsAvailable) {
+    const auto context = star::rhi::createVulkanContext();
+    if (!context) {
+        STAR_CHECK(context.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
+                   context.error() == star::rhi::VulkanProbeError::PhysicalDeviceUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::QueueFamilyUnavailable ||
+                   context.error() == star::rhi::VulkanProbeError::DeviceCreationFailed);
+        return;
+    }
+    STAR_CHECK(context->isValid());
+    STAR_CHECK(context->getInfo().physicalDeviceCount > 0);
+}
+
 } // namespace
