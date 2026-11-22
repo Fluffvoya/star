@@ -1,6 +1,7 @@
 #include "test_support.hpp"
 
 #include "rhi/rhi.hpp"
+#include "rhi/vulkan.hpp"
 
 #include <array>
 #include <memory>
@@ -73,6 +74,17 @@ STAR_TEST(nullDeviceSubmitsEachCommandListOnce) {
     STAR_CHECK(submit_result && submit_result->value == 1);
     const auto second_submit = device->submit(star::rhi::QueueType::Graphics, command_lists, {});
     STAR_CHECK(!second_submit && second_submit.error() == star::rhi::DeviceError::InvalidState);
+}
+
+STAR_TEST(vulkanProbeReportsLoaderOrRuntimeAvailability) {
+    const auto probe = star::rhi::probeVulkan();
+    if (!probe) {
+        STAR_CHECK(probe.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
+                   probe.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
+                   probe.error() == star::rhi::VulkanProbeError::PhysicalDeviceEnumerationFailed);
+        return;
+    }
+    STAR_CHECK(probe->apiVersion >= (1U << 22U));
 }
 
 } // namespace
