@@ -1,13 +1,15 @@
 #include "rhi/render_graph.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <optional>
+#include <queue>
 
 namespace star::rhi {
 
 std::expected<RenderTextureHandle, RenderGraphError> RenderGraph::createTexture(std::string_view name,
-                                                                                  const RenderTextureDesc &description) {
+                                                                                const RenderTextureDesc &description) {
     if (name.empty() || description.width == 0 || description.height == 0) {
         return std::unexpected(name.empty() ? RenderGraphError::EmptyName : RenderGraphError::InvalidResource);
     }
@@ -39,7 +41,7 @@ std::expected<RenderPassHandle, RenderGraphError> RenderGraph::addPass(const Ren
 }
 
 std::expected<CompiledRenderGraph, RenderGraphError>
-RenderGraph::compile(std::span<const RenderTextureHandle> outputs) const {
+RenderGraph::compile(std::span<const RenderTextureHandle> outputs) const try {
     if (m_passes.size() > std::numeric_limits<std::uint32_t>::max()) {
         return std::unexpected(RenderGraphError::AllocationFailed);
     }
@@ -48,6 +50,9 @@ RenderGraph::compile(std::span<const RenderTextureHandle> outputs) const {
     std::vector<std::optional<std::uint32_t>> lastWriters(m_textures.size());
     std::vector<std::vector<std::uint32_t>> readers(m_textures.size());
     const auto addDependency = [&dependencies](std::uint32_t pass, std::uint32_t dependency) {
+        if (pass == dependency) {
+            return;
+        }
         auto &list = dependencies[pass];
         if (std::find(list.begin(), list.end(), dependency) == list.end()) {
             list.push_back(dependency);
@@ -85,8 +90,9 @@ RenderGraph::compile(std::span<const RenderTextureHandle> outputs) const {
                 return std::unexpected(RenderGraphError::InvalidResource);
             }
             for (std::uint32_t passIndex = 0; passIndex < passCount; ++passIndex) {
-                if (std::any_of(m_passes[passIndex].uses.begin(), m_passes[passIndex].uses.end(),
-                                [output](const RenderResourceUse &use) { return use.resource == output && use.write; })) {
+                if (std::any_of(
+                        m_passes[passIndex].uses.begin(), m_passes[passIndex].uses.end(),
+                        [output](const RenderResourceUse &use) { return use.resource == output && use.write; })) {
                     needed[passIndex] = true;
                 }
             }
@@ -121,26 +127,22 @@ RenderGraph::compile(std::span<const RenderTextureHandle> outputs) const {
             }
         }
     }
-    std::vector<std::uint32_t> ready;
+    std::priority_queue<std::uint32_t, std::vector<std::uint32_t>, std::greater<>> ready;
     for (std::uint32_t passIndex = 0; passIndex < passCount; ++passIndex) {
         if (needed[passIndex] && indegree[passIndex] == 0) {
-            ready.push_back(passIndex);
+            ready.push(passIndex);
         }
     }
     CompiledRenderGraph compiled;
-    try {
-        while (!ready.empty()) {
-            const std::uint32_t passIndex = ready.front();
-            ready.erase(ready.begin());
-            compiled.passOrder.push_back(RenderPassHandle{passIndex});
-            for (const std::uint32_t dependent : dependents[passIndex]) {
-                if (--indegree[dependent] == 0) {
-                    ready.push_back(dependent);
-                }
+    while (!ready.empty()) {
+        const std::uint32_t passIndex = ready.top();
+        ready.pop();
+        compiled.passOrder.push_back(RenderPassHandle{passIndex});
+        for (const std::uint32_t dependent : dependents[passIndex]) {
+            if (--indegree[dependent] == 0) {
+                ready.push(dependent);
             }
         }
-    } catch (...) {
-        return std::unexpected(RenderGraphError::AllocationFailed);
     }
     std::size_t neededCount = 0;
     for (const bool value : needed) {
@@ -163,29 +165,81 @@ RenderGraph::compile(std::span<const RenderTextureHandle> outputs) const {
     }
     for (std::uint32_t resourceIndex = 0; resourceIndex < m_textures.size(); ++resourceIndex) {
         if (firstUse[resourceIndex].has_value()) {
-            compiled.lifetimes.push_back(
-                RenderResourceLifetime{RenderTextureHandle{resourceIndex}, *firstUse[resourceIndex], *lastUse[resourceIndex]});
+            compiled.lifetimes.push_back(RenderResourceLifetime{RenderTextureHandle{resourceIndex},
+                                                                *firstUse[resourceIndex], *lastUse[resourceIndex]});
         }
     }
     for (std::uint32_t resourceIndex = 0; resourceIndex < m_textures.size(); ++resourceIndex) {
         std::optional<RenderPassHandle> previousPass;
         bool previousWrite = false;
+        TextureState previous_state = TextureState::Undefined;
         for (const RenderPassHandle pass : compiled.passOrder) {
-            const auto use = std::find_if(m_passes[pass.id].uses.begin(), m_passes[pass.id].uses.end(),
-                                          [resourceIndex](const RenderResourceUse &value) {
-                                              return value.resource.id == resourceIndex;
-                                          });
-            if (use == m_passes[pass.id].uses.end()) {
+            bool used = false;
+            bool writes = false;
+            TextureState state = TextureState::Undefined;
+            for (const RenderResourceUse &use : m_passes[pass.id].uses) {
+                if (use.resource.id == resourceIndex) {
+                    used = true;
+                    writes |= use.write;
+                    if (use.state != TextureState::Undefined) {
+                        if (state != TextureState::Undefined && state != use.state) {
+                            return std::unexpected(RenderGraphError::InvalidPass);
+                        }
+                        state = use.state;
+                    }
+                }
+            }
+            if (!used) {
                 continue;
             }
-            if (previousPass.has_value() && (previousWrite || use->write)) {
-                compiled.barriers.push_back(RenderBarrier{RenderTextureHandle{resourceIndex}, *previousPass, pass});
+            if (previousPass.has_value() && (previousWrite || writes || previous_state != state)) {
+                compiled.barriers.push_back(
+                    RenderBarrier{RenderTextureHandle{resourceIndex}, *previousPass, pass, previous_state, state});
             }
             previousPass = pass;
-            previousWrite = use->write;
+            previousWrite = writes;
+            previous_state = state;
+        }
+    }
+    std::vector<RenderResourceLifetime *> transients;
+    for (RenderResourceLifetime &lifetime : compiled.lifetimes) {
+        const RenderTextureDesc &description = m_textures[lifetime.resource.id].description;
+        if (!description.imported && description.usage != TextureUsage::None) {
+            transients.push_back(&lifetime);
+        }
+    }
+    std::stable_sort(transients.begin(), transients.end(),
+                     [](const auto *left, const auto *right) { return left->firstPass < right->firstPass; });
+    std::vector<const RenderResourceLifetime *> slot_owners;
+    for (RenderResourceLifetime *lifetime : transients) {
+        const Texture &texture = m_textures[lifetime->resource.id];
+        const RenderPassHandle first_pass = compiled.passOrder[lifetime->firstPass];
+        const auto &uses = m_passes[first_pass.id].uses;
+        const bool writes_first = std::any_of(uses.begin(), uses.end(), [lifetime](const RenderResourceUse &use) {
+            return use.resource == lifetime->resource && use.write;
+        });
+        const auto reusable = std::find_if(slot_owners.begin(), slot_owners.end(), [&](const auto *owner) {
+            const auto &old = m_textures[owner->resource.id].description;
+            const auto &next = texture.description;
+            return writes_first && owner->lastPass < lifetime->firstPass && old.width == next.width &&
+                   old.height == next.height && old.format == next.format && old.usage == next.usage;
+        });
+        lifetime->transientSlot = static_cast<std::uint32_t>(reusable - slot_owners.begin());
+        if (reusable == slot_owners.end()) {
+            compiled.transientTextures.push_back({texture.description, texture.name});
+            slot_owners.push_back(lifetime);
+        } else {
+            compiled.textureReuses.push_back({(*reusable)->resource, lifetime->resource, first_pass});
+            *reusable = lifetime;
         }
     }
     return compiled;
+} catch (const std::bad_alloc &) {
+    return std::unexpected(RenderGraphError::AllocationFailed);
+}
+
+std::string_view RenderGraph::getPassName(RenderPassHandle pass) const noexcept {
+    return pass.id < m_passes.size() ? std::string_view(m_passes[pass.id].name) : std::string_view{};
 }
 
 void RenderGraph::clear() noexcept {

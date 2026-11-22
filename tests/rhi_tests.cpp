@@ -226,4 +226,32 @@ STAR_TEST(renderGraphOrdersDependenciesAndCullsUnusedPasses) {
     STAR_CHECK(compiled->lifetimes.size() == 2);
 }
 
+STAR_TEST(renderGraphReusesCompatibleTexturesAfterTheirLastPass) {
+    using namespace star::rhi;
+    RenderGraph graph;
+    constexpr RenderTextureDesc transient{.width = 8, .height = 8, .usage = TextureUsage::RenderTarget};
+    auto imported_desc = transient;
+    imported_desc.imported = true;
+    const auto first = graph.createTexture("First", transient);
+    const auto overlap = graph.createTexture("Overlapping", transient);
+    const auto later = graph.createTexture("Later", transient);
+    const auto imported = graph.createTexture("Imported", imported_desc);
+    STAR_CHECK(first && overlap && later && imported);
+
+    const std::array prepare{RenderResourceUse{*first, true}};
+    const std::array use_first{RenderResourceUse{*first, false}, RenderResourceUse{*overlap, true}};
+    const std::array use_later{RenderResourceUse{*later, true}, RenderResourceUse{*imported, true}};
+    STAR_CHECK(graph.addPass({"Prepare", RenderPassType::Raster, prepare}));
+    STAR_CHECK(graph.addPass({"Read", RenderPassType::Raster, use_first}));
+    const auto final = graph.addPass({"Reuse", RenderPassType::Raster, use_later});
+    STAR_CHECK(final);
+    const auto graph_result = graph.compile();
+    STAR_CHECK(graph_result && graph_result->transientTextures.size() == 2);
+    STAR_CHECK(graph_result->lifetimes[first->id].transientSlot != graph_result->lifetimes[overlap->id].transientSlot);
+    STAR_CHECK(graph_result->lifetimes[first->id].transientSlot == graph_result->lifetimes[later->id].transientSlot);
+    STAR_CHECK(graph_result->lifetimes[imported->id].transientSlot == UINT32_MAX);
+    STAR_CHECK(graph_result->textureReuses.size() == 1 && graph_result->textureReuses[0].previous == *first &&
+               graph_result->textureReuses[0].next == *later && graph_result->textureReuses[0].beforePass == *final);
+}
+
 } // namespace
