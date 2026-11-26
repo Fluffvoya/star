@@ -57,6 +57,10 @@ std::string cursorString(CXString value) {
 
 std::vector<std::string> clangArguments(const Options &options) {
     std::vector<std::string> arguments{"-x", "c++", "-std=c++23", "-DSTAR_REFLECTION_PARSER"};
+#ifdef STAR_CLANG_MINGW_TARGET
+    arguments.emplace_back("--target=" STAR_CLANG_MINGW_TARGET);
+    arguments.emplace_back("--sysroot=" STAR_CLANG_MINGW_SYSROOT);
+#endif
 #ifdef STAR_CLANG_RESOURCE_DIR
     arguments.emplace_back("-resource-dir=" STAR_CLANG_RESOURCE_DIR);
 #endif

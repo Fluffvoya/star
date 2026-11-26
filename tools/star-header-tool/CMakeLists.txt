@@ -22,6 +22,27 @@ target_compile_features(StarHeaderTool PRIVATE cxx_std_23)
 target_include_directories(StarHeaderTool PRIVATE "${STAR_LIBCLANG_INCLUDE_DIR}")
 target_link_libraries(StarHeaderTool PRIVATE "${STAR_LIBCLANG_LIBRARY}")
 if(STAR_CLANG_RESOURCE_DIR AND clang_result EQUAL 0)
+    file(TO_CMAKE_PATH "${STAR_CLANG_RESOURCE_DIR}" STAR_CLANG_RESOURCE_DIR)
     target_compile_definitions(StarHeaderTool PRIVATE STAR_CLANG_RESOURCE_DIR="${STAR_CLANG_RESOURCE_DIR}")
+endif()
+if(MINGW)
+    execute_process(
+        COMMAND "${CMAKE_CXX_COMPILER}" -dumpmachine
+        RESULT_VARIABLE mingw_result
+        OUTPUT_VARIABLE mingw_target
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(NOT mingw_result EQUAL 0 OR NOT mingw_target)
+        message(FATAL_ERROR "StarHeaderTool could not determine the MinGW target")
+    endif()
+    if(CMAKE_SYSROOT)
+        set(mingw_sysroot "${CMAKE_SYSROOT}")
+    else()
+        cmake_path(GET CMAKE_CXX_COMPILER PARENT_PATH mingw_bin)
+        cmake_path(GET mingw_bin PARENT_PATH mingw_sysroot)
+    endif()
+    file(TO_CMAKE_PATH "${mingw_sysroot}" mingw_sysroot)
+    target_compile_definitions(StarHeaderTool PRIVATE
+        STAR_CLANG_MINGW_TARGET="${mingw_target}" STAR_CLANG_MINGW_SYSROOT="${mingw_sysroot}")
 endif()
 set_target_properties(StarHeaderTool PROPERTIES OUTPUT_NAME "star-header-tool")
