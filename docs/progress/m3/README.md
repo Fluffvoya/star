@@ -5,3 +5,4 @@
 | 01 | [场景与对象存储](01-scene-foundation.md) |
 | 02 | [组件注册与查询](02-component-access.md) |
 | 03 | [内置组件与层级变换](03-scene-hierarchy.md) |
+| 04 | [GameObject 生命周期](04-gameobject-lifecycle.md) |

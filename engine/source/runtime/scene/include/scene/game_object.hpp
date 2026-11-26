@@ -15,6 +15,12 @@ struct Transform;
 struct WorldTransform;
 enum class SceneError : std::uint8_t;
 
+enum class EndPlayReason : std::uint8_t {
+    WorldStopped,
+    SceneUnloaded,
+    Destroyed,
+};
+
 class ObjectHandle final {
   public:
     constexpr ObjectHandle() = default;
@@ -50,10 +56,23 @@ class STAR_SCENE_API GameObject {
     [[nodiscard]] std::expected<void, SceneError> setParent(GameObject *parent,
                                                             bool keep_world_transform = true) noexcept;
     [[nodiscard]] std::expected<void, SceneError> destroy() noexcept;
+    void setActive(bool active) noexcept { m_active = active; }
+    [[nodiscard]] bool isActiveInHierarchy() const noexcept { return m_active_in_hierarchy; }
+
+    template <class Component> [[nodiscard]] Component *tryGetComponent() noexcept;
+    template <class Component> [[nodiscard]] const Component *tryGetComponent() const noexcept;
+
     [[nodiscard]] bool isPendingDestroy() const noexcept { return m_pending_destroy; }
 
   protected:
     GameObject() = default;
+
+    virtual void onCreate() noexcept {}
+    virtual void onEnable() noexcept {}
+    virtual void onBeginPlay() noexcept {}
+    virtual void onEndPlay(EndPlayReason) noexcept {}
+    virtual void onDisable() noexcept {}
+    virtual void onDestroy() noexcept {}
 
   private:
     friend class Scene;
@@ -62,6 +81,9 @@ class STAR_SCENE_API GameObject {
     std::string m_name;
     Scene *m_scene = nullptr;
     ObjectHandle m_handle;
+    bool m_active = true;
+    bool m_active_in_hierarchy = false;
+    bool m_begun_play = false;
     bool m_pending_destroy = false;
 };
 

@@ -1,4 +1,4 @@
-#include "scene/scene.hpp"
+#include "scene/world.hpp"
 
 #include "builtin_components.hpp"
 #include "core/slot_map.hpp"
@@ -42,6 +42,7 @@ struct ObjectEntry {
     std::unique_ptr<GameObject> object;
     entt::entity entity = entt::null;
     bool transform_dirty = true;
+    bool spawned = false;
 };
 
 using ObjectStorage = SlotMap<ObjectEntry>;
@@ -91,6 +92,12 @@ struct ComponentCommand {
     ComponentValues::node_type addition;
 };
 
+struct SpawnCommand {
+    std::unique_ptr<GameObject> object;
+    Guid guid;
+    std::string name;
+};
+
 struct ParentCommand {
     ObjectHandle child;
     ObjectHandle parent;
@@ -118,9 +125,12 @@ struct Scene::Impl {
     std::unordered_map<reflect::TypeId, ComponentPool> components;
     std::vector<ComponentCommand> pending_components;
     std::vector<ParentCommand> pending_parents;
+    std::vector<SpawnCommand> pending_spawns;
     const reflect::TypeId transform_id = componentTypeId<Transform>();
     std::size_t query_depth = 0;
     bool mutating = false;
+    bool committing = false;
+    bool shutting_down = false;
 
     [[nodiscard]] ObjectEntry *entry(ObjectHandle handle) noexcept;
     Hierarchy &hierarchy(ObjectHandle handle) noexcept;
@@ -130,7 +140,8 @@ struct Scene::Impl {
     math::Mat4 computeWorld(ObjectHandle node) noexcept;
     std::expected<void, SceneError> applyParent(const ParentCommand &command) noexcept;
     void unlink(Hierarchy &links) noexcept;
-    void destroySubtree(ObjectHandle root) noexcept;
+    void destroySubtree(ObjectHandle root, EndPlayReason reason) noexcept;
+    void refreshActivity(bool playing) noexcept;
     void propagateTransforms() noexcept;
 
     [[nodiscard]] ObjectStorage::Handle resolve(std::uint32_t index, std::uint32_t generation) const noexcept;
@@ -245,7 +256,7 @@ std::expected<void, SceneError> Scene::Impl::applyParent(const ParentCommand &co
     return {};
 }
 
-void Scene::Impl::destroySubtree(ObjectHandle root) noexcept {
+void Scene::Impl::destroySubtree(ObjectHandle root, EndPlayReason reason) noexcept {
     auto node = root;
     while (true) {
         auto &links = hierarchy(node);
@@ -254,9 +265,19 @@ void Scene::Impl::destroySubtree(ObjectHandle root) noexcept {
             continue;
         }
         const auto parent = links.parent;
-        unlink(links);
         const auto slot = resolve(node.m_index, node.m_generation);
         const auto &object = *objects.get(slot);
+        auto &instance = *object.object;
+        instance.m_pending_destroy = true;
+        if (std::exchange(instance.m_begun_play, false)) {
+            instance.onEndPlay(reason);
+        }
+        if (std::exchange(instance.m_active_in_hierarchy, false)) {
+            instance.onDisable();
+        }
+        instance.onDestroy();
+        unlink(links);
+        MutationScope scope(mutating);
         by_guid.erase(object.object->getGuid());
         for (auto &[type, pool] : components) {
             pool.values.erase(object.entity);
@@ -268,6 +289,34 @@ void Scene::Impl::destroySubtree(ObjectHandle root) noexcept {
             return;
         }
         node = parent;
+    }
+}
+
+void Scene::Impl::refreshActivity(bool playing) noexcept {
+    for (std::size_t index = 0; index < objects.getSize(); ++index) {
+        const auto root = objects.get(objects.getHandleAt(index))->object->getHandle();
+        if (hierarchy(root).parent != ObjectHandle{}) {
+            continue;
+        }
+        for (auto node = root; node != ObjectHandle{}; node = nextInSubtree(node, root)) {
+            auto &object = *entry(node)->object;
+            if (object.m_pending_destroy) {
+                continue;
+            }
+            const auto parent = hierarchy(node).parent;
+            const bool active =
+                object.m_active && (parent == ObjectHandle{} || entry(parent)->object->m_active_in_hierarchy);
+            if (std::exchange(object.m_active_in_hierarchy, active) != active) {
+                if (active) {
+                    object.onEnable();
+                } else {
+                    object.onDisable();
+                }
+            }
+            if (playing && active && !object.m_pending_destroy && !std::exchange(object.m_begun_play, true)) {
+                object.onBeginPlay();
+            }
+        }
     }
 }
 
@@ -343,12 +392,17 @@ Scene::Scene(World &world) : m_impl(std::make_unique<Impl>()), m_world(world) {
 }
 
 Scene::~Scene() {
-    m_impl->mutating = true;
-    m_impl->pending_components.clear();
-    std::erase_if(m_impl->components, [this](const auto &entry) { return entry.first != m_impl->transform_id; });
+    auto &impl = *m_impl;
+    impl.committing = true;
+    impl.shutting_down = true;
+    while (impl.objects.getSize() != 0) {
+        const auto handle = impl.objects.get(impl.objects.getHandleAt(impl.objects.getSize() - 1))->object->getHandle();
+        impl.destroySubtree(handle, EndPlayReason::SceneUnloaded);
+    }
+    impl.mutating = true;
 }
 
-bool Scene::isBusy() const noexcept { return m_impl->query_depth != 0 || m_impl->mutating; }
+bool Scene::isBusy() const noexcept { return m_impl->query_depth != 0 || m_impl->mutating || m_impl->committing; }
 
 std::size_t Scene::getObjectCount() const noexcept { return m_impl->objects.getSize(); }
 
@@ -361,14 +415,33 @@ std::expected<ObjectHandle, SceneError> Scene::createObject(std::string_view nam
 }
 
 std::expected<ObjectHandle, SceneError> Scene::createObject(std::string_view name, Guid guid) noexcept {
+    if (isBusy()) {
+        return std::unexpected(SceneError::Busy);
+    }
+    try {
+        MutationScope scope(m_impl->committing);
+        auto attached = attachObject(std::unique_ptr<GameObject>(new GameObject()), guid, name);
+        if (attached) {
+            auto &object = *findObject(*attached);
+            object.onCreate();
+            if (object.m_active && !object.m_pending_destroy) {
+                object.m_active_in_hierarchy = true;
+                object.onEnable();
+            }
+        }
+        return attached;
+    } catch (...) {
+        return std::unexpected(SceneError::ResourceExhausted);
+    }
+}
+
+std::expected<ObjectHandle, SceneError> Scene::attachObject(std::unique_ptr<GameObject> object, Guid guid,
+                                                            std::string_view name) noexcept {
     if (!guid.isValid()) {
         return std::unexpected(SceneError::InvalidGuid);
     }
 
     Impl &impl = *m_impl;
-    if (isBusy()) {
-        return std::unexpected(SceneError::Busy);
-    }
     if (impl.by_guid.contains(guid)) {
         return std::unexpected(SceneError::DuplicateGuid);
     }
@@ -379,7 +452,6 @@ std::expected<ObjectHandle, SceneError> Scene::createObject(std::string_view nam
     ObjectStorage::Handle slot;
     entt::entity entity = entt::null;
     try {
-        auto object = std::unique_ptr<GameObject>(new GameObject());
         object->m_guid = guid;
         object->m_name = name;
         object->m_scene = this;
@@ -441,8 +513,38 @@ const GameObject *Scene::findObject(const Guid &guid) const noexcept {
     return entry == m_impl->by_guid.end() ? nullptr : m_impl->objects.get(entry->second)->object.get();
 }
 
+std::expected<SpawnToken, SceneError> Scene::queueSpawn(std::string_view name,
+                                                        std::unique_ptr<GameObject> object) noexcept {
+    if (m_impl->mutating || m_impl->shutting_down) {
+        return std::unexpected(SceneError::Busy);
+    }
+    if (!object || object->m_scene != nullptr) {
+        return std::unexpected(SceneError::CreationFailed);
+    }
+    try {
+        const Guid guid = Guid::generate();
+        m_impl->pending_spawns.push_back({std::move(object), guid, std::string(name)});
+        return SpawnToken(m_impl->id, guid);
+    } catch (...) {
+        return std::unexpected(SceneError::ResourceExhausted);
+    }
+}
+
+std::expected<SpawnToken, SceneError> Scene::queueSpawn(std::string_view name) noexcept {
+    try {
+        return queueSpawn(name, std::unique_ptr<GameObject>(new GameObject()));
+    } catch (...) {
+        return std::unexpected(SceneError::ResourceExhausted);
+    }
+}
+
+ObjectHandle Scene::resolve(const SpawnToken &token) const noexcept {
+    const auto *object = token.m_scene == m_impl->id ? findObject(token.m_guid) : nullptr;
+    return object != nullptr && m_impl->entry(object->getHandle())->spawned ? object->getHandle() : ObjectHandle{};
+}
+
 std::expected<void, SceneError> Scene::queueDestroy(ObjectHandle handle) noexcept {
-    if (m_impl->mutating) {
+    if (m_impl->mutating || m_impl->shutting_down) {
         return std::unexpected(SceneError::Busy);
     }
     auto *object = findObject(handle);
@@ -467,35 +569,63 @@ std::expected<void, SceneError> Scene::commitCommands() noexcept {
     if (isBusy()) {
         return std::unexpected(SceneError::Busy);
     }
-    MutationScope scope(impl.mutating);
-    for (auto &command : impl.pending_components) {
-        auto &values = impl.components.at(command.type).values;
-        if (command.addition.empty()) {
-            values.erase(command.entity);
-        } else {
-            values.insert(std::move(command.addition));
+    MutationScope committing(impl.committing);
+    auto components = std::exchange(impl.pending_components, {});
+    auto parents = std::exchange(impl.pending_parents, {});
+    auto destroys = std::exchange(impl.pending_destroy, {});
+    auto spawns = std::exchange(impl.pending_spawns, {});
+    {
+        MutationScope mutating(impl.mutating);
+        for (auto &command : components) {
+            auto &values = impl.components.at(command.type).values;
+            if (command.addition.empty()) {
+                values.erase(command.entity);
+            } else {
+                values.insert(std::move(command.addition));
+            }
         }
+        components.clear();
     }
-    impl.pending_components.clear();
 
     std::expected<void, SceneError> result;
-    for (const auto &command : impl.pending_parents) {
+    for (const auto &command : parents) {
         const auto applied = impl.applyParent(command);
         if (!applied && result) {
             result = std::unexpected(applied.error());
         }
     }
-    impl.pending_parents.clear();
 
-    for (const auto slot : impl.pending_destroy) {
+    for (const auto slot : destroys) {
         const auto *entry = impl.objects.get(slot);
         if (entry != nullptr) {
-            impl.destroySubtree(entry->object->getHandle());
+            impl.destroySubtree(entry->object->getHandle(), EndPlayReason::Destroyed);
         }
     }
-    impl.pending_destroy.clear();
+    for (auto &spawn : spawns) {
+        const auto attached = attachObject(std::move(spawn.object), spawn.guid, spawn.name);
+        if (attached) {
+            auto &entry = *impl.entry(*attached);
+            entry.spawned = true;
+            entry.object->onCreate();
+        } else if (result) {
+            result = std::unexpected(attached.error());
+        }
+    }
+
+    impl.refreshActivity(m_world.isPlaying());
     impl.propagateTransforms();
     return result;
+}
+
+void Scene::endPlay(EndPlayReason reason) noexcept {
+    auto &impl = *m_impl;
+    MutationScope committing(impl.committing);
+    for (std::size_t index = 0; index < impl.objects.getSize(); ++index) {
+        auto &object = *impl.objects.get(impl.objects.getHandleAt(index))->object;
+        if (std::exchange(object.m_begun_play, false)) {
+            object.onEndPlay(reason);
+        }
+    }
 }
 
 const Hierarchy *Scene::findHierarchy(ObjectHandle handle) const noexcept {
@@ -511,7 +641,7 @@ const WorldTransform *Scene::findWorldTransform(ObjectHandle handle) const noexc
 std::expected<void, SceneError> Scene::queueSetParent(ObjectHandle child, ObjectHandle parent,
                                                       bool keep_world_transform) noexcept {
     Impl &impl = *m_impl;
-    if (impl.mutating) {
+    if (impl.mutating || impl.shutting_down) {
         return std::unexpected(SceneError::Busy);
     }
     const auto *child_object = findObject(child);
@@ -593,7 +723,7 @@ const void *Scene::findComponent(ObjectHandle handle, reflect::TypeId type) cons
 std::expected<void, SceneError> Scene::queueAddComponent(ObjectHandle handle, reflect::TypeId type,
                                                          const void *initial) noexcept {
     Impl &impl = *m_impl;
-    if (impl.mutating) {
+    if (impl.mutating || impl.shutting_down) {
         return std::unexpected(SceneError::Busy);
     }
     const auto *object = impl.entry(handle);
@@ -625,7 +755,7 @@ std::expected<void, SceneError> Scene::queueAddComponent(ObjectHandle handle, re
 
 std::expected<void, SceneError> Scene::queueRemoveComponent(ObjectHandle handle, reflect::TypeId type) noexcept {
     Impl &impl = *m_impl;
-    if (impl.mutating) {
+    if (impl.mutating || impl.shutting_down) {
         return std::unexpected(SceneError::Busy);
     }
     const auto *object = impl.entry(handle);
