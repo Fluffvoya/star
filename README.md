@@ -15,6 +15,7 @@ asynchronous runs, priority queues, parallel-for helpers, and nested-safe job wa
 - A C++23 compiler
 - SDL3 3.2 or newer
 - xxHash 0.8 or newer
+- EnTT 3.14.0 (via the vcpkg manifest)
 
 Reflection generation uses libclang 18 or newer and its matching Clang driver. CMake skips
 StarHeaderTool when libclang is unavailable. The `generated-reflection` and
@@ -29,10 +30,10 @@ git submodule update --init --recursive
 Shipping and Profile dependency versions are pinned by the repository vcpkg manifest. Configure those builds with
 the vcpkg toolchain on the target host.
 
-On Linux, configure and validate the current scaffold with:
+On Linux, set `VCPKG_ROOT` to your vcpkg installation and configure and validate the engine with:
 
 ```sh
-cmake --preset linux-dev
+cmake --preset linux-dev -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 cmake --build --preset linux-dev
 ctest --preset linux-dev --output-on-failure
 ```

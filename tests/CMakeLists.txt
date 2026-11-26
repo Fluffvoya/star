@@ -1,13 +1,13 @@
 add_custom_target(StarPublicHeadersCheck)
 
-foreach(module IN ITEMS Core Reflection Serialization RHI Jobs Platform)
+foreach(module IN ITEMS Core Reflection Serialization Scene RHI Jobs Platform)
     string(TOLOWER "${module}" module_slug)
     set(target "Star${module}Tests")
     set(test_name "${module_slug}-tests")
 
     get_target_property(module_source_dir Star${module} SOURCE_DIR)
-    if(module STREQUAL "Serialization")
-        set(test_source "${module_source_dir}/tests/serialization_tests.cpp")
+    if(module MATCHES "^(Serialization|Scene)$")
+        set(test_source "${module_source_dir}/tests/${module_slug}_tests.cpp")
     else()
         set(test_source "${module_slug}_tests.cpp")
     endif()
