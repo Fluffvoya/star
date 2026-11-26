@@ -5,7 +5,7 @@
 | M0 | [基础设施](m0/README.md) | [总体验收](m0/23-completion.md) | [Windows 验收](m0/24-windows-acceptance.md) |
 | M1 | [反射与序列化](m1/README.md) | [生成器与联合验收](m1/03-generated-reflection.md) | [Windows 验收](m1/04-windows-acceptance.md) |
 | M2 | [RHI 与 Vulkan](m2/README.md) | [Vulkan 呈现与抓帧](m2/09-vulkan-textured-mesh.md) | [Windows 验收](m2/10-windows-acceptance.md) |
-| M3 | [Gameplay 框架](m3/README.md) | [内置组件与层级变换](m3/03-scene-hierarchy.md) | 尚未验证 |
+| M3 | [Gameplay 框架](m3/README.md) | [GameObject 生命周期](m3/04-gameobject-lifecycle.md) | 尚未验证 |
 
 各报告记录对应阶段的交付范围和实测结果。Windows 上复验时参照 [构建与测试指南](../windows-build.md)。
 

@@ -2,6 +2,9 @@
 
 #include "scene/world.hpp"
 
+#include <algorithm>
+#include <initializer_list>
+
 namespace {
 
 STAR_TEST(sceneCreatesObjectsAndResolvesTheirIdentity) {
@@ -296,6 +299,123 @@ STAR_TEST(sceneRegistersOptionalBuiltinsAndKeepsRequiredLocalTransform) {
     STAR_CHECK(scene.findComponent<star::Camera>(*object)->near_plane > 0.0F);
     STAR_CHECK(scene.findComponent<star::Light>(*object)->intensity == 1.0F);
     STAR_CHECK(scene.findComponent<star::MeshRenderer>(*object)->cast_shadows);
+}
+
+} // namespace
+
+namespace {
+
+enum class LifecycleEvent { Created, Enabled, Begun, Stopped, DestroyedPlay, UnloadedPlay, Disabled, Destroyed };
+
+struct LifecycleLog {
+    std::array<LifecycleEvent, 24> events{};
+    std::size_t count = 0;
+    bool had_transform = false;
+    bool queued_only = false;
+    star::SpawnToken nested;
+
+    void record(LifecycleEvent event) noexcept { events[count++] = event; }
+
+    bool matches(std::initializer_list<LifecycleEvent> expected) const noexcept {
+        return std::ranges::equal(std::span(events.data(), count), expected);
+    }
+};
+
+class LifecycleObject final : public star::GameObject {
+  public:
+    explicit LifecycleObject(LifecycleLog &log, bool spawn_on_create = false) noexcept
+        : m_log(log), m_spawn_on_create(spawn_on_create) {}
+
+  private:
+    void onCreate() noexcept override {
+        m_log.record(LifecycleEvent::Created);
+        m_log.had_transform = tryGetComponent<const star::Transform>() != nullptr;
+        if (m_spawn_on_create) {
+            const auto nested = getScene().queueSpawn("Nested");
+            if (nested) {
+                m_log.nested = *nested;
+                const auto commit = getScene().commitCommands();
+                m_log.queued_only = !commit && commit.error() == star::SceneError::Busy;
+            }
+        }
+    }
+
+    void onEnable() noexcept override { m_log.record(LifecycleEvent::Enabled); }
+    void onBeginPlay() noexcept override { m_log.record(LifecycleEvent::Begun); }
+
+    void onEndPlay(star::EndPlayReason reason) noexcept override {
+        using enum star::EndPlayReason;
+        switch (reason) {
+        case WorldStopped:
+            m_log.record(LifecycleEvent::Stopped);
+            break;
+        case Destroyed:
+            m_log.record(LifecycleEvent::DestroyedPlay);
+            break;
+        case SceneUnloaded:
+            m_log.record(LifecycleEvent::UnloadedPlay);
+            break;
+        }
+    }
+
+    void onDisable() noexcept override { m_log.record(LifecycleEvent::Disabled); }
+    void onDestroy() noexcept override { m_log.record(LifecycleEvent::Destroyed); }
+
+    LifecycleLog &m_log;
+    bool m_spawn_on_create;
+};
+
+STAR_TEST(sceneSpawnsDerivedObjectsAndDefersLifecycleCommandsToNextCommit) {
+    using enum LifecycleEvent;
+    LifecycleLog log;
+    star::World world;
+    const auto created = world.createScene();
+    STAR_CHECK(created && world.beginPlay());
+    auto &scene = **created;
+    const auto token = scene.queueSpawn("Derived", std::make_unique<LifecycleObject>(log, true));
+    STAR_CHECK(token && scene.resolve(*token) == star::ObjectHandle{});
+    STAR_CHECK(scene.commitCommands());
+    const auto handle = scene.resolve(*token);
+    STAR_CHECK(scene.findObject(handle) != nullptr);
+    STAR_CHECK(log.matches({Created, Enabled, Begun}));
+    STAR_CHECK(log.had_transform && log.queued_only);
+    STAR_CHECK(scene.resolve(log.nested) == star::ObjectHandle{});
+    STAR_CHECK(scene.commitCommands());
+    STAR_CHECK(scene.resolve(log.nested) != star::ObjectHandle{});
+
+    const auto guid = scene.findObject(handle)->getGuid();
+    STAR_CHECK(scene.findObject(handle)->destroy());
+    STAR_CHECK(scene.commitCommands());
+    STAR_CHECK(log.matches({Created, Enabled, Begun, DestroyedPlay, Disabled, Destroyed}));
+    STAR_CHECK(scene.resolve(*token) == star::ObjectHandle{});
+    STAR_CHECK(scene.createObject("Restored", guid));
+    STAR_CHECK(scene.resolve(*token) == star::ObjectHandle{});
+}
+
+STAR_TEST(worldTransitionsPlayAndPropagatesHierarchyActivity) {
+    using enum LifecycleEvent;
+    LifecycleLog log;
+    star::World world;
+    const auto created = world.createScene();
+    STAR_CHECK(created);
+    auto &scene = **created;
+    const auto parent = scene.createObject("Parent");
+    const auto token = scene.queueSpawn("Child", std::make_unique<LifecycleObject>(log));
+    STAR_CHECK(parent && token && scene.commitCommands());
+    const auto child = scene.resolve(*token);
+    STAR_CHECK(scene.queueSetParent(child, *parent));
+    scene.findObject(*parent)->setActive(false);
+    STAR_CHECK(world.beginPlay());
+    STAR_CHECK(!scene.findObject(child)->isActiveInHierarchy());
+    STAR_CHECK(log.matches({Created, Enabled, Disabled}));
+    scene.findObject(*parent)->setActive(true);
+    STAR_CHECK(scene.commitCommands());
+    STAR_CHECK(log.matches({Created, Enabled, Disabled, Enabled, Begun}));
+    STAR_CHECK(world.endPlay() && world.endPlay());
+    STAR_CHECK(world.beginPlay());
+    STAR_CHECK(world.unloadScene(scene));
+    STAR_CHECK(
+        log.matches({Created, Enabled, Disabled, Enabled, Begun, Stopped, Begun, UnloadedPlay, Disabled, Destroyed}));
 }
 
 } // namespace

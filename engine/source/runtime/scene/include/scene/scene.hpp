@@ -31,6 +31,17 @@ enum class SceneError : std::uint8_t {
     IncompatibleTransform,
 };
 
+class SpawnToken final {
+  public:
+    SpawnToken() = default;
+
+  private:
+    friend class Scene;
+    SpawnToken(std::uint64_t scene, Guid guid) noexcept : m_scene(scene), m_guid(guid) {}
+    std::uint64_t m_scene = 0;
+    Guid m_guid;
+};
+
 template <class Component> [[nodiscard]] reflect::TypeId componentTypeId() noexcept {
     return reflect::makeTypeId(ComponentTraits<std::remove_cv_t<Component>>::name);
 }
@@ -52,6 +63,22 @@ class STAR_SCENE_API Scene final {
     [[nodiscard]] const GameObject *findObject(ObjectHandle handle) const noexcept;
     [[nodiscard]] GameObject *findObject(const Guid &guid) noexcept;
     [[nodiscard]] const GameObject *findObject(const Guid &guid) const noexcept;
+
+    [[nodiscard]] std::expected<SpawnToken, SceneError> queueSpawn(std::string_view name,
+                                                                   std::unique_ptr<GameObject> object) noexcept;
+    [[nodiscard]] std::expected<SpawnToken, SceneError> queueSpawn(std::string_view name) noexcept;
+
+    template <std::derived_from<GameObject> T>
+        requires std::default_initializable<T>
+    [[nodiscard]] std::expected<SpawnToken, SceneError> queueSpawn(std::string_view name) noexcept {
+        try {
+            return queueSpawn(name, std::make_unique<T>());
+        } catch (...) {
+            return std::unexpected(SceneError::CreationFailed);
+        }
+    }
+
+    [[nodiscard]] ObjectHandle resolve(const SpawnToken &token) const noexcept;
 
     // Enqueue destruction without invalidating current borrows until commit.
     [[nodiscard]] std::expected<void, SceneError> queueDestroy(ObjectHandle handle) noexcept;
@@ -109,6 +136,9 @@ class STAR_SCENE_API Scene final {
 
     explicit Scene(World &world);
     [[nodiscard]] bool isBusy() const noexcept;
+    [[nodiscard]] std::expected<ObjectHandle, SceneError> attachObject(std::unique_ptr<GameObject> object, Guid guid,
+                                                                       std::string_view name) noexcept;
+    void endPlay(EndPlayReason reason) noexcept;
     using ComponentVisitor = void (*)(const void *, ObjectHandle, void *const *) noexcept;
     [[nodiscard]] std::expected<void, SceneError> visitComponents(std::span<const reflect::TypeId> types,
                                                                   std::span<const bool> writable, const void *context,
@@ -117,5 +147,13 @@ class STAR_SCENE_API Scene final {
     std::unique_ptr<Impl> m_impl;
     World &m_world;
 };
+
+template <class Component> Component *GameObject::tryGetComponent() noexcept {
+    return m_scene->findComponent<Component>(m_handle);
+}
+
+template <class Component> const Component *GameObject::tryGetComponent() const noexcept {
+    return std::as_const(*m_scene).findComponent<Component>(m_handle);
+}
 
 } // namespace star
