@@ -21,6 +21,27 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32) && !defined(STAR_MONOLITHIC)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+namespace {
+constinit bool g_process_detaching = false;
+}
+
+BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved) {
+    if (reason == DLL_PROCESS_DETACH && reserved != nullptr) {
+        g_process_detaching = true;
+    }
+    return TRUE;
+}
+#endif
+
 namespace star {
 
 namespace {
@@ -308,8 +329,23 @@ class Scheduler final {
 };
 
 [[nodiscard]] std::shared_ptr<Scheduler> getScheduler() {
+#if defined(_WIN32) && !defined(STAR_MONOLITHIC)
+    // Windows has already stopped other threads when it detaches DLLs at process exit.
+    // Leave the scheduler to the OS in that case, since its destructor waits for workers.
+    struct SchedulerDeleter {
+        void operator()(std::shared_ptr<Scheduler> *scheduler) const noexcept {
+            if (!g_process_detaching) {
+                delete scheduler;
+            }
+        }
+    };
+    static const std::unique_ptr<std::shared_ptr<Scheduler>, SchedulerDeleter> scheduler(
+        new std::shared_ptr<Scheduler>(std::make_shared<Scheduler>()));
+    return *scheduler;
+#else
     static const std::shared_ptr<Scheduler> scheduler = std::make_shared<Scheduler>();
     return scheduler;
+#endif
 }
 
 } // namespace
