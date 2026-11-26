@@ -2,7 +2,7 @@
 
 - 日期：2026-11-22
 - Linux x64：Vulkan 呈现、同步验证和 RenderDoc 抓帧通过。
-- Windows x64：待完成 Vulkan 呈现与 RenderDoc 抓帧验收。
+- Windows x64：Vulkan 呈现、同步验证和 RenderDoc 抓帧通过，见 [Windows 验收报告](10-windows-acceptance.md)。
 
 ## 交付
 

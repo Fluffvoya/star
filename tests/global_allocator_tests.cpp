@@ -17,22 +17,20 @@ class EnvironmentGuard final {
         if (old_value != nullptr) {
             m_old_value = old_value;
         }
-        if (value == nullptr) {
-            unsetenv("STAR_ALLOCATOR");
-        } else {
-            setenv("STAR_ALLOCATOR", value, 1);
-        }
+        STAR_CHECK(setValue(value) == 0);
     }
 
-    ~EnvironmentGuard() {
-        if (m_old_value.empty()) {
-            unsetenv("STAR_ALLOCATOR");
-        } else {
-            setenv("STAR_ALLOCATOR", m_old_value.c_str(), 1);
-        }
-    }
+    ~EnvironmentGuard() { setValue(m_old_value.empty() ? nullptr : m_old_value.c_str()); }
 
   private:
+    static int setValue(const char *value) {
+#if defined(_WIN32)
+        return _putenv_s("STAR_ALLOCATOR", value != nullptr ? value : "");
+#else
+        return value != nullptr ? setenv("STAR_ALLOCATOR", value, 1) : unsetenv("STAR_ALLOCATOR");
+#endif
+    }
+
     std::string m_old_value;
 };
 

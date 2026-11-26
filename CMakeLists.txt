@@ -3,6 +3,7 @@ project(StarEngine VERSION 0.1.0 DESCRIPTION "Star Engine" LANGUAGES CXX)
 
 option(STAR_BUILD_SAMPLES "Build sample programs" ON)
 option(STAR_BUILD_TESTS "Build local tests" ON)
+option(STAR_TEST_WINDOWS_VULKAN "Enable Windows Vulkan acceptance tests requiring a GPU and desktop" OFF)
 option(STAR_BUILD_HEADER_TOOL "Build StarHeaderTool" ON)
 option(STAR_MONOLITHIC "Build engine modules as static libraries" OFF)
 option(STAR_SHIPPING_DEPS "Use shipping dependency policy" OFF)
@@ -66,6 +67,10 @@ endif()
 
 if(STAR_BUILD_TESTS)
     include(CTest)
+endif()
+
+if(STAR_TEST_WINDOWS_VULKAN AND (NOT WIN32 OR NOT STAR_BUILD_TESTS OR NOT BUILD_TESTING OR NOT STAR_BUILD_SAMPLES))
+    message(FATAL_ERROR "STAR_TEST_WINDOWS_VULKAN requires Windows with tests and samples enabled")
 endif()
 
 include(cmake/StarModule.cmake)

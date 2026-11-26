@@ -2,7 +2,7 @@
 
 - 日期：2026-11-20
 - 实现分支：`task/m0-complete-20261120`
-- 状态：Linux x64 本地验收完成，跨平台实机验收待 Windows x64 和 macOS arm64 主机
+- 状态：Linux x64 与 Windows x64 本地验收完成，macOS arm64 待验收
 
 ## 本次阶段交付
 
@@ -22,10 +22,10 @@
 
 四个预设均通过 `hello-window-headless`、Core、Jobs、Platform、公共头独立编译和工作线程配置测试。格式检查和 `git diff --check` 通过。配置文件路径和 headless 窗口示例也已单独运行验证。
 
-## 未完成的外部验收
+## 跨平台验收
 
-- 当前主机是 Linux，无法在本次工作区内执行 Windows x64 和 macOS arm64 的本地编译、运行及窗口测试。
-- 远程仓库已接受任务分支推送。环境没有 `gh` 和 GitHub API token，无法自动创建或合并 Pull Request，需要在 GitHub 页面完成该分支的 PR 操作。
+- Windows x64 的四个预设已完成 MinGW 实机复验，见 [Windows 验收报告](M0-windows-acceptance.md)。
+- macOS arm64 的本地构建、运行及窗口测试待对应主机执行。
 
 ## M0 后续边界
 

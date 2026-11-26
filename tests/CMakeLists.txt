@@ -84,8 +84,27 @@ file(GENERATE OUTPUT "$<TARGET_FILE_DIR:StarPlatformTestModule>/star-platform-ma
     CONTENT "Star mapping\n" NEWLINE_STYLE UNIX)
 file(GENERATE OUTPUT "$<TARGET_FILE_DIR:StarPlatformTestModule>/star-platform-map-empty.txt" CONTENT "")
 
-set_tests_properties(jobs-tests platform-tests PROPERTIES TIMEOUT 30)
+set_tests_properties(jobs-tests jobs-worker-count platform-tests PROPERTIES TIMEOUT 30)
 set_tests_properties(platform-tests PROPERTIES
     ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy"
     WORKING_DIRECTORY "$<TARGET_FILE_DIR:StarPlatformTestModule>"
 )
+
+if(STAR_TEST_WINDOWS_VULKAN)
+    if(NOT TARGET StarVulkanMesh OR NOT STAR_SPIRV_VAL)
+        message(FATAL_ERROR "Windows Vulkan acceptance requires the Vulkan mesh sample, slangc and spirv-val")
+    endif()
+
+    add_test(NAME windows-vulkan-rhi COMMAND StarRHITests)
+    add_test(NAME windows-vulkan-present COMMAND StarVulkanMesh --validation --frames=12)
+    set_tests_properties(windows-vulkan-rhi windows-vulkan-present PROPERTIES
+        LABELS "windows-vulkan"
+        TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "\\[error\\] Vulkan:;Validation Error:"
+    )
+    set(sync_validation "VK_LAYER_VALIDATE_SYNC=1")
+    set_tests_properties(windows-vulkan-rhi PROPERTIES
+        ENVIRONMENT "STAR_TEST_REQUIRE_VULKAN=1;STAR_TEST_VULKAN_VALIDATION=1;${sync_validation}")
+    set_tests_properties(windows-vulkan-present PROPERTIES
+        ENVIRONMENT "SDL_VIDEODRIVER=windows;${sync_validation}")
+endif()

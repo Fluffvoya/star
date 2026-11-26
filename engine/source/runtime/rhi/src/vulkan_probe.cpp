@@ -1,12 +1,12 @@
 #include "rhi/vulkan.hpp"
 
-#include <SDL3/SDL_vulkan.h>
+#include <SDL3/SDL_hints.h>
+#include <SDL3/SDL_loadso.h>
 
 #include <cstring>
 #include <array>
 #include <algorithm>
 #include <limits>
-#include <mutex>
 #include <new>
 #include <optional>
 #include <string>
@@ -81,6 +81,7 @@ struct VkLayerProperties {
 struct VkQueueFamilyProperties {
     VkFlags queueFlags;
     std::uint32_t queueCount;
+    std::uint32_t timestampValidBits;
     std::uint32_t minImageTransferGranularity[3];
 };
 
@@ -262,6 +263,27 @@ using VkBindImageMemory = VkResult (*)(VkDevice device, VkImage image, VkDeviceM
 using VkGetPhysicalDeviceMemoryProperties = void (*)(VkPhysicalDevice physicalDevice,
                                                       VkPhysicalDeviceMemoryProperties *properties);
 
+using VulkanLoader = std::unique_ptr<SDL_SharedObject, decltype(&SDL_UnloadObject)>;
+
+[[nodiscard]] VulkanLoader loadVulkanLibrary() {
+    // The SDL Vulkan video API requires a video driver, even for headless probes.
+    const char *path = SDL_GetHint(SDL_HINT_VULKAN_LIBRARY);
+    if (path != nullptr && *path != '\0') {
+        return VulkanLoader(SDL_LoadObject(path), SDL_UnloadObject);
+    }
+#if defined(_WIN32)
+    return VulkanLoader(SDL_LoadObject("vulkan-1.dll"), SDL_UnloadObject);
+#elif defined(__APPLE__)
+    VulkanLoader loader(SDL_LoadObject("libvulkan.1.dylib"), SDL_UnloadObject);
+    if (!loader) {
+        loader.reset(SDL_LoadObject("libMoltenVK.dylib"));
+    }
+    return loader;
+#else
+    return VulkanLoader(SDL_LoadObject("libvulkan.so.1"), SDL_UnloadObject);
+#endif
+}
+
 template <typename Function> [[nodiscard]] Function loadGlobal(VkGetInstanceProcAddr getProcAddr, const char *name) {
     return reinterpret_cast<Function>(getProcAddr(nullptr, name));
 }
@@ -296,24 +318,20 @@ template <typename Function>
 } // namespace
 
 std::expected<VulkanProbeInfo, VulkanProbeError> probeVulkan(const VulkanProbeOptions &options) {
-    static std::mutex loadMutex;
-    std::scoped_lock lock(loadMutex);
-
-    if (!SDL_Vulkan_LoadLibrary(nullptr)) {
+    auto loader = loadVulkanLibrary();
+    if (!loader) {
         return std::unexpected(VulkanProbeError::LoaderUnavailable);
     }
 
-    const auto unload = []() noexcept { SDL_Vulkan_UnloadLibrary(); };
-    const auto getProcAddr = reinterpret_cast<VkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+    const auto getProcAddr =
+        reinterpret_cast<VkGetInstanceProcAddr>(SDL_LoadFunction(loader.get(), "vkGetInstanceProcAddr"));
     if (getProcAddr == nullptr) {
-        unload();
         return std::unexpected(VulkanProbeError::MissingEntryPoint);
     }
 
     const auto enumerateVersion = loadGlobal<VkEnumerateInstanceVersion>(getProcAddr, "vkEnumerateInstanceVersion");
     std::uint32_t apiVersion = vkApiVersion10;
     if (enumerateVersion != nullptr && enumerateVersion(&apiVersion) != vkSuccess) {
-        unload();
         return std::unexpected(VulkanProbeError::MissingEntryPoint);
     }
     if (apiVersion > vkApiVersion13) {
@@ -324,7 +342,6 @@ std::expected<VulkanProbeInfo, VulkanProbeError> probeVulkan(const VulkanProbeOp
         loadGlobal<VkEnumerateInstanceLayerProperties>(getProcAddr, "vkEnumerateInstanceLayerProperties");
     const bool validationAvailable = enumerateLayers != nullptr && hasValidationLayer(enumerateLayers);
     if (options.requireValidationLayer && !validationAvailable) {
-        unload();
         return std::unexpected(VulkanProbeError::ValidationLayerUnavailable);
     }
 
@@ -334,7 +351,6 @@ std::expected<VulkanProbeInfo, VulkanProbeError> probeVulkan(const VulkanProbeOp
         applicationName = options.applicationName;
         engineName = options.engineName;
     } catch (...) {
-        unload();
         return std::unexpected(VulkanProbeError::OutOfMemory);
     }
 
@@ -361,13 +377,11 @@ std::expected<VulkanProbeInfo, VulkanProbeError> probeVulkan(const VulkanProbeOp
     };
     const auto createInstance = loadGlobal<VkCreateInstance>(getProcAddr, "vkCreateInstance");
     if (createInstance == nullptr) {
-        unload();
         return std::unexpected(VulkanProbeError::MissingEntryPoint);
     }
 
     VkInstance instance = nullptr;
     if (createInstance(&createInfo, nullptr, &instance) != vkSuccess || instance == nullptr) {
-        unload();
         return std::unexpected(VulkanProbeError::InstanceCreationFailed);
     }
 
@@ -378,14 +392,12 @@ std::expected<VulkanProbeInfo, VulkanProbeError> probeVulkan(const VulkanProbeOp
         if (destroyInstance != nullptr) {
             destroyInstance(instance, nullptr);
         }
-        unload();
         return std::unexpected(VulkanProbeError::MissingEntryPoint);
     }
 
     std::uint32_t physicalDeviceCount = 0;
     const VkResult enumerateResult = enumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr);
     destroyInstance(instance, nullptr);
-    unload();
     if (enumerateResult != vkSuccess && enumerateResult != vkIncomplete) {
         return std::unexpected(VulkanProbeError::PhysicalDeviceEnumerationFailed);
     }
@@ -403,7 +415,7 @@ struct VulkanContext::Impl {
     VkDestroyDevice destroyDevice = nullptr;
     VkGetInstanceProcAddr getInstanceProcAddr = nullptr;
     VkGetDeviceProcAddr getDeviceProcAddr = nullptr;
-    bool loaderLoaded = false;
+    VulkanLoader loader{nullptr, SDL_UnloadObject};
 };
 
 VulkanContext::VulkanContext(std::unique_ptr<Impl> impl) noexcept : m_impl(std::move(impl)) {}
@@ -412,16 +424,11 @@ VulkanContext::~VulkanContext() {
     if (m_impl == nullptr) {
         return;
     }
-    static std::mutex loadMutex;
-    std::scoped_lock lock(loadMutex);
     if (m_impl->device != nullptr && m_impl->destroyDevice != nullptr) {
         m_impl->destroyDevice(m_impl->device, nullptr);
     }
     if (m_impl->instance != nullptr && m_impl->destroyInstance != nullptr) {
         m_impl->destroyInstance(m_impl->instance, nullptr);
-    }
-    if (m_impl->loaderLoaded) {
-        SDL_Vulkan_UnloadLibrary();
     }
 }
 
@@ -580,8 +587,8 @@ std::expected<void, VulkanProbeError> VulkanContext::createTransientBuffer(std::
         cleanupBuffer();
         return std::unexpected(VulkanProbeError::ResourceCreationFailed);
     }
-    freeMemory(m_impl->device, memory, nullptr);
     cleanupBuffer();
+    freeMemory(m_impl->device, memory, nullptr);
     return {};
 }
 
@@ -659,29 +666,25 @@ std::expected<void, VulkanProbeError> VulkanContext::createTransientTexture(std:
         cleanupImage();
         return std::unexpected(VulkanProbeError::ResourceCreationFailed);
     }
-    freeMemory(m_impl->device, memory, nullptr);
     cleanupImage();
+    freeMemory(m_impl->device, memory, nullptr);
     return {};
 }
 
 std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanProbeOptions &options) {
-    static std::mutex loadMutex;
-    std::scoped_lock lock(loadMutex);
-
-    if (!SDL_Vulkan_LoadLibrary(nullptr)) {
+    auto loader = loadVulkanLibrary();
+    if (!loader) {
         return std::unexpected(VulkanProbeError::LoaderUnavailable);
     }
-    const auto unload = []() noexcept { SDL_Vulkan_UnloadLibrary(); };
-    const auto getProcAddr = reinterpret_cast<VkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+    const auto getProcAddr =
+        reinterpret_cast<VkGetInstanceProcAddr>(SDL_LoadFunction(loader.get(), "vkGetInstanceProcAddr"));
     if (getProcAddr == nullptr) {
-        unload();
         return std::unexpected(VulkanProbeError::MissingEntryPoint);
     }
 
     const auto enumerateVersion = loadGlobal<VkEnumerateInstanceVersion>(getProcAddr, "vkEnumerateInstanceVersion");
     std::uint32_t apiVersion = vkApiVersion10;
     if (enumerateVersion != nullptr && enumerateVersion(&apiVersion) != vkSuccess) {
-        unload();
         return std::unexpected(VulkanProbeError::MissingEntryPoint);
     }
     if (apiVersion > vkApiVersion13) {
@@ -691,7 +694,6 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         loadGlobal<VkEnumerateInstanceLayerProperties>(getProcAddr, "vkEnumerateInstanceLayerProperties");
     const bool validationAvailable = enumerateLayers != nullptr && hasValidationLayer(enumerateLayers);
     if (options.requireValidationLayer && !validationAvailable) {
-        unload();
         return std::unexpected(VulkanProbeError::ValidationLayerUnavailable);
     }
 
@@ -701,7 +703,6 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         applicationName = options.applicationName;
         engineName = options.engineName;
     } catch (...) {
-        unload();
         return std::unexpected(VulkanProbeError::OutOfMemory);
     }
     const char *validationLayerName = "VK_LAYER_KHRONOS_validation";
@@ -719,12 +720,10 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
     };
     const auto createInstance = loadGlobal<VkCreateInstance>(getProcAddr, "vkCreateInstance");
     if (createInstance == nullptr) {
-        unload();
         return std::unexpected(VulkanProbeError::MissingEntryPoint);
     }
     VkInstance instance = nullptr;
     if (createInstance(&instanceCreateInfo, nullptr, &instance) != vkSuccess || instance == nullptr) {
-        unload();
         return std::unexpected(VulkanProbeError::InstanceCreationFailed);
     }
 
@@ -741,14 +740,12 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         if (destroyInstance != nullptr) {
             destroyInstance(instance, nullptr);
         }
-        unload();
         return std::unexpected(VulkanProbeError::MissingEntryPoint);
     }
 
     std::uint32_t physicalDeviceCount = 0;
     if (enumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr) != vkSuccess || physicalDeviceCount == 0) {
         destroyInstance(instance, nullptr);
-        unload();
         return std::unexpected(VulkanProbeError::PhysicalDeviceUnavailable);
     }
     std::vector<VkPhysicalDevice> physicalDevices;
@@ -756,12 +753,10 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         physicalDevices.resize(physicalDeviceCount);
     } catch (...) {
         destroyInstance(instance, nullptr);
-        unload();
         return std::unexpected(VulkanProbeError::OutOfMemory);
     }
     if (enumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data()) != vkSuccess) {
         destroyInstance(instance, nullptr);
-        unload();
         return std::unexpected(VulkanProbeError::PhysicalDeviceUnavailable);
     }
 
@@ -777,7 +772,6 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
             families.resize(familyCount);
         } catch (...) {
             destroyInstance(instance, nullptr);
-            unload();
             return std::unexpected(VulkanProbeError::OutOfMemory);
         }
         getQueueFamilyProperties(physicalDevice, &familyCount, families.data());
@@ -806,7 +800,6 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
     }
     if (selectedPhysicalDevice == nullptr) {
         destroyInstance(instance, nullptr);
-        unload();
         return std::unexpected(VulkanProbeError::QueueFamilyUnavailable);
     }
 
@@ -821,7 +814,6 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         }
     } catch (...) {
         destroyInstance(instance, nullptr);
-        unload();
         return std::unexpected(VulkanProbeError::OutOfMemory);
     }
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
@@ -833,7 +825,6 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         }
     } catch (...) {
         destroyInstance(instance, nullptr);
-        unload();
         return std::unexpected(VulkanProbeError::OutOfMemory);
     }
     const VkDeviceCreateInfo deviceCreateInfo{
@@ -851,7 +842,6 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
     VkDevice device = nullptr;
     if (createDevice(selectedPhysicalDevice, &deviceCreateInfo, nullptr, &device) != vkSuccess || device == nullptr) {
         destroyInstance(instance, nullptr);
-        unload();
         return std::unexpected(VulkanProbeError::DeviceCreationFailed);
     }
     VkQueue graphicsQueue = nullptr;
@@ -859,7 +849,6 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
     if (graphicsQueue == nullptr) {
         destroyDevice(device, nullptr);
         destroyInstance(instance, nullptr);
-        unload();
         return std::unexpected(VulkanProbeError::DeviceCreationFailed);
     }
 
@@ -877,15 +866,13 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         if (impl->getDeviceProcAddr == nullptr) {
             destroyDevice(device, nullptr);
             destroyInstance(instance, nullptr);
-            unload();
             return std::unexpected(VulkanProbeError::MissingEntryPoint);
         }
-        impl->loaderLoaded = true;
+        impl->loader = std::move(loader);
         return VulkanContext(std::move(impl));
     } catch (...) {
         destroyDevice(device, nullptr);
         destroyInstance(instance, nullptr);
-        unload();
         return std::unexpected(VulkanProbeError::OutOfMemory);
     }
 }
