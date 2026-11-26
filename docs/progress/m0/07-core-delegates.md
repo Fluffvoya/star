@@ -1,4 +1,4 @@
-# M0 Core Delegate 阶段报告
+# M0-07 Core Delegate 阶段报告
 
 - 日期：2026-11-19
 - 实现分支：`feat/m0-core-delegates`

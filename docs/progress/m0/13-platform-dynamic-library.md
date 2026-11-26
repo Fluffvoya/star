@@ -1,4 +1,4 @@
-# M0 Platform 动态库阶段报告
+# M0-13 Platform 动态库阶段报告
 
 - 日期：2026-11-20
 - 实现分支：`feat/m0-platform-dynamic-library`

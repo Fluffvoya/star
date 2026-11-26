@@ -1,19 +1,12 @@
 # Star Engine
 
-Star Engine is a C++23 game engine currently under implementation. The repository has completed the Linux x64
-implementation and local validation for the M0 infrastructure milestone. Windows x64 and macOS arm64 host
-validation remain for the M0 release gate.
-
-See the [M0 infrastructure progress report](docs/progress/M0-infrastructure.md) for completed scope and remaining
-work.
-
-See the [M1 progress reports](docs/progress/m1/README.md) for reflection and serialization status.
-
-See the [M2 progress reports](docs/progress/m2/README.md) for RHI and Vulkan status.
+Star Engine is a C++23 game engine under development. Local validation covers Linux x64 and Windows x64
+(MinGW-w64) for the M0 infrastructure, M1 reflection and serialization, and M2 RHI and Vulkan milestones.
+See the [milestone reports](docs/progress/README.md) for stage-by-stage results and platform coverage.
 
 The current runtime modules provide Core utilities, an SDL3-backed Platform layer, and a Jobs scheduler with
 asynchronous runs, priority queues, parallel-for helpers, and nested-safe job waiting. See the
-[M0 Jobs progress report](docs/progress/M0-jobs.md) for its current API constraints and validation status.
+[M0 Jobs progress report](docs/progress/m0/02-jobs.md) for its API constraints and validation status.
 
 ## Prerequisites
 
@@ -49,8 +42,8 @@ libraries in `build/linux-dev/lib/`. Each preset uses its own build directory.
 
 Runtime modules keep public headers under `include/<module>/` and implementation files under `src/`.
 
-The Windows x64 and macOS arm64 presets are declared but have not yet been validated by this change. Run
-`cmake --list-presets` on the target host to list the presets available on that platform.
+On Windows, follow the [MinGW build and test guide](docs/windows-build.md) for vcpkg setup, CTest filtering,
+reflection generation, and the Vulkan acceptance tests. macOS arm64 presets are available for host validation.
 
 `star-hello-window` opens an SDL3 window and prints frame timings. For local automated validation, set
 `SDL_VIDEODRIVER=dummy` and run it with `--frames=3`.

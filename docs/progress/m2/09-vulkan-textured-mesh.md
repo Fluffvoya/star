@@ -23,13 +23,7 @@ cmake --build --preset linux-dev --target StarVulkanMesh
 build/linux-dev/bin/star-vulkan-mesh --validation --frames=120
 ```
 
-Windows x64：
-
-```powershell
-cmake --preset win-dev
-cmake --build --preset win-dev --target StarVulkanMesh
-.\build\win-dev\bin\star-vulkan-mesh.exe --validation --frames=120
-```
+Windows x64 的依赖配置、着色器构建及专项测试见 [Windows 构建与测试指南](../../windows-build.md)。
 
 使用 RenderDoc 启动示例并抓取一帧。在事件浏览器中查看 `Textured Mesh` 和 `Copy to Swapchain`，在资源列表中核对 `Mesh Vertices`、`Checkerboard`、`Mesh Color` 与 `Swapchain Image`。
 

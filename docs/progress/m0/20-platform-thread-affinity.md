@@ -1,4 +1,4 @@
-# M0 Platform 线程亲和性阶段报告
+# M0-20 Platform 线程亲和性阶段报告
 
 - 日期：2026-11-20
 - 实现分支：`feat/m0-platform-thread-affinity`
