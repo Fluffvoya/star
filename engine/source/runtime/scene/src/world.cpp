@@ -23,9 +23,10 @@ std::expected<Scene *, SceneError> World::createScene() noexcept {
 
 bool World::unloadScene(Scene &scene) noexcept {
     auto entry = std::ranges::find_if(m_scenes, [&scene](const auto &owned) { return owned.get() == &scene; });
-    if (entry == m_scenes.end()) {
+    if (entry == m_scenes.end() || scene.isBusy()) {
         return false;
     }
+    auto removed = std::move(*entry);
     m_scenes.erase(entry);
     return true;
 }
