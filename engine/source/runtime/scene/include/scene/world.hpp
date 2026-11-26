@@ -1,6 +1,6 @@
 #pragma once
 
-#include "scene/scene.hpp"
+#include "scene/system.hpp"
 
 #include <memory>
 #include <vector>
@@ -20,11 +20,31 @@ class STAR_SCENE_API World final {
     [[nodiscard]] bool isPlaying() const noexcept { return m_playing; }
     [[nodiscard]] std::expected<void, SceneError> beginPlay() noexcept;
     [[nodiscard]] std::expected<void, SceneError> endPlay() noexcept;
+    [[nodiscard]] std::expected<void, SceneError>
+    registerSystem(SystemDescriptor descriptor, std::unique_ptr<System> system,
+                   reflect::ModuleId owner = reflect::builtin_module) noexcept;
+    [[nodiscard]] std::expected<void, SceneError> unregisterSystems(reflect::ModuleId owner) noexcept;
+    [[nodiscard]] std::expected<void, SceneError> tick(float delta) noexcept;
+    [[nodiscard]] std::expected<void, SceneError> configureFixedStep(float step, std::uint32_t max_steps) noexcept;
 
   private:
+    friend class SystemContext;
+
+    struct RegisteredSystem {
+        SystemDescriptor descriptor;
+        std::unique_ptr<System> system;
+        reflect::ModuleId owner;
+    };
+    std::expected<void, SceneError> runSystems(TickPhase phase, float delta) noexcept;
+    std::expected<void, SceneError> runPhase(TickPhase phase, float delta) noexcept;
     [[nodiscard]] bool isBusy() const noexcept;
 
     std::vector<std::unique_ptr<Scene>> m_scenes;
+    std::vector<RegisteredSystem> m_systems;
+    float m_fixed_step = 1.0F / 60.0F;
+    double m_physics_time = 0.0;
+    std::uint32_t m_max_steps = 4;
+    std::uint64_t m_frame = 0;
     bool m_playing = false;
     bool m_dispatching = false;
 };
