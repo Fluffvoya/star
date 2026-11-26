@@ -4,12 +4,16 @@
 #include "scene/export.hpp"
 
 #include <cstdint>
+#include <expected>
 #include <string>
 
 namespace star {
 
 class Scene;
 class World;
+struct Transform;
+struct WorldTransform;
+enum class SceneError : std::uint8_t;
 
 class ObjectHandle final {
   public:
@@ -39,6 +43,13 @@ class STAR_SCENE_API GameObject {
     [[nodiscard]] Scene &getScene() const noexcept { return *m_scene; }
     [[nodiscard]] World &getWorld() const noexcept;
     [[nodiscard]] ObjectHandle getHandle() const noexcept { return m_handle; }
+    [[nodiscard]] const Transform &getTransform() const noexcept;
+    void setTransform(const Transform &transform) noexcept;
+    [[nodiscard]] const WorldTransform &getWorldTransform() const noexcept;
+    [[nodiscard]] GameObject *getParent() const noexcept;
+    [[nodiscard]] std::expected<void, SceneError> setParent(GameObject *parent,
+                                                            bool keep_world_transform = true) noexcept;
+    [[nodiscard]] std::expected<void, SceneError> destroy() noexcept;
     [[nodiscard]] bool isPendingDestroy() const noexcept { return m_pending_destroy; }
 
   protected:

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "reflection/reflection.hpp"
-#include "scene/game_object.hpp"
+#include "scene/components.hpp"
 
 #include <array>
 #include <concepts>
@@ -26,10 +26,10 @@ enum class SceneError : std::uint8_t {
     InvalidComponent,
     DuplicateComponent,
     UnknownComponent,
+    RequiredComponent,
+    HierarchyCycle,
+    IncompatibleTransform,
 };
-
-// A specialization supplies the same qualified name as the registered metadata.
-template <class Component> struct ComponentTraits;
 
 template <class Component> [[nodiscard]] reflect::TypeId componentTypeId() noexcept {
     return reflect::makeTypeId(ComponentTraits<std::remove_cv_t<Component>>::name);
@@ -56,7 +56,12 @@ class STAR_SCENE_API Scene final {
     // Enqueue destruction without invalidating current borrows until commit.
     [[nodiscard]] std::expected<void, SceneError> queueDestroy(ObjectHandle handle) noexcept;
     // Calls made during a query leave the queue for the next phase boundary.
-    void commitCommands() noexcept;
+    [[nodiscard]] std::expected<void, SceneError> commitCommands() noexcept;
+
+    [[nodiscard]] const Hierarchy *findHierarchy(ObjectHandle handle) const noexcept;
+    [[nodiscard]] const WorldTransform *findWorldTransform(ObjectHandle handle) const noexcept;
+    [[nodiscard]] std::expected<void, SceneError> queueSetParent(ObjectHandle child, ObjectHandle parent = {},
+                                                                 bool keep_world_transform = true) noexcept;
 
     // Type metadata and callbacks must stay loaded until unregistration succeeds. Destruction must not throw.
     [[nodiscard]] std::expected<void, SceneError> registerComponent(const reflect::TypeInfo &type) noexcept;
@@ -76,8 +81,9 @@ class STAR_SCENE_API Scene final {
         requires(sizeof...(Components) > 0 && std::is_nothrow_invocable_v<Callback &, ObjectHandle, Components &...>)
     [[nodiscard]] std::expected<void, SceneError> each(Callback &&callback) noexcept {
         const std::array ids{componentTypeId<Components>()...};
+        const std::array writable{!std::is_const_v<Components>...};
         auto function = std::ref(callback);
-        return visitComponents(ids, &function,
+        return visitComponents(ids, writable, &function,
                                [](const void *context, ObjectHandle handle, void *const *values) noexcept {
                                    const auto &call = *static_cast<const decltype(function) *>(context);
                                    [&]<std::size_t... Index>(std::index_sequence<Index...>) {
@@ -87,7 +93,11 @@ class STAR_SCENE_API Scene final {
     }
 
     template <class Component> [[nodiscard]] Component *findComponent(ObjectHandle handle) noexcept {
-        return static_cast<Component *>(findComponent(handle, componentTypeId<Component>()));
+        if constexpr (std::is_const_v<Component>) {
+            return std::as_const(*this).findComponent<Component>(handle);
+        } else {
+            return static_cast<Component *>(findComponent(handle, componentTypeId<Component>()));
+        }
     }
 
     template <class Component> [[nodiscard]] const Component *findComponent(ObjectHandle handle) const noexcept {
@@ -101,7 +111,8 @@ class STAR_SCENE_API Scene final {
     [[nodiscard]] bool isBusy() const noexcept;
     using ComponentVisitor = void (*)(const void *, ObjectHandle, void *const *) noexcept;
     [[nodiscard]] std::expected<void, SceneError> visitComponents(std::span<const reflect::TypeId> types,
-                                                                  const void *context, ComponentVisitor visit) noexcept;
+                                                                  std::span<const bool> writable, const void *context,
+                                                                  ComponentVisitor visit) noexcept;
     struct Impl;
     std::unique_ptr<Impl> m_impl;
     World &m_world;

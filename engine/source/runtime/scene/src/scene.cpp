@@ -1,6 +1,8 @@
 #include "scene/scene.hpp"
 
+#include "builtin_components.hpp"
 #include "core/slot_map.hpp"
+#include "transform_math.hpp"
 
 #include <entt/entity/registry.hpp>
 
@@ -39,6 +41,7 @@ struct GuidHash {
 struct ObjectEntry {
     std::unique_ptr<GameObject> object;
     entt::entity entity = entt::null;
+    bool transform_dirty = true;
 };
 
 using ObjectStorage = SlotMap<ObjectEntry>;
@@ -57,6 +60,23 @@ struct ComponentDeleter {
 };
 
 using ComponentValue = std::unique_ptr<void, ComponentDeleter>;
+
+std::expected<ComponentValue, SceneError> makeComponentValue(const reflect::TypeInfo &info, const void *initial) {
+    const auto alignment = std::align_val_t{std::max(info.alignment, alignof(std::max_align_t))};
+    void *storage = ::operator new(info.size, alignment);
+    try {
+        if (initial == nullptr) {
+            info.ops.construct(storage);
+        } else {
+            info.ops.copy_construct(storage, initial);
+        }
+    } catch (...) {
+        ::operator delete(storage, alignment);
+        return std::unexpected(SceneError::CreationFailed);
+    }
+    return ComponentValue(storage, ComponentDeleter{&info});
+}
+
 using ComponentValues = std::map<entt::entity, ComponentValue>;
 
 struct ComponentPool {
@@ -69,6 +89,12 @@ struct ComponentCommand {
     entt::entity entity;
     // An empty node means removal. Added values are fully constructed before they are queued.
     ComponentValues::node_type addition;
+};
+
+struct ParentCommand {
+    ObjectHandle child;
+    ObjectHandle parent;
+    bool keep_world;
 };
 
 class MutationScope {
@@ -91,10 +117,21 @@ struct Scene::Impl {
     std::vector<ObjectStorage::Handle> handles;
     std::unordered_map<reflect::TypeId, ComponentPool> components;
     std::vector<ComponentCommand> pending_components;
+    std::vector<ParentCommand> pending_parents;
+    const reflect::TypeId transform_id = componentTypeId<Transform>();
     std::size_t query_depth = 0;
     bool mutating = false;
 
     [[nodiscard]] ObjectEntry *entry(ObjectHandle handle) noexcept;
+    Hierarchy &hierarchy(ObjectHandle handle) noexcept;
+    Transform &transform(entt::entity entity) noexcept;
+    ObjectHandle nextInSubtree(ObjectHandle node, ObjectHandle root) noexcept;
+    ObjectHandle pendingParent(ObjectHandle child) noexcept;
+    math::Mat4 computeWorld(ObjectHandle node) noexcept;
+    std::expected<void, SceneError> applyParent(const ParentCommand &command) noexcept;
+    void unlink(Hierarchy &links) noexcept;
+    void destroySubtree(ObjectHandle root) noexcept;
+    void propagateTransforms() noexcept;
 
     [[nodiscard]] ObjectStorage::Handle resolve(std::uint32_t index, std::uint32_t generation) const noexcept;
 };
@@ -110,16 +147,205 @@ ObjectEntry *Scene::Impl::entry(ObjectHandle handle) noexcept {
     return handle.m_scene == id ? objects.get(resolve(handle.m_index, handle.m_generation)) : nullptr;
 }
 
+Hierarchy &Scene::Impl::hierarchy(ObjectHandle handle) noexcept {
+    return registry.get<Hierarchy>(entry(handle)->entity);
+}
+
+Transform &Scene::Impl::transform(entt::entity entity) noexcept {
+    return *static_cast<Transform *>(components.at(transform_id).values.at(entity).get());
+}
+
+ObjectHandle Scene::Impl::nextInSubtree(ObjectHandle node, ObjectHandle root) noexcept {
+    if (const auto first = hierarchy(node).first_child; first != ObjectHandle{}) {
+        return first;
+    }
+    while (node != root) {
+        const auto &links = hierarchy(node);
+        if (links.next_sibling != ObjectHandle{}) {
+            return links.next_sibling;
+        }
+        node = links.parent;
+    }
+    return {};
+}
+
+ObjectHandle Scene::Impl::pendingParent(ObjectHandle child) noexcept {
+    const auto command = std::find_if(pending_parents.rbegin(), pending_parents.rend(),
+                                      [child](const auto &item) { return item.child == child; });
+    return command == pending_parents.rend() ? hierarchy(child).parent : command->parent;
+}
+
+math::Mat4 Scene::Impl::computeWorld(ObjectHandle node) noexcept {
+    auto result = math::Mat4::identity();
+    while (node != ObjectHandle{}) {
+        result = scene_detail::multiply(scene_detail::localMatrix(transform(entry(node)->entity)), result);
+        node = hierarchy(node).parent;
+    }
+    return result;
+}
+
+void Scene::Impl::unlink(Hierarchy &links) noexcept {
+    if (links.parent == ObjectHandle{}) {
+        return;
+    }
+    auto &parent = hierarchy(links.parent);
+    if (links.previous_sibling == ObjectHandle{}) {
+        parent.first_child = links.next_sibling;
+    } else {
+        hierarchy(links.previous_sibling).next_sibling = links.next_sibling;
+    }
+    if (links.next_sibling == ObjectHandle{}) {
+        parent.last_child = links.previous_sibling;
+    } else {
+        hierarchy(links.next_sibling).previous_sibling = links.previous_sibling;
+    }
+    --parent.child_count;
+    links.parent = {};
+    links.previous_sibling = {};
+    links.next_sibling = {};
+}
+
+std::expected<void, SceneError> Scene::Impl::applyParent(const ParentCommand &command) noexcept {
+    auto &child = *entry(command.child);
+    if (child.object->isPendingDestroy() ||
+        (command.parent != ObjectHandle{} && entry(command.parent)->object->isPendingDestroy())) {
+        return {};
+    }
+    auto &links = hierarchy(command.child);
+    if (links.parent == command.parent) {
+        return {};
+    }
+    // Earlier commands can fail to preserve their world transform, so recheck the committed chain.
+    for (auto ancestor = command.parent; ancestor != ObjectHandle{}; ancestor = hierarchy(ancestor).parent) {
+        if (ancestor == command.child) {
+            return std::unexpected(SceneError::HierarchyCycle);
+        }
+    }
+    if (command.keep_world) {
+        const auto local = scene_detail::relativeTransform(computeWorld(command.parent), computeWorld(command.child));
+        if (!local) {
+            return std::unexpected(SceneError::IncompatibleTransform);
+        }
+        transform(child.entity) = *local;
+    }
+    unlink(links);
+    if (command.parent != ObjectHandle{}) {
+        auto &parent = hierarchy(command.parent);
+        links.parent = command.parent;
+        links.previous_sibling = parent.last_child;
+        if (parent.last_child != ObjectHandle{}) {
+            hierarchy(parent.last_child).next_sibling = command.child;
+        } else {
+            parent.first_child = command.child;
+        }
+        parent.last_child = command.child;
+        ++parent.child_count;
+    }
+    child.transform_dirty = true;
+    return {};
+}
+
+void Scene::Impl::destroySubtree(ObjectHandle root) noexcept {
+    auto node = root;
+    while (true) {
+        auto &links = hierarchy(node);
+        if (links.first_child != ObjectHandle{}) {
+            node = links.first_child;
+            continue;
+        }
+        const auto parent = links.parent;
+        unlink(links);
+        const auto slot = resolve(node.m_index, node.m_generation);
+        const auto &object = *objects.get(slot);
+        by_guid.erase(object.object->getGuid());
+        for (auto &[type, pool] : components) {
+            pool.values.erase(object.entity);
+        }
+        registry.destroy(object.entity);
+        handles[slot.getIndex()] = {};
+        objects.erase(slot);
+        if (node == root) {
+            return;
+        }
+        node = parent;
+    }
+}
+
+void Scene::Impl::propagateTransforms() noexcept {
+    for (std::size_t index = 0; index < objects.getSize(); ++index) {
+        const auto root = objects.get(objects.getHandleAt(index))->object->getHandle();
+        if (hierarchy(root).parent != ObjectHandle{}) {
+            continue;
+        }
+        for (auto node = root; node != ObjectHandle{}; node = nextInSubtree(node, root)) {
+            auto &links = hierarchy(node);
+            auto &object = *entry(node);
+            auto &world = registry.get<WorldTransform>(object.entity).matrix;
+            if (links.parent == ObjectHandle{}) {
+                links.depth = 0;
+                links.sibling_index = 0;
+                if (object.transform_dirty) {
+                    world = scene_detail::localMatrix(transform(object.entity));
+                }
+            } else {
+                links.depth = hierarchy(links.parent).depth + 1;
+                links.sibling_index =
+                    links.previous_sibling == ObjectHandle{} ? 0 : hierarchy(links.previous_sibling).sibling_index + 1;
+                const auto &parent = *entry(links.parent);
+                if (object.transform_dirty) {
+                    world = scene_detail::multiply(registry.get<WorldTransform>(parent.entity).matrix,
+                                                   scene_detail::localMatrix(transform(object.entity)));
+                }
+            }
+            if (object.transform_dirty) {
+                for (auto child = links.first_child; child != ObjectHandle{}; child = hierarchy(child).next_sibling) {
+                    entry(child)->transform_dirty = true;
+                }
+                object.transform_dirty = false;
+            }
+        }
+    }
+}
+
 GameObject::~GameObject() = default;
 
 World &GameObject::getWorld() const noexcept { return m_scene->getWorld(); }
 
-Scene::Scene(World &world) : m_impl(std::make_unique<Impl>()), m_world(world) {}
+const Transform &GameObject::getTransform() const noexcept {
+    return *std::as_const(*m_scene).findComponent<Transform>(m_handle);
+}
+
+void GameObject::setTransform(const Transform &transform) noexcept {
+    if (auto *local = m_scene->findComponent<Transform>(m_handle)) {
+        *local = transform;
+    }
+}
+
+const WorldTransform &GameObject::getWorldTransform() const noexcept { return *m_scene->findWorldTransform(m_handle); }
+
+GameObject *GameObject::getParent() const noexcept {
+    return m_scene->findObject(m_scene->findHierarchy(m_handle)->parent);
+}
+
+std::expected<void, SceneError> GameObject::setParent(GameObject *parent, bool keep_world_transform) noexcept {
+    return m_scene->queueSetParent(m_handle, parent == nullptr ? ObjectHandle{} : parent->getHandle(),
+                                   keep_world_transform);
+}
+
+std::expected<void, SceneError> GameObject::destroy() noexcept { return m_scene->queueDestroy(m_handle); }
+
+Scene::Scene(World &world) : m_impl(std::make_unique<Impl>()), m_world(world) {
+    for (const auto &type : scene_detail::builtinComponents()) {
+        if (!registerComponent(type)) {
+            throw std::bad_alloc{};
+        }
+    }
+}
 
 Scene::~Scene() {
     m_impl->mutating = true;
     m_impl->pending_components.clear();
-    m_impl->components.clear();
+    std::erase_if(m_impl->components, [this](const auto &entry) { return entry.first != m_impl->transform_id; });
 }
 
 bool Scene::isBusy() const noexcept { return m_impl->query_depth != 0 || m_impl->mutating; }
@@ -170,6 +396,16 @@ std::expected<ObjectHandle, SceneError> Scene::createObject(std::string_view nam
         const ObjectHandle handle(impl.id, slot.getIndex(), slot.getGeneration());
         entity = impl.registry.create();
         impl.registry.emplace<GameObjectRef>(entity, handle);
+        impl.registry.emplace<Hierarchy>(entity);
+        impl.registry.emplace<WorldTransform>(entity);
+        auto &transforms = impl.components.at(impl.transform_id);
+        auto transform = makeComponentValue(*transforms.type, nullptr);
+        if (!transform) {
+            impl.registry.destroy(entity);
+            impl.objects.erase(slot);
+            return std::unexpected(transform.error());
+        }
+        transforms.values.emplace(entity, std::move(*transform));
         impl.by_guid.emplace(guid, slot);
 
         ObjectEntry &entry = *impl.objects.get(slot);
@@ -179,6 +415,7 @@ std::expected<ObjectHandle, SceneError> Scene::createObject(std::string_view nam
         return handle;
     } catch (...) {
         if (entity != entt::null) {
+            impl.components.at(impl.transform_id).values.erase(entity);
             impl.registry.destroy(entity);
         }
         impl.objects.erase(slot);
@@ -218,15 +455,17 @@ std::expected<void, SceneError> Scene::queueDestroy(ObjectHandle handle) noexcep
         } catch (...) {
             return std::unexpected(SceneError::ResourceExhausted);
         }
-        object->m_pending_destroy = true;
+        for (auto node = handle; node != ObjectHandle{}; node = m_impl->nextInSubtree(node, handle)) {
+            m_impl->entry(node)->object->m_pending_destroy = true;
+        }
     }
     return {};
 }
 
-void Scene::commitCommands() noexcept {
+std::expected<void, SceneError> Scene::commitCommands() noexcept {
     Impl &impl = *m_impl;
     if (isBusy()) {
-        return;
+        return std::unexpected(SceneError::Busy);
     }
     MutationScope scope(impl.mutating);
     for (auto &command : impl.pending_components) {
@@ -239,17 +478,59 @@ void Scene::commitCommands() noexcept {
     }
     impl.pending_components.clear();
 
-    for (const auto slot : impl.pending_destroy) {
-        const ObjectEntry &entry = *impl.objects.get(slot);
-        impl.by_guid.erase(entry.object->getGuid());
-        for (auto &[type, pool] : impl.components) {
-            pool.values.erase(entry.entity);
+    std::expected<void, SceneError> result;
+    for (const auto &command : impl.pending_parents) {
+        const auto applied = impl.applyParent(command);
+        if (!applied && result) {
+            result = std::unexpected(applied.error());
         }
-        impl.registry.destroy(entry.entity);
-        impl.handles[slot.getIndex()] = {};
-        impl.objects.erase(slot);
+    }
+    impl.pending_parents.clear();
+
+    for (const auto slot : impl.pending_destroy) {
+        const auto *entry = impl.objects.get(slot);
+        if (entry != nullptr) {
+            impl.destroySubtree(entry->object->getHandle());
+        }
     }
     impl.pending_destroy.clear();
+    impl.propagateTransforms();
+    return result;
+}
+
+const Hierarchy *Scene::findHierarchy(ObjectHandle handle) const noexcept {
+    const auto *object = m_impl->entry(handle);
+    return object == nullptr ? nullptr : m_impl->registry.try_get<Hierarchy>(object->entity);
+}
+
+const WorldTransform *Scene::findWorldTransform(ObjectHandle handle) const noexcept {
+    const auto *object = m_impl->entry(handle);
+    return object == nullptr ? nullptr : m_impl->registry.try_get<WorldTransform>(object->entity);
+}
+
+std::expected<void, SceneError> Scene::queueSetParent(ObjectHandle child, ObjectHandle parent,
+                                                      bool keep_world_transform) noexcept {
+    Impl &impl = *m_impl;
+    if (impl.mutating) {
+        return std::unexpected(SceneError::Busy);
+    }
+    const auto *child_object = findObject(child);
+    const auto *parent_object = findObject(parent);
+    if (child_object == nullptr || child_object->isPendingDestroy() ||
+        (parent != ObjectHandle{} && (parent_object == nullptr || parent_object->isPendingDestroy()))) {
+        return std::unexpected(SceneError::InvalidHandle);
+    }
+    for (auto ancestor = parent; ancestor != ObjectHandle{}; ancestor = impl.pendingParent(ancestor)) {
+        if (ancestor == child) {
+            return std::unexpected(SceneError::HierarchyCycle);
+        }
+    }
+    try {
+        impl.pending_parents.push_back({child, parent, keep_world_transform});
+    } catch (...) {
+        return std::unexpected(SceneError::ResourceExhausted);
+    }
+    return {};
 }
 
 std::expected<void, SceneError> Scene::registerComponent(const reflect::TypeInfo &type) noexcept {
@@ -277,6 +558,9 @@ std::expected<void, SceneError> Scene::unregisterComponents(reflect::ModuleId ow
     if (isBusy()) {
         return std::unexpected(SceneError::Busy);
     }
+    if (owner == reflect::builtin_module) {
+        return std::unexpected(SceneError::RequiredComponent);
+    }
     MutationScope scope(impl.mutating);
     std::erase_if(impl.pending_components,
                   [&](const auto &command) { return impl.components.at(command.type).type->owner == owner; });
@@ -285,14 +569,18 @@ std::expected<void, SceneError> Scene::unregisterComponents(reflect::ModuleId ow
 }
 
 void *Scene::findComponent(ObjectHandle handle, reflect::TypeId type) noexcept {
-    return const_cast<void *>(std::as_const(*this).findComponent(handle, type));
+    if (m_impl->mutating) {
+        return nullptr;
+    }
+    auto *value = const_cast<void *>(std::as_const(*this).findComponent(handle, type));
+    if (value != nullptr && type == m_impl->transform_id) {
+        m_impl->entry(handle)->transform_dirty = true;
+    }
+    return value;
 }
 
 const void *Scene::findComponent(ObjectHandle handle, reflect::TypeId type) const noexcept {
     const Impl &impl = *m_impl;
-    if (impl.mutating) {
-        return nullptr;
-    }
     const auto *object = m_impl->entry(handle);
     const auto pool = impl.components.find(type);
     if (object == nullptr || pool == impl.components.end()) {
@@ -317,25 +605,17 @@ std::expected<void, SceneError> Scene::queueAddComponent(ObjectHandle handle, re
         return std::unexpected(SceneError::UnknownComponent);
     }
 
+    if (type == impl.transform_id) {
+        return std::unexpected(SceneError::RequiredComponent);
+    }
     MutationScope scope(impl.mutating);
-    const auto &info = *pool->second.type;
     try {
-        const auto alignment = std::align_val_t{std::max(info.alignment, alignof(std::max_align_t))};
-        void *storage = ::operator new(info.size, alignment);
-        try {
-            if (initial == nullptr) {
-                info.ops.construct(storage);
-            } else {
-                info.ops.copy_construct(storage, initial);
-            }
-        } catch (...) {
-            ::operator delete(storage, alignment);
-            return std::unexpected(SceneError::CreationFailed);
+        auto value = makeComponentValue(*pool->second.type, initial);
+        if (!value) {
+            return std::unexpected(value.error());
         }
-
-        ComponentValue value(storage, ComponentDeleter{&info});
         ComponentValues staged;
-        const auto node = staged.emplace(object->entity, std::move(value)).first;
+        const auto node = staged.emplace(object->entity, std::move(*value)).first;
         impl.pending_components.push_back({type, object->entity, staged.extract(node)});
     } catch (...) {
         return std::unexpected(SceneError::ResourceExhausted);
@@ -352,6 +632,9 @@ std::expected<void, SceneError> Scene::queueRemoveComponent(ObjectHandle handle,
     if (object == nullptr || object->object->isPendingDestroy()) {
         return std::unexpected(SceneError::InvalidHandle);
     }
+    if (type == impl.transform_id) {
+        return std::unexpected(SceneError::RequiredComponent);
+    }
     if (!impl.components.contains(type)) {
         return std::unexpected(SceneError::UnknownComponent);
     }
@@ -363,7 +646,8 @@ std::expected<void, SceneError> Scene::queueRemoveComponent(ObjectHandle handle,
     return {};
 }
 
-std::expected<void, SceneError> Scene::visitComponents(std::span<const reflect::TypeId> types, const void *context,
+std::expected<void, SceneError> Scene::visitComponents(std::span<const reflect::TypeId> types,
+                                                       std::span<const bool> writable, const void *context,
                                                        ComponentVisitor visit) noexcept {
     Impl &impl = *m_impl;
     if (impl.mutating) {
@@ -387,6 +671,10 @@ std::expected<void, SceneError> Scene::visitComponents(std::span<const reflect::
     }
 
     const auto smallest = std::ranges::min_element(pools, {}, [](const auto *pool) { return pool->size(); });
+    bool writes_transform = false;
+    for (std::size_t index = 0; index < types.size(); ++index) {
+        writes_transform |= writable[index] && types[index] == impl.transform_id;
+    }
     ++impl.query_depth;
     for (const auto &[entity, value] : **smallest) {
         std::size_t index = 0;
@@ -398,7 +686,11 @@ std::expected<void, SceneError> Scene::visitComponents(std::span<const reflect::
             values[index] = entry->second.get();
         }
         if (index == pools.size()) {
-            visit(context, impl.registry.get<GameObjectRef>(entity).handle, values.data());
+            const auto handle = impl.registry.get<GameObjectRef>(entity).handle;
+            if (writes_transform) {
+                impl.entry(handle)->transform_dirty = true;
+            }
+            visit(context, handle, values.data());
         }
     }
     --impl.query_depth;
