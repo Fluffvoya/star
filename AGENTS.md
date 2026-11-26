@@ -7,3 +7,16 @@
 - 编写或格式化代码及代码示例：读取 @agent-rules/style.md。
 - 修改 `engine/` 下的源码、着色器、配置或内置资产：读取 @agent-rules/engine.md。
 - 修改项目文档：读取 @agent-rules/documentation.md；处理 ADR 时另外读取 @agent-rules/adr.md。
+
+## 任务分支命名白名单
+
+新建任务分支统一使用 `<类型>/<主题>`，主题由小写英文字母和数字组成，单词间用短横线连接。允许的分支前缀如下。
+
+- `feat/`
+- `fix/`
+- `docs/`
+- `refactor/`
+- `test/`
+- `build/`
+- `ci/`
+- `chore/`
