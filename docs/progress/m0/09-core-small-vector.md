@@ -1,4 +1,4 @@
-# M0 Core SmallVector 阶段报告
+# M0-09 Core SmallVector 阶段报告
 
 - 日期：2026-11-19
 - 实现分支：`feat/m0-core-small-vector`

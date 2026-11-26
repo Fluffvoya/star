@@ -1,4 +1,4 @@
-# M0 基础设施总体验收报告
+# M0-23 基础设施总体验收报告
 
 - 日期：2026-11-20
 - 实现分支：`task/m0-complete-20261120`
@@ -24,7 +24,7 @@
 
 ## 跨平台验收
 
-- Windows x64 的四个预设已完成 MinGW 实机复验，见 [Windows 验收报告](M0-windows-acceptance.md)。
+- Windows x64 的四个预设已完成 MinGW 实机复验，见 [Windows 验收报告](24-windows-acceptance.md)。
 - macOS arm64 的本地构建、运行及窗口测试待对应主机执行。
 
 ## M0 后续边界

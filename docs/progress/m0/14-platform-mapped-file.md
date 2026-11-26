@@ -1,4 +1,4 @@
-# M0 Platform 只读文件映射阶段报告
+# M0-14 Platform 只读文件映射阶段报告
 
 - 日期：2026-11-20
 - 实现分支：`feat/m0-platform-mapped-file`

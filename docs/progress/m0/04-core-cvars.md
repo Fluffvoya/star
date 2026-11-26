@@ -1,4 +1,4 @@
-# M0 Core CVar 阶段报告
+# M0-04 Core CVar 阶段报告
 
 - 日期：2026-11-19
 - 实现分支：`feat/m0-core-cvars`
@@ -23,4 +23,4 @@
 
 接入固定版本的 YAML 解析依赖，完成配置文件分层加载和命令行覆盖，再把配置中的值应用到 CVar。控制台 UI 随编辑器阶段接入。
 
-配置加载与 CVar 应用已在 [M0 Core YAML 分层配置阶段](M0-layered-yaml-config.md)交付。
+配置加载与 CVar 应用已在 [M0 Core YAML 分层配置阶段](05-layered-yaml-config.md)交付。

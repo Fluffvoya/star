@@ -1,4 +1,4 @@
-# M0 Core YAML 分层配置阶段报告
+# M0-05 Core YAML 分层配置阶段报告
 
 - 日期 2026-11-19
 - 实现分支 `feat/m0-layered-yaml-config`

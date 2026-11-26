@@ -1,4 +1,4 @@
-# M0 Core 句柄与专用分配器阶段报告
+# M0-03 Core 句柄与专用分配器阶段报告
 
 - 日期：2026-11-19
 - 实现分支：`feat/m0-core-handles-memory`
