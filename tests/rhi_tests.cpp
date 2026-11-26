@@ -12,6 +12,10 @@
 
 namespace {
 
+[[nodiscard]] bool requireVulkan() { return std::getenv("STAR_TEST_REQUIRE_VULKAN") != nullptr; }
+
+[[nodiscard]] bool enableVulkanValidation() { return std::getenv("STAR_TEST_VULKAN_VALIDATION") != nullptr; }
+
 STAR_TEST(nullDeviceReportsCapabilitiesAndRejectsInvalidDescriptors) {
     const auto invalid = star::rhi::createNullDevice(star::rhi::DeviceCreateInfo{.framesInFlight = 0});
     STAR_CHECK(!invalid && invalid.error() == star::rhi::DeviceError::InvalidDescriptor);
@@ -81,19 +85,24 @@ STAR_TEST(nullDeviceSubmitsEachCommandListOnce) {
 }
 
 STAR_TEST(vulkanProbeReportsLoaderOrRuntimeAvailability) {
-    const auto probe = star::rhi::probeVulkan();
+    const auto probe = star::rhi::probeVulkan({.requireValidationLayer = enableVulkanValidation()});
     if (!probe) {
+        STAR_CHECK(!requireVulkan());
         STAR_CHECK(probe.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
                    probe.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
                    probe.error() == star::rhi::VulkanProbeError::PhysicalDeviceEnumerationFailed);
         return;
     }
     STAR_CHECK(probe->apiVersion >= (1U << 22U));
+    if (requireVulkan()) {
+        STAR_CHECK(probe->physicalDeviceCount > 0);
+    }
 }
 
 STAR_TEST(vulkanContextCreatesLogicalDeviceWhenRuntimeIsAvailable) {
-    auto context = star::rhi::createVulkanContext();
+    auto context = star::rhi::createVulkanContext({.requireValidationLayer = enableVulkanValidation()});
     if (!context) {
+        STAR_CHECK(!requireVulkan());
         STAR_CHECK(context.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
                    context.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
                    context.error() == star::rhi::VulkanProbeError::PhysicalDeviceUnavailable ||
@@ -106,8 +115,9 @@ STAR_TEST(vulkanContextCreatesLogicalDeviceWhenRuntimeIsAvailable) {
 }
 
 STAR_TEST(vulkanContextSubmitsAndWaitsForEmptyCommandBuffer) {
-    auto context = star::rhi::createVulkanContext();
+    auto context = star::rhi::createVulkanContext({.requireValidationLayer = enableVulkanValidation()});
     if (!context) {
+        STAR_CHECK(!requireVulkan());
         STAR_CHECK(context.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
                    context.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
                    context.error() == star::rhi::VulkanProbeError::PhysicalDeviceUnavailable ||
@@ -120,8 +130,9 @@ STAR_TEST(vulkanContextSubmitsAndWaitsForEmptyCommandBuffer) {
 }
 
 STAR_TEST(vulkanContextAllocatesAndReleasesTransientBufferMemory) {
-    auto context = star::rhi::createVulkanContext();
+    auto context = star::rhi::createVulkanContext({.requireValidationLayer = enableVulkanValidation()});
     if (!context) {
+        STAR_CHECK(!requireVulkan());
         STAR_CHECK(context.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
                    context.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
                    context.error() == star::rhi::VulkanProbeError::PhysicalDeviceUnavailable ||
@@ -133,8 +144,9 @@ STAR_TEST(vulkanContextAllocatesAndReleasesTransientBufferMemory) {
 }
 
 STAR_TEST(vulkanContextAllocatesAndReleasesTransientTextureMemory) {
-    auto context = star::rhi::createVulkanContext();
+    auto context = star::rhi::createVulkanContext({.requireValidationLayer = enableVulkanValidation()});
     if (!context) {
+        STAR_CHECK(!requireVulkan());
         STAR_CHECK(context.error() == star::rhi::VulkanProbeError::LoaderUnavailable ||
                    context.error() == star::rhi::VulkanProbeError::InstanceCreationFailed ||
                    context.error() == star::rhi::VulkanProbeError::PhysicalDeviceUnavailable ||
@@ -147,11 +159,10 @@ STAR_TEST(vulkanContextAllocatesAndReleasesTransientTextureMemory) {
 
 STAR_TEST(vulkanDeviceSubmitsResourceTransitionsAndRetiresHandles) {
     using namespace star::rhi;
-    const bool validation = std::getenv("STAR_TEST_VULKAN_VALIDATION") != nullptr;
+    const bool validation = enableVulkanValidation();
     auto device = createVulkanDevice({.enableValidation = validation});
     if (!device) {
-        STAR_CHECK(device.error() == DeviceError::BackendUnavailable && !validation &&
-                   std::getenv("STAR_TEST_REQUIRE_VULKAN") == nullptr);
+        STAR_CHECK(device.error() == DeviceError::BackendUnavailable && !validation && !requireVulkan());
         return;
     }
     STAR_CHECK(!validation || (*device)->getCapabilities().supportsValidation);
