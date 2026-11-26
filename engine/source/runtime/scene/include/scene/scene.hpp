@@ -1,6 +1,13 @@
 #pragma once
 
+#include "reflection/reflection.hpp"
 #include "scene/game_object.hpp"
+
+#include <array>
+#include <concepts>
+#include <functional>
+#include <span>
+#include <type_traits>
 
 #include <cstddef>
 #include <expected>
@@ -15,7 +22,18 @@ enum class SceneError : std::uint8_t {
     InvalidHandle,
     ResourceExhausted,
     CreationFailed,
+    Busy,
+    InvalidComponent,
+    DuplicateComponent,
+    UnknownComponent,
 };
+
+// A specialization supplies the same qualified name as the registered metadata.
+template <class Component> struct ComponentTraits;
+
+template <class Component> [[nodiscard]] reflect::TypeId componentTypeId() noexcept {
+    return reflect::makeTypeId(ComponentTraits<std::remove_cv_t<Component>>::name);
+}
 
 // Structural operations run on the owning thread at a phase boundary.
 // Object pointers are borrowed. Keep an ObjectHandle or Guid for later use.
@@ -37,12 +55,53 @@ class STAR_SCENE_API Scene final {
 
     // Enqueue destruction without invalidating current borrows until commit.
     [[nodiscard]] std::expected<void, SceneError> queueDestroy(ObjectHandle handle) noexcept;
+    // Calls made during a query leave the queue for the next phase boundary.
     void commitCommands() noexcept;
+
+    // Type metadata and callbacks must stay loaded until unregistration succeeds. Destruction must not throw.
+    [[nodiscard]] std::expected<void, SceneError> registerComponent(const reflect::TypeInfo &type) noexcept;
+    [[nodiscard]] std::expected<void, SceneError> unregisterComponents(reflect::ModuleId owner) noexcept;
+
+    // Component pointers are borrowed until the next structural commit.
+    [[nodiscard]] void *findComponent(ObjectHandle handle, reflect::TypeId type) noexcept;
+    [[nodiscard]] const void *findComponent(ObjectHandle handle, reflect::TypeId type) const noexcept;
+    // Adds keep an existing value and removals of missing values are harmless.
+    [[nodiscard]] std::expected<void, SceneError> queueAddComponent(ObjectHandle handle, reflect::TypeId type,
+                                                                    const void *initial = nullptr) noexcept;
+    [[nodiscard]] std::expected<void, SceneError> queueRemoveComponent(ObjectHandle handle,
+                                                                       reflect::TypeId type) noexcept;
+
+    // Callbacks may queue structural changes. Component addresses are borrowed for the callback.
+    template <class... Components, class Callback>
+        requires(sizeof...(Components) > 0 && std::is_nothrow_invocable_v<Callback &, ObjectHandle, Components &...>)
+    [[nodiscard]] std::expected<void, SceneError> each(Callback &&callback) noexcept {
+        const std::array ids{componentTypeId<Components>()...};
+        auto function = std::ref(callback);
+        return visitComponents(ids, &function,
+                               [](const void *context, ObjectHandle handle, void *const *values) noexcept {
+                                   const auto &call = *static_cast<const decltype(function) *>(context);
+                                   [&]<std::size_t... Index>(std::index_sequence<Index...>) {
+                                       std::invoke(call, handle, *static_cast<Components *>(values[Index])...);
+                                   }(std::index_sequence_for<Components...>{});
+                               });
+    }
+
+    template <class Component> [[nodiscard]] Component *findComponent(ObjectHandle handle) noexcept {
+        return static_cast<Component *>(findComponent(handle, componentTypeId<Component>()));
+    }
+
+    template <class Component> [[nodiscard]] const Component *findComponent(ObjectHandle handle) const noexcept {
+        return static_cast<const Component *>(findComponent(handle, componentTypeId<Component>()));
+    }
 
   private:
     friend class World;
 
     explicit Scene(World &world);
+    [[nodiscard]] bool isBusy() const noexcept;
+    using ComponentVisitor = void (*)(const void *, ObjectHandle, void *const *) noexcept;
+    [[nodiscard]] std::expected<void, SceneError> visitComponents(std::span<const reflect::TypeId> types,
+                                                                  const void *context, ComponentVisitor visit) noexcept;
     struct Impl;
     std::unique_ptr<Impl> m_impl;
     World &m_world;

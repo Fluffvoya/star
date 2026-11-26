@@ -8,4 +8,4 @@ star_add_module(Scene scene
     src/world.cpp
 )
 
-target_link_libraries(StarScene PUBLIC Star::Core PRIVATE EnTT::EnTT)
+target_link_libraries(StarScene PUBLIC Star::Core Star::Reflection PRIVATE EnTT::EnTT)
