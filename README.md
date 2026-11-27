@@ -15,13 +15,12 @@ asynchronous runs, priority queues, parallel-for helpers, and nested-safe job wa
 - A C++23 compiler
 - SDL3 3.2 or newer
 - xxHash 0.8 or newer
-- EnTT 3.14.0 (via the vcpkg manifest)
 
 Reflection generation uses libclang 18 or newer and its matching Clang driver. CMake skips
 StarHeaderTool when libclang is unavailable. The `generated-reflection` and
 `generated-reflection-incremental` tests verify the generator when it is built.
 
-Initialize the pinned YAML parser and its dependencies after cloning the repository.
+Initialize the pinned EnTT 3.14.0 (MIT) and rapidyaml dependencies after cloning the repository.
 
 ```sh
 git submodule update --init --recursive

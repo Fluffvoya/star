@@ -28,6 +28,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
+set(star_entt_dir "${CMAKE_CURRENT_SOURCE_DIR}/engine/source/third-party/entt")
+if(NOT EXISTS "${star_entt_dir}/CMakeLists.txt")
+    message(FATAL_ERROR "Initialize the pinned EnTT dependency with git submodule update --init --recursive.")
+endif()
+add_subdirectory("${star_entt_dir}" EXCLUDE_FROM_ALL SYSTEM)
+
 set(star_rapidyaml_dir "${CMAKE_CURRENT_SOURCE_DIR}/engine/source/third-party/rapidyaml")
 if(NOT EXISTS "${star_rapidyaml_dir}/ext/c4core/cmake/c4Project.cmake")
     message(FATAL_ERROR "Initialize the pinned YAML dependency with git submodule update --init --recursive.")

@@ -1,5 +1,3 @@
-find_package(EnTT 3.14.0 EXACT CONFIG REQUIRED)
-
 star_add_module(Scene scene
     include/scene/components.hpp
     include/scene/game_object.hpp

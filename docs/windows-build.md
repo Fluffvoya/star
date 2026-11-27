@@ -22,7 +22,7 @@ cmake --preset win-dev -B $buildDir @cmakeArgs
 cmake --build $buildDir
 ```
 
-vcpkg 在配置时安装仓库清单中的依赖。产物位于 `$buildDir/bin` 和 `$buildDir/lib`。编译器或 triplet 变化时，为新配置选用独立的构建目录。
+EnTT 3.14.0 和 rapidyaml 由 Git 子模块提供。vcpkg 在配置时安装仓库清单中的其他依赖。产物位于 `$buildDir/bin` 和 `$buildDir/lib`。编译器或 triplet 变化时，为新配置选用独立的构建目录。
 
 | 预设 | vcpkg 目标 triplet | 运行时依赖目录 |
 | --- | --- | --- |

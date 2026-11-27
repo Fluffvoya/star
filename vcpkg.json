@@ -4,7 +4,6 @@
   "builtin-baseline": "d5ec528843d29e3a52d745a64b469f810b2cedbf",
   "dependencies": [
     "doctest",
-    "entt",
     "glm",
     "mimalloc",
     "sdl3",
@@ -15,7 +14,6 @@
     "xxhash"
   ],
   "overrides": [
-    { "name": "entt", "version": "3.14.0" },
     { "name": "volk", "version": "1.4.363.0" },
     { "name": "vulkan-headers", "version": "1.4.363.0" }
   ]
