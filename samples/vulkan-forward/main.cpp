@@ -1,6 +1,7 @@
 #include "asset-pipeline/model_importer.hpp"
 #include "cluster_sizes.h"
 #include "environment.hpp"
+#include "sample_material.hpp"
 #include "vulkan_runtime.hpp"
 
 #include <algorithm>
@@ -322,12 +323,14 @@ class ForwardSample {
         vk.vkDestroyCommandPool(device, m_pool, nullptr);
     }
 
-    void initialize(const ImportedStaticModel &model, const std::filesystem::path &assets, bool front_view);
+    void initialize(const ImportedStaticModel &model, const std::filesystem::path &assets, bool front_view,
+                    const star::sample::SampleMaterial &material);
     double draw();
     void saveCapture(const std::filesystem::path &path) const;
 
   private:
-    VkPipeline createPipeline(VkShaderModule vertex, VkShaderModule fragment, VkExtent2D extent) const;
+    VkPipeline createPipeline(VkShaderModule vertex, VkShaderModule fragment, VkExtent2D extent,
+                              bool double_sided) const;
     VkShaderModule loadShader(const std::filesystem::path &path) const;
     void renderPass(bool depth_only) const;
     void createLightingDescriptors();
@@ -376,7 +379,8 @@ class ForwardSample {
     VkQueryPool m_queries = VK_NULL_HANDLE;
 };
 
-void ForwardSample::initialize(const ImportedStaticModel &model, const std::filesystem::path &assets, bool front_view) {
+void ForwardSample::initialize(const ImportedStaticModel &model, const std::filesystem::path &assets, bool front_view,
+                               const star::sample::SampleMaterial &material) {
     if ((m_gpu.queueProperties.queueFlags & VK_QUEUE_COMPUTE_BIT) == 0) {
         throw std::runtime_error("The graphics queue must also support compute shaders");
     }
@@ -405,6 +409,9 @@ void ForwardSample::initialize(const ImportedStaticModel &model, const std::file
         } else if (part.name == "Paint") {
             draw.albedo = {0.60F, 0.20F, 0.09F, 1};
         }
+        draw.albedo = material.base_color.value_or(draw.albedo);
+        draw.factors[0] = material.roughness.value_or(draw.factors[0]);
+        draw.factors[1] = material.metallic.value_or(draw.factors[1]);
         m_parts.push_back(draw);
         vertices.insert(vertices.end(), part.vertices.begin(), part.vertices.end());
         indices.insert(indices.end(), part.indices.begin(), part.indices.end());
@@ -451,10 +458,13 @@ void ForwardSample::initialize(const ImportedStaticModel &model, const std::file
     const auto destroy_shader = [&](VkShaderModule shader) { vk.vkDestroyShaderModule(device, shader, nullptr); };
     using Shader = std::unique_ptr<std::remove_pointer_t<VkShaderModule>, decltype(destroy_shader)>;
     const Shader vertex(loadShader(assets / "forward-vertex.spv"), destroy_shader);
-    const Shader fragment(loadShader(assets / "forward-fragment.spv"), destroy_shader);
-    m_prepass = createPipeline(vertex.get(), VK_NULL_HANDLE, resolution);
-    m_forward = createPipeline(vertex.get(), fragment.get(), resolution);
-    m_shadow_pipeline = createPipeline(vertex.get(), VK_NULL_HANDLE, shadow_resolution);
+    const auto &state = material.variant.state;
+    const auto fragment_file =
+        state.shading == star::MaterialShadingModel::Unlit ? "forward-unlit.spv" : "forward-fragment.spv";
+    const Shader fragment(loadShader(assets / fragment_file), destroy_shader);
+    m_prepass = createPipeline(vertex.get(), VK_NULL_HANDLE, resolution, state.double_sided);
+    m_forward = createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided);
+    m_shadow_pipeline = createPipeline(vertex.get(), VK_NULL_HANDLE, shadow_resolution, state.double_sided);
     const Shader cluster(loadShader(assets / "forward-cluster.spv"), destroy_shader);
     auto compute = vkInfo<VkComputePipelineCreateInfo>(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
     compute.stage = vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
@@ -770,7 +780,8 @@ VkShaderModule ForwardSample::loadShader(const std::filesystem::path &path) cons
     return module;
 }
 
-VkPipeline ForwardSample::createPipeline(VkShaderModule vertex, VkShaderModule fragment, VkExtent2D extent) const {
+VkPipeline ForwardSample::createPipeline(VkShaderModule vertex, VkShaderModule fragment, VkExtent2D extent,
+                                         bool double_sided) const {
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{
         vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO),
         vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO)};
@@ -805,6 +816,7 @@ VkPipeline ForwardSample::createPipeline(VkShaderModule vertex, VkShaderModule f
     auto raster =
         vkInfo<VkPipelineRasterizationStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.cullMode = double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
     raster.lineWidth = 1.0F;
     auto sampling =
         vkInfo<VkPipelineMultisampleStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO);
@@ -992,9 +1004,18 @@ void ForwardSample::saveCapture(const std::filesystem::path &path) const {
 
 int main(int argc, char **argv) {
     try {
-        const bool front_view = argc == 5 && std::string_view(argv[4]) == "--front";
-        if (argc > 4 && !front_view) {
-            throw std::runtime_error("Usage: star-vulkan-forward [model] [capture.ppm] [frames] [--front]");
+        bool front_view = false;
+        auto material = star::sample::defaultSampleMaterial();
+        for (int index = 4; index < argc; ++index) {
+            const std::string_view option(argv[index]);
+            if (option == "--front") {
+                front_view = true;
+            } else if (option.starts_with("--material=") && option.size() > 11) {
+                material = star::sample::loadSampleMaterial(option.substr(11));
+            } else {
+                throw std::runtime_error(
+                    "Usage: star-vulkan-forward [model] [capture.ppm] [frames] [--front] [--material=path]");
+            }
         }
         const auto assets = std::filesystem::canonical(argv[0]).parent_path();
         const auto source = argc > 1 ? std::filesystem::path(argv[1]) : assets / "forward-scene.obj";
@@ -1013,7 +1034,7 @@ int main(int argc, char **argv) {
             throw std::runtime_error("A Vulkan device with validation is required");
         }
         ForwardSample sample(gpu);
-        sample.initialize(model, assets, front_view);
+        sample.initialize(model, assets, front_view, material);
         const auto warmup_ms = sample.draw();
         double total_ms = 0.0;
         for (unsigned frame = 0; frame < frames; ++frame) {

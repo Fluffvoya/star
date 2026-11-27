@@ -268,3 +268,9 @@ float4 fragmentMain(Varyings input, bool frontFacing : SV_IsFrontFace) : SV_Targ
     // Reinhard tone mapping. The sRGB render target performs the transfer function.
     return float4(linear / (1.0 + linear), 1.0);
 }
+
+[shader("fragment")]
+float4 unlitMain(Varyings input) : SV_Target
+{
+    return float4(draw.albedo.rgb * baseColorMap.Sample(materialSampler, input.uv).rgb, 1.0);
+}
