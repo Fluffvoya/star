@@ -8,6 +8,7 @@ star_add_module(RHI rhi
     src/null_device.cpp
     src/render_graph.cpp
     src/shader_compiler.cpp
+    src/device_selection.cpp
     src/vulkan_device.cpp
     src/vulkan_probe.cpp
 )

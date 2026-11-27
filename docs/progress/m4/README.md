@@ -20,3 +20,4 @@
 | 16 类型化资产与端到端验证 | [Linux x64 软件 Vulkan 验证记录](16-typed-asset-loading.md) |
 | 17 独立运行时 Renderer | [Linux x64 软件 Vulkan 验证记录](17-runtime-forward-renderer.md) |
 | 18 纯运行时构建与基础验收 | [Linux x64 验收记录](18-runtime-only-acceptance.md) |
+| 20 独立显卡自动选择 | [Windows x64 实机记录](20-discrete-gpu-selection.md) |

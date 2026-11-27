@@ -1,6 +1,7 @@
 #include "vulkan_runtime.hpp"
 
 #include "core/log.hpp"
+#include "device_selection.hpp"
 
 #include <SDL3/SDL_vulkan.h>
 
@@ -147,11 +148,18 @@ std::expected<void, DeviceError> VulkanRuntime::initialize(bool validation, SDL_
         if (inst.vkEnumeratePhysicalDevices(instance, &count, nullptr) != VK_SUCCESS || count == 0) {
             return std::unexpected(DeviceError::BackendUnavailable);
         }
-        std::vector<VkPhysicalDevice> candidates(count);
-        if (inst.vkEnumeratePhysicalDevices(instance, &count, candidates.data()) != VK_SUCCESS) {
+        std::vector<VkPhysicalDevice> physical_devices(count);
+        if (inst.vkEnumeratePhysicalDevices(instance, &count, physical_devices.data()) != VK_SUCCESS) {
             return std::unexpected(DeviceError::BackendFailure);
         }
-        for (VkPhysicalDevice candidate : candidates) {
+        struct AcceptableDevice {
+            VkPhysicalDevice device = VK_NULL_HANDLE;
+            std::uint32_t queue_family = 0;
+            VkQueueFamilyProperties queue_properties{};
+            VkPhysicalDeviceProperties properties{};
+        };
+        std::vector<AcceptableDevice> acceptable;
+        for (VkPhysicalDevice candidate : physical_devices) {
             VkPhysicalDeviceVulkan12Features features12{};
             features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
             VkPhysicalDeviceVulkan13Features features13{};
@@ -198,20 +206,24 @@ std::expected<void, DeviceError> VulkanRuntime::initialize(bool validation, SDL_
                 }
                 if (present && families[family].queueCount != 0 &&
                     (families[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
-                    queueFamily = family;
-                    queueProperties = families[family];
-                    physicalDevice = candidate;
-                    properties = candidate_properties;
+                    acceptable.push_back(AcceptableDevice{candidate, family, families[family], candidate_properties});
                     break;
                 }
             }
-            if (physicalDevice) {
-                break;
-            }
         }
-        if (!physicalDevice) {
+        std::vector<VulkanDeviceType> device_types;
+        device_types.reserve(acceptable.size());
+        for (const AcceptableDevice &entry : acceptable) {
+            device_types.push_back(static_cast<VulkanDeviceType>(entry.properties.deviceType));
+        }
+        const auto selected = selectPreferredDeviceIndex(device_types);
+        if (!selected) {
             return std::unexpected(DeviceError::BackendUnavailable);
         }
+        physicalDevice = acceptable[*selected].device;
+        queueFamily = acceptable[*selected].queue_family;
+        queueProperties = acceptable[*selected].queue_properties;
+        properties = acceptable[*selected].properties;
 
         constexpr float priority = 1.0F;
         VkDeviceQueueCreateInfo queue_create{};
