@@ -185,3 +185,43 @@ STAR_TEST(model_importer_resolves_external_gltf_buffers_and_checks_bounds) {
     });
     STAR_CHECK(!traversal.has_value());
 }
+
+STAR_TEST(model_importer_keeps_color_and_metallic_roughness_images_in_distinct_color_spaces) {
+    constexpr std::string_view source = R"(
+{
+  "asset": {"version": "2.0"},
+  "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "material": 0}]}],
+  "materials": [{"pbrMetallicRoughness": {
+      "baseColorTexture": {"index": 0}, "metallicRoughnessTexture": {"index": 0}}}],
+  "textures": [{"source": 0}],
+  "images": [{"uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQcGj4DwADRAHgMqq/hAAAAABJRU5ErkJggg=="}],
+  "buffers": [{"byteLength": 60, "uri": "mesh.bin"}],
+  "bufferViews": [{"buffer": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": 36, "byteLength": 24}],
+  "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                 "min": [0,0,0], "max": [1,1,0]},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"}]
+}
+)";
+    const GltfBufferResolver resolver = [](std::string_view path) {
+        STAR_CHECK(path == "mesh.bin");
+        auto bytes = triangleBytes();
+        bytes.resize(60);
+        return bytes;
+    };
+    const auto geometry = importGltfStaticModel(asBytes(source), resolver);
+    STAR_CHECK(geometry.has_value());
+    STAR_CHECK(geometry->textures.empty());
+
+    const auto model = importGltfTexturedModel(asBytes(source), resolver);
+    STAR_CHECK(model.has_value());
+    STAR_CHECK(model->parts.size() == 1);
+    STAR_CHECK(model->textures.size() == 2);
+    const auto &material = model->parts.front().material.value();
+    const auto &color = model->textures.at(material.base_color_texture.value());
+    const auto &metallic_roughness = model->textures.at(material.metallic_roughness_texture.value());
+    STAR_CHECK(color.usage == TextureUsage::Color);
+    STAR_CHECK(metallic_roughness.usage == TextureUsage::Linear);
+    const std::vector<std::uint8_t> expected{32, 64, 128, 255};
+    STAR_CHECK(color.mips.at(0).rgba == expected);
+    STAR_CHECK(metallic_roughness.mips.at(0).rgba == expected);
+}

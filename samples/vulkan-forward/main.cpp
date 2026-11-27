@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -71,7 +72,7 @@ ImportedStaticModel importModel(const std::filesystem::path &path) {
     }
     auto model =
         extension == ".gltf" || extension == ".glb"
-            ? importGltfStaticModel(bytes, [&](std::string_view name) { return readFile(path.parent_path() / name); })
+            ? importGltfTexturedModel(bytes, [&](std::string_view name) { return readFile(path.parent_path() / name); })
             : importStaticModel(bytes, extension == ".fbx" ? StaticModelFormat::Fbx : StaticModelFormat::Obj);
     if (!model) {
         throw std::runtime_error(model.error().message);
@@ -178,6 +179,7 @@ struct DrawPart {
     std::int32_t vertex_offset;
     std::array<float, 4> albedo;
     std::array<float, 4> factors;
+    VkDescriptorSet textures = VK_NULL_HANDLE;
 };
 
 DrawConstants makeCamera(std::span<const StaticMeshVertex> vertices, bool front_view) {
@@ -310,6 +312,9 @@ class ForwardSample {
         vk.vkDestroyPipeline(device, m_cluster_pipeline, nullptr);
         vk.vkDestroyPipelineLayout(device, m_layout, nullptr);
         vk.vkDestroyDescriptorPool(device, m_descriptor_pool, nullptr);
+        vk.vkDestroyDescriptorPool(device, m_material_pool, nullptr);
+        vk.vkDestroyDescriptorSetLayout(device, m_material_layout, nullptr);
+        vk.vkDestroySampler(device, m_material_sampler, nullptr);
         vk.vkDestroyDescriptorSetLayout(device, m_descriptor_layout, nullptr);
         vk.vkDestroySampler(device, m_environment_sampler, nullptr);
         vk.vkDestroyQueryPool(device, m_queries, nullptr);
@@ -328,9 +333,12 @@ class ForwardSample {
     void createLightingDescriptors();
     void createShadows();
     void createEnvironment();
+    void createMaterialDescriptors(const ImportedStaticModel &model);
+    void uploadImage(const Image &image, std::span<const std::byte> bytes,
+                     std::span<const VkBufferImageCopy> regions) const;
     void submitCommands() const;
     void renderShadows() const;
-    void drawParts(const DrawConstants &frame) const;
+    void drawParts(const DrawConstants &frame, bool bind_materials = false) const;
     void dispatchClusters() const;
 
     const VulkanRuntime &m_gpu;
@@ -349,6 +357,10 @@ class ForwardSample {
     ShadowFrame m_shadow_frame{};
     std::array<VkImageView, STAR_SHADOW_CASCADES> m_shadow_layers{};
     std::vector<DrawPart> m_parts;
+    std::vector<std::unique_ptr<Image>> m_material_images;
+    VkDescriptorSetLayout m_material_layout = VK_NULL_HANDLE;
+    VkDescriptorPool m_material_pool = VK_NULL_HANDLE;
+    VkSampler m_material_sampler = VK_NULL_HANDLE;
     DrawConstants m_camera{};
     VkPipelineLayout m_layout = VK_NULL_HANDLE;
     VkDescriptorPool m_descriptor_pool = VK_NULL_HANDLE;
@@ -426,10 +438,12 @@ void ForwardSample::initialize(const ImportedStaticModel &model, const std::file
     createShadows();
     createEnvironment();
     createLightingDescriptors();
+    createMaterialDescriptors(model);
     const VkPushConstantRange constants{all_shader_stages, 0, sizeof(DrawConstants)};
     auto layout = vkInfo<VkPipelineLayoutCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
-    layout.setLayoutCount = 1;
-    layout.pSetLayouts = &m_descriptor_layout;
+    const std::array descriptor_layouts{m_descriptor_layout, m_material_layout};
+    layout.setLayoutCount = static_cast<std::uint32_t>(descriptor_layouts.size());
+    layout.pSetLayouts = descriptor_layouts.data();
     layout.pushConstantRangeCount = 1;
     layout.pPushConstantRanges = &constants;
     check(vk.vkCreatePipelineLayout(device, &layout, nullptr, &m_layout), "Create pipeline layout");
@@ -572,8 +586,6 @@ void ForwardSample::createEnvironment() {
     m_environment.create(environment_format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                          VK_IMAGE_ASPECT_COLOR_BIT, {base.width, base.height}, 1, mip_count);
     m_environment_buffer.upload(std::as_bytes(std::span(lighting.diffuse)), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-    Buffer staging(m_gpu);
-    staging.upload(std::as_bytes(std::span(lighting.specular)), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     std::vector<VkBufferImageCopy> regions;
     for (std::uint32_t level = 0; level < mip_count; ++level) {
         const auto &mip = lighting.mip_levels[level];
@@ -584,17 +596,9 @@ void ForwardSample::createEnvironment() {
         regions.push_back(region);
     }
 
-    const auto &vk = m_gpu.vk;
-    const auto begin = vkInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-    check(vk.vkBeginCommandBuffer(m_commands, &begin), "Begin environment upload");
-    transitionVulkanImage(m_gpu, m_commands, m_environment.handle, m_environment.range,
-                          vulkanTextureSync(TextureState::Undefined), vulkanTextureSync(TextureState::CopyDestination));
-    vk.vkCmdCopyBufferToImage(m_commands, staging.handle, m_environment.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                              static_cast<std::uint32_t>(regions.size()), regions.data());
-    transitionVulkanImage(m_gpu, m_commands, m_environment.handle, m_environment.range,
-                          vulkanTextureSync(TextureState::CopyDestination), vulkanTextureSync(TextureState::Sampled));
-    submitCommands();
+    uploadImage(m_environment, std::as_bytes(std::span(lighting.specular)), regions);
 
+    const auto &vk = m_gpu.vk;
     auto sampler = vkInfo<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
     sampler.magFilter = VK_FILTER_LINEAR;
     sampler.minFilter = VK_FILTER_LINEAR;
@@ -604,6 +608,126 @@ void ForwardSample::createEnvironment() {
     sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler.maxLod = static_cast<float>(mip_count - 1);
     check(vk.vkCreateSampler(m_gpu.device, &sampler, nullptr, &m_environment_sampler), "Create environment sampler");
+}
+
+void ForwardSample::uploadImage(const Image &image, std::span<const std::byte> bytes,
+                                std::span<const VkBufferImageCopy> regions) const {
+    Buffer staging(m_gpu);
+    staging.upload(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    const auto &vk = m_gpu.vk;
+    check(vk.vkResetCommandBuffer(m_commands, 0), "Reset upload command buffer");
+    const auto begin = vkInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+    check(vk.vkBeginCommandBuffer(m_commands, &begin), "Begin image upload");
+    transitionVulkanImage(m_gpu, m_commands, image.handle, image.range, vulkanTextureSync(TextureState::Undefined),
+                          vulkanTextureSync(TextureState::CopyDestination));
+    vk.vkCmdCopyBufferToImage(m_commands, staging.handle, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              static_cast<std::uint32_t>(regions.size()), regions.data());
+    transitionVulkanImage(m_gpu, m_commands, image.handle, image.range,
+                          vulkanTextureSync(TextureState::CopyDestination), vulkanTextureSync(TextureState::Sampled));
+    submitCommands();
+}
+
+void ForwardSample::createMaterialDescriptors(const ImportedStaticModel &model) {
+    for (const auto &texture : model.textures) {
+        auto image = std::make_unique<Image>(m_gpu);
+        const auto &base = texture.mips.front();
+        const auto format = texture.usage == star::asset_pipeline::TextureUsage::Color ? VK_FORMAT_R8G8B8A8_SRGB
+                                                                                       : VK_FORMAT_R8G8B8A8_UNORM;
+        image->create(format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                      {base.width, base.height}, 1, static_cast<std::uint32_t>(texture.mips.size()));
+        std::vector<std::uint8_t> bytes;
+        std::vector<VkBufferImageCopy> regions;
+        for (std::uint32_t level = 0; level < texture.mips.size(); ++level) {
+            const auto &mip = texture.mips[level];
+            VkBufferImageCopy region{};
+            region.bufferOffset = bytes.size();
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+            region.imageExtent = {mip.width, mip.height, 1};
+            regions.push_back(region);
+            bytes.insert(bytes.end(), mip.rgba.begin(), mip.rgba.end());
+        }
+        uploadImage(*image, std::as_bytes(std::span(bytes)), regions);
+        m_material_images.push_back(std::move(image));
+    }
+    const auto fallback_index = m_material_images.size();
+    auto white_image = std::make_unique<Image>(m_gpu);
+    white_image->create(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT, {1, 1});
+    constexpr std::array<std::uint8_t, 4> white{255, 255, 255, 255};
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {1, 1, 1};
+    uploadImage(*white_image, std::as_bytes(std::span(white)), std::span(&region, 1));
+    m_material_images.push_back(std::move(white_image));
+
+    const auto &vk = m_gpu.vk;
+    const auto device = m_gpu.device;
+    auto sampler = vkInfo<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
+    sampler.magFilter = VK_FILTER_LINEAR;
+    sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.maxLod = VK_LOD_CLAMP_NONE;
+    check(vk.vkCreateSampler(device, &sampler, nullptr, &m_material_sampler), "Create material sampler");
+
+    constexpr std::array bindings{
+        VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+    };
+    auto layout = vkInfo<VkDescriptorSetLayoutCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
+    layout.bindingCount = static_cast<std::uint32_t>(bindings.size());
+    layout.pBindings = bindings.data();
+    check(vk.vkCreateDescriptorSetLayout(device, &layout, nullptr, &m_material_layout),
+          "Create material descriptor layout");
+    if (model.parts.size() > std::numeric_limits<std::uint32_t>::max() / 2) {
+        throw std::runtime_error("Model exceeds descriptor limits");
+    }
+    const auto count = static_cast<std::uint32_t>(model.parts.size());
+    const std::array sizes{VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2},
+                           VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, count}};
+    auto pool = vkInfo<VkDescriptorPoolCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
+    pool.maxSets = count;
+    pool.poolSizeCount = static_cast<std::uint32_t>(sizes.size());
+    pool.pPoolSizes = sizes.data();
+    check(vk.vkCreateDescriptorPool(device, &pool, nullptr, &m_material_pool), "Create material descriptor pool");
+
+    std::map<std::pair<std::size_t, std::size_t>, VkDescriptorSet> allocated;
+    for (std::size_t index = 0; index < model.parts.size(); ++index) {
+        const auto &part = model.parts[index];
+        const auto material = part.material.value_or(ImportedPbrMaterial{});
+        const auto key = std::pair{material.base_color_texture.value_or(fallback_index),
+                                   material.metallic_roughness_texture.value_or(fallback_index)};
+        auto [it, inserted] = allocated.try_emplace(key, VK_NULL_HANDLE);
+        if (inserted) {
+            auto sets = vkInfo<VkDescriptorSetAllocateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO);
+            sets.descriptorPool = m_material_pool;
+            sets.descriptorSetCount = 1;
+            sets.pSetLayouts = &m_material_layout;
+            check(vk.vkAllocateDescriptorSets(device, &sets, &it->second), "Allocate material descriptor set");
+            const std::array images{
+                VkDescriptorImageInfo{VK_NULL_HANDLE, m_material_images.at(key.first)->view,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                VkDescriptorImageInfo{VK_NULL_HANDLE, m_material_images.at(key.second)->view,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                VkDescriptorImageInfo{m_material_sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED},
+            };
+            std::array<VkWriteDescriptorSet, bindings.size()> writes{};
+            for (std::uint32_t binding = 0; binding < writes.size(); ++binding) {
+                auto &write = writes[binding];
+                write = vkInfo<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+                write.dstSet = it->second;
+                write.dstBinding = binding;
+                write.descriptorCount = 1;
+                write.descriptorType = bindings[binding].descriptorType;
+                write.pImageInfo = &images[binding];
+            }
+            vk.vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
+        m_parts[index].textures = it->second;
+    }
 }
 
 void ForwardSample::dispatchClusters() const {
@@ -659,7 +783,8 @@ VkPipeline ForwardSample::createPipeline(VkShaderModule vertex, VkShaderModule f
     constexpr VkVertexInputBindingDescription binding{0, sizeof(StaticMeshVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     constexpr std::array attributes{
         VkVertexInputAttributeDescription{0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(StaticMeshVertex, position)},
-        VkVertexInputAttributeDescription{1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(StaticMeshVertex, normal)}};
+        VkVertexInputAttributeDescription{1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(StaticMeshVertex, normal)},
+        VkVertexInputAttributeDescription{2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(StaticMeshVertex, uv)}};
     auto input =
         vkInfo<VkPipelineVertexInputStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
     input.vertexBindingDescriptionCount = 1;
@@ -743,7 +868,7 @@ void ForwardSample::renderPass(bool depth_only) const {
         vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 0, 1, &m_descriptors, 0,
                                    nullptr);
     }
-    drawParts(m_camera);
+    drawParts(m_camera, !depth_only);
     vk.vkCmdEndRendering(m_commands);
 }
 
@@ -772,12 +897,16 @@ void ForwardSample::renderShadows() const {
     }
 }
 
-void ForwardSample::drawParts(const DrawConstants &frame) const {
+void ForwardSample::drawParts(const DrawConstants &frame, bool bind_materials) const {
     const auto &vk = m_gpu.vk;
     constexpr VkDeviceSize offset = 0;
     vk.vkCmdBindVertexBuffers(m_commands, 0, 1, &m_vertices.handle, &offset);
     vk.vkCmdBindIndexBuffer(m_commands, m_indices.handle, 0, VK_INDEX_TYPE_UINT32);
     for (const auto &part : m_parts) {
+        if (bind_materials) {
+            vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 1, 1, &part.textures, 0,
+                                       nullptr);
+        }
         auto push = frame;
         push.albedo = part.albedo;
         push.factors = part.factors;
