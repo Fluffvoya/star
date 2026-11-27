@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include "scene/scene_archive.hpp"
 #include "scene/world.hpp"
 
 #include <algorithm>
@@ -537,6 +538,113 @@ STAR_TEST(worldRunsObjectPrerequisitesAndRejectsCycles) {
     STAR_CHECK(first_object->addTickPrerequisite(*second_object));
     const auto failed = world.tick(0);
     STAR_CHECK(!failed && failed.error() == SceneError::ScheduleCycle && count == 2);
+}
+
+} // namespace
+
+namespace {
+
+constexpr auto persisted_scene = R"yaml(
+StarFile: Scene
+Version: 1
+Scene: {Name: Forest}
+GameObjects:
+  - Guid: "00000000000000000000000000000003"
+    Order: 2
+    Name: Second
+    Components:
+      - {Type: "star::Hierarchy", parent: "00000000000000000000000000000001", sibling_index: 1}
+  - Guid: "00000000000000000000000000000001"
+    Order: 0
+    Name: Root
+    Components:
+      - {Type: "star::Transform", position: [2.5, 0, 0], FutureField: 10}
+      - {Type: "game::FutureComponent", Version: 3, future: "kept"}
+  - Guid: "00000000000000000000000000000002"
+    Order: 1
+    Name: First
+    Type: "game::FutureObject"
+    Properties: {modified: true}
+    Components:
+      - {Type: "star::Hierarchy", parent: "00000000000000000000000000000001", sibling_index: 0}
+)yaml";
+
+STAR_TEST(sceneYamlRoundTripsHierarchyAndUnknownArchiveData) {
+    using namespace star;
+    using namespace star::serialization;
+    World world;
+    const auto root_guid = Guid::parse("00000000000000000000000000000001");
+    const auto first_guid = Guid::parse("00000000000000000000000000000002");
+    STAR_CHECK(root_guid && first_guid);
+    const auto strict = loadSceneYaml(world, persisted_scene, LoadPolicy::Strict);
+    STAR_CHECK(!strict && strict.error().code == ArchiveErrorCode::UnknownField);
+    const auto loaded = loadSceneYaml(world, persisted_scene);
+    STAR_CHECK(loaded && loaded->diagnostics.size() >= 3);
+    const auto *root = loaded->scene->findObject(*root_guid);
+    const auto *child = loaded->scene->findObject(*first_guid);
+    STAR_CHECK(root != nullptr && child != nullptr && child->getParent() == root);
+    STAR_CHECK(loaded->scene->findHierarchy(root->getHandle())->first_child == child->getHandle());
+    STAR_CHECK(child->getWorldTransform().matrix.transformPoint({}).x == 2.5F);
+
+    const auto saved = saveSceneYaml(*loaded->scene);
+    STAR_CHECK(saved);
+    STAR_CHECK(saved->contains("FutureField") && saved->contains("game::FutureComponent") &&
+               saved->contains("game::FutureObject") && saved->contains("modified") && saved->contains("Forest"));
+    const auto reloaded = loadSceneYaml(world, *saved);
+    STAR_CHECK(reloaded);
+    const auto resaved = saveSceneYaml(*reloaded->scene);
+    STAR_CHECK(resaved && *resaved == *saved);
+}
+
+STAR_TEST(prefabInstantiatesFreshGuidsAndAppliesOverrides) {
+    using namespace star;
+    using namespace star::serialization;
+    World world;
+    const auto created = world.createScene();
+    STAR_CHECK(created);
+    auto &scene = **created;
+    const auto parent = scene.createObject("Parent");
+    const auto child = scene.createObject("Child");
+    STAR_CHECK(parent && child && scene.queueSetParent(*child, *parent, false) && scene.commitCommands());
+    const auto prefab = savePrefabYaml(scene, *parent);
+    STAR_CHECK(prefab);
+    const auto source_root = scene.findObject(*parent)->getGuid();
+    const auto prefab_asset = Guid::generate();
+    const std::array overrides{
+        PrefabOverride{source_root, "Name", ArchiveValue{std::string("Instance")}},
+        PrefabOverride{
+            source_root, "Components/star::Transform/position",
+            ArchiveValue{ArchiveValue::Sequence{ArchiveValue{PlainScalar{"8"}}, ArchiveValue{PlainScalar{"0"}},
+                                                ArchiveValue{PlainScalar{"0"}}}}},
+    };
+    const auto first = instantiatePrefabYaml(scene, *prefab, prefab_asset, overrides, LoadPolicy::Strict);
+    const auto second = instantiatePrefabYaml(scene, *prefab, prefab_asset);
+    STAR_CHECK(first && second && first->root != second->root);
+    const auto *instance = scene.findObject(first->root);
+    STAR_CHECK(instance->getGuid() != source_root && instance->getName() == "Instance");
+    const auto instance_child = scene.findHierarchy(first->root)->first_child;
+    STAR_CHECK(scene.findObject(instance_child)->getParent() == instance);
+    STAR_CHECK(scene.findWorldTransform(instance_child)->matrix.transformPoint({}).x == 8.0F);
+    STAR_CHECK(!savePrefabYaml(scene, first->root));
+    const auto saved = saveSceneYaml(scene);
+    STAR_CHECK(saved && saved->contains("PrefabInstance") && saved->contains("RootGuidInPrefab"));
+}
+
+STAR_TEST(sceneYamlRejectsMalformedReferencesWithoutChangingExistingScenes) {
+    using namespace star;
+    World world;
+    const auto scene = world.createScene();
+    STAR_CHECK(scene && (*scene)->createObject("Existing"));
+    const auto failed = loadSceneYaml(world, R"yaml(
+StarFile: Scene
+Version: 1
+GameObjects:
+  - Guid: "00000000000000000000000000000001"
+    Name: Cycle
+    Components:
+      - {Type: "star::Hierarchy", parent: "00000000000000000000000000000001"}
+)yaml");
+    STAR_CHECK(!failed && (*scene)->getObjectCount() == 1);
 }
 
 } // namespace

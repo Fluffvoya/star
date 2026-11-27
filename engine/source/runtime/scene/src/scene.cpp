@@ -2,6 +2,7 @@
 
 #include "builtin_components.hpp"
 #include "core/slot_map.hpp"
+#include "scene_archive_access.hpp"
 #include "transform_math.hpp"
 
 #include <entt/entity/registry.hpp>
@@ -38,11 +39,21 @@ struct GuidHash {
     }
 };
 
+struct ObjectArchiveState {
+    serialization::ArchiveValue::Mapping fields;
+    serialization::ArchiveValue::Mapping hierarchy_fields;
+    std::vector<serialization::ArchiveDocument> unknown_components;
+    std::map<reflect::TypeId, serialization::ArchiveValue::Mapping> component_extensions;
+};
+
 struct ObjectEntry {
     std::unique_ptr<GameObject> object;
     entt::entity entity = entt::null;
     bool transform_dirty = true;
     bool spawned = false;
+    bool created = false;
+    std::uint64_t order = 0;
+    std::unique_ptr<ObjectArchiveState> archive;
 };
 
 using ObjectStorage = SlotMap<ObjectEntry>;
@@ -131,6 +142,8 @@ struct Scene::Impl {
     bool mutating = false;
     bool committing = false;
     bool shutting_down = false;
+    std::uint64_t next_order = 0;
+    serialization::ArchiveValue::Mapping archive_fields;
 
     [[nodiscard]] ObjectEntry *entry(ObjectHandle handle) noexcept;
     Hierarchy &hierarchy(ObjectHandle handle) noexcept;
@@ -275,7 +288,9 @@ void Scene::Impl::destroySubtree(ObjectHandle root, EndPlayReason reason) noexce
         if (std::exchange(instance.m_active_in_hierarchy, false)) {
             instance.onDisable();
         }
-        instance.onDestroy();
+        if (object.created) {
+            instance.onDestroy();
+        }
         unlink(links);
         MutationScope scope(mutating);
         by_guid.erase(object.object->getGuid());
@@ -422,7 +437,9 @@ std::expected<ObjectHandle, SceneError> Scene::createObject(std::string_view nam
         MutationScope scope(m_impl->committing);
         auto attached = attachObject(std::unique_ptr<GameObject>(new GameObject()), guid, name);
         if (attached) {
-            auto &object = *findObject(*attached);
+            auto &entry = *m_impl->entry(*attached);
+            entry.created = true;
+            auto &object = *entry.object;
             object.onCreate();
             if (object.m_active && !object.m_pending_destroy) {
                 object.m_active_in_hierarchy = true;
@@ -456,11 +473,12 @@ std::expected<ObjectHandle, SceneError> Scene::attachObject(std::unique_ptr<Game
         object->m_name = name;
         object->m_scene = this;
 
-        auto inserted = impl.objects.emplace(ObjectEntry{std::move(object)});
+        auto inserted = impl.objects.emplace();
         if (!inserted) {
             return std::unexpected(SceneError::ResourceExhausted);
         }
         slot = *inserted;
+        impl.objects.get(slot)->object = std::move(object);
         if (slot.getIndex() >= impl.handles.size()) {
             impl.handles.resize(static_cast<std::size_t>(slot.getIndex()) + 1);
         }
@@ -482,6 +500,7 @@ std::expected<ObjectHandle, SceneError> Scene::attachObject(std::unique_ptr<Game
 
         ObjectEntry &entry = *impl.objects.get(slot);
         entry.entity = entity;
+        entry.order = impl.next_order++;
         entry.object->m_handle = handle;
         impl.handles[slot.getIndex()] = slot;
         return handle;
@@ -606,6 +625,7 @@ std::expected<void, SceneError> Scene::commitCommands() noexcept {
         if (attached) {
             auto &entry = *impl.entry(*attached);
             entry.spawned = true;
+            entry.created = true;
             entry.object->onCreate();
         } else if (result) {
             result = std::unexpected(attached.error());
@@ -907,6 +927,241 @@ std::expected<void, SceneError> Scene::visitComponents(std::span<const reflect::
         }
     }
     --impl.query_depth;
+    return {};
+}
+
+bool SceneArchiveAccess::isBusy(const Scene &scene) noexcept { return scene.isBusy(); }
+
+serialization::ArchiveValue::Mapping &SceneArchiveAccess::sceneFields(Scene &scene) noexcept {
+    return scene.m_impl->archive_fields;
+}
+
+const serialization::ArchiveValue::Mapping &SceneArchiveAccess::sceneFields(const Scene &scene) noexcept {
+    return scene.m_impl->archive_fields;
+}
+
+std::expected<std::vector<ArchivedObject>, serialization::ArchiveError> SceneArchiveAccess::capture(const Scene &scene,
+                                                                                                    ObjectHandle root) {
+    using namespace serialization;
+    auto &impl = *scene.m_impl;
+    std::vector<ArchivedObject> records;
+    if (scene.isBusy() || (root != ObjectHandle{} && impl.entry(root) == nullptr)) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, "/GameObjects"});
+    }
+    auto capture_object = [&](const ObjectEntry &entry) -> std::expected<void, ArchiveError> {
+        const auto &object = *entry.object;
+        const auto &links = impl.hierarchy(object.getHandle());
+        const auto parent = links.parent != ObjectHandle{} && object.getHandle() != root
+                                ? impl.entry(links.parent)->object->getGuid()
+                                : Guid{};
+        ArchivedObject record{object.getGuid(),
+                              parent,
+                              object.getName(),
+                              entry.order,
+                              object.getHandle() == root ? 0 : links.sibling_index,
+                              object.m_active,
+                              {},
+                              {},
+                              {}};
+        if (entry.archive) {
+            record.fields = entry.archive->fields;
+            record.hierarchy_fields = entry.archive->hierarchy_fields;
+            record.components = entry.archive->unknown_components;
+        }
+        for (const auto &[id, pool] : impl.components) {
+            if (entry.archive && std::ranges::any_of(entry.archive->unknown_components, [&](const auto &unknown) {
+                    return unknown.type_name == pool.type->name || unknown.type_name == pool.type->former_name;
+                })) {
+                continue;
+            }
+            const auto value = pool.values.find(entry.entity);
+            if (value == pool.values.end()) {
+                continue;
+            }
+            const ArchiveValue::Mapping empty;
+            const auto *extensions = &empty;
+            if (entry.archive) {
+                const auto known = entry.archive->component_extensions.find(id);
+                if (known != entry.archive->component_extensions.end()) {
+                    extensions = &known->second;
+                }
+            }
+            auto document = captureObject(*pool.type, value->second.get(), *extensions, CapturePolicy::OmitDefaults);
+            if (!document) {
+                document.error().path.insert(0, "/GameObjects/" + object.getGuid().toString() + "/Components/" +
+                                                    std::string(pool.type->name));
+                return std::unexpected(std::move(document.error()));
+            }
+            if (id != impl.transform_id || !document->fields.empty()) {
+                record.components.push_back(std::move(*document));
+            }
+        }
+        std::ranges::sort(record.components, {}, &ArchiveDocument::type_name);
+        records.push_back(std::move(record));
+        return {};
+    };
+    if (root == ObjectHandle{}) {
+        for (std::size_t i = 0; i < impl.objects.getSize(); ++i) {
+            if (auto result = capture_object(*impl.objects.get(impl.objects.getHandleAt(i))); !result) {
+                return std::unexpected(std::move(result.error()));
+            }
+        }
+    } else {
+        for (auto node = root; node != ObjectHandle{}; node = impl.nextInSubtree(node, root)) {
+            if (auto result = capture_object(*impl.entry(node)); !result) {
+                return std::unexpected(std::move(result.error()));
+            }
+        }
+    }
+    return records;
+}
+
+std::expected<void, serialization::ArchiveError>
+SceneArchiveAccess::restore(Scene &scene, std::span<ArchivedObject> objects, serialization::LoadPolicy policy,
+                            std::vector<serialization::ArchiveError> &diagnostics) {
+    using namespace serialization;
+    auto &impl = *scene.m_impl;
+    if (scene.isBusy()) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::OperationFailed, "/GameObjects"});
+    }
+    MutationScope committing(impl.committing);
+    const auto original_order = impl.next_order;
+    std::vector<ObjectHandle> attached;
+    struct Rollback {
+        Scene::Impl &impl;
+        std::vector<ObjectHandle> &objects;
+        std::uint64_t original_order;
+        bool completed = false;
+        ~Rollback() {
+            if (!completed) {
+                for (const auto handle : objects) {
+                    if (impl.entry(handle) != nullptr) {
+                        impl.destroySubtree(handle, EndPlayReason::Destroyed);
+                    }
+                }
+                impl.next_order = original_order;
+            }
+        }
+    } rollback{impl, attached, original_order};
+
+    attached.reserve(objects.size());
+    for (auto &record : objects) {
+        const auto location = "/GameObjects/" + record.guid.toString();
+        auto handle = scene.attachObject(std::unique_ptr<GameObject>(new GameObject()), record.guid, record.name);
+        if (!handle) {
+            return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, location});
+        }
+        attached.push_back(*handle);
+        auto &entry = *impl.entry(*handle);
+        entry.object->m_active = record.active;
+        auto state = std::make_unique<ObjectArchiveState>();
+        state->fields = std::move(record.fields);
+        state->hierarchy_fields = std::move(record.hierarchy_fields);
+        if (!state->hierarchy_fields.empty()) {
+            ArchiveError diagnostic{ArchiveErrorCode::UnknownField, location + "/Hierarchy"};
+            if (policy == LoadPolicy::Strict) {
+                return std::unexpected(std::move(diagnostic));
+            }
+            diagnostics.push_back(std::move(diagnostic));
+        }
+        if (const auto type = state->fields.find("Type"); type != state->fields.end()) {
+            const auto *name = std::get_if<std::string>(&type->second.value);
+            if (name == nullptr || *name != "star::GameObject") {
+                ArchiveError diagnostic{ArchiveErrorCode::TypeMismatch, location + "/Type"};
+                if (policy == LoadPolicy::Strict) {
+                    return std::unexpected(std::move(diagnostic));
+                }
+                diagnostics.push_back(std::move(diagnostic));
+            }
+        }
+
+        for (const auto &[name, value] : state->fields) {
+            const auto *properties = std::get_if<ArchiveValue::Mapping>(&value.value);
+            if (name == "Type" || name == "Version" || name == "PrefabInstance" ||
+                (name == "Properties" && properties != nullptr && properties->empty())) {
+                continue;
+            }
+            ArchiveError diagnostic{ArchiveErrorCode::UnknownField, location + "/" + name};
+            if (policy == LoadPolicy::Strict) {
+                return std::unexpected(std::move(diagnostic));
+            }
+            diagnostics.push_back(std::move(diagnostic));
+        }
+
+        for (auto &document : record.components) {
+            const auto component_path = location + "/Components/" + document.type_name;
+            auto pool = impl.components.find(reflect::makeTypeId(document.type_name));
+            if (pool == impl.components.end()) {
+                pool = std::ranges::find_if(impl.components, [&](const auto &candidate) {
+                    return candidate.second.type->former_name == document.type_name;
+                });
+            }
+            if (pool == impl.components.end()) {
+                ArchiveError diagnostic{ArchiveErrorCode::TypeMismatch, component_path};
+                if (policy == LoadPolicy::Strict) {
+                    return std::unexpected(std::move(diagnostic));
+                }
+                diagnostics.push_back(std::move(diagnostic));
+                state->unknown_components.push_back(std::move(document));
+                continue;
+            }
+
+            if (document.version > pool->second.type->version && policy == LoadPolicy::Preserve) {
+                diagnostics.push_back({ArchiveErrorCode::UnsupportedVersion, component_path + "/Version"});
+                state->unknown_components.push_back(std::move(document));
+                continue;
+            }
+            auto &values = pool->second.values;
+            auto value = values.find(entry.entity);
+            if (value == values.end()) {
+                auto initial = makeComponentValue(*pool->second.type, nullptr);
+                if (!initial) {
+                    return std::unexpected(ArchiveError{ArchiveErrorCode::OperationFailed, component_path});
+                }
+                value = values.emplace(entry.entity, std::move(*initial)).first;
+            }
+            if (state->component_extensions.contains(pool->first)) {
+                return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, component_path});
+            }
+            auto applied = applyObject(document, *pool->second.type, value->second.get(), policy);
+            if (!applied) {
+                applied.error().path.insert(0, component_path);
+                return std::unexpected(std::move(applied.error()));
+            }
+            for (auto &diagnostic : applied->diagnostics) {
+                diagnostic.path.insert(0, component_path);
+                diagnostics.push_back(std::move(diagnostic));
+            }
+            state->component_extensions.emplace(pool->first, std::move(applied->extensions));
+        }
+        entry.archive = std::move(state);
+    }
+
+    std::vector<std::size_t> sibling_order;
+    sibling_order.reserve(objects.size());
+    for (std::size_t i = 0; i < objects.size(); ++i) {
+        if (objects[i].parent.isValid()) {
+            sibling_order.push_back(i);
+        }
+    }
+    std::ranges::stable_sort(sibling_order, {}, [&](auto i) { return objects[i].sibling; });
+    for (const auto i : sibling_order) {
+        const auto *parent = scene.findObject(objects[i].parent);
+        if (parent == nullptr || !impl.applyParent({attached[i], parent->getHandle(), false})) {
+            return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput,
+                                                "/GameObjects/" + objects[i].guid.toString() + "/Hierarchy"});
+        }
+    }
+
+    impl.propagateTransforms();
+    for (const auto handle : attached) {
+        auto &entry = *impl.entry(handle);
+        entry.created = true;
+        entry.object->onCreate();
+    }
+    impl.refreshActivity(false);
+    impl.propagateTransforms();
+    rollback.completed = true;
     return {};
 }
 

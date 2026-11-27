@@ -113,7 +113,7 @@ void writeNode(std::string &output, const ArchiveValue &value) {
 
 } // namespace
 
-std::expected<ArchiveDocument, ArchiveError> readYaml(std::string_view source) {
+std::expected<ArchiveValue, ArchiveError> readYamlValue(std::string_view source) {
     try {
         std::string input(source);
         ryml::Callbacks callbacks;
@@ -132,13 +132,55 @@ std::expected<ArchiveDocument, ArchiveError> readYaml(std::string_view source) {
             }
             root = root.first_child();
         }
-        auto value = readNode(root, 0);
+        return readNode(root, 0);
+    } catch (const YamlParseFailure &) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, "/"});
+    } catch (...) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::OperationFailed, {}});
+    }
+}
+
+std::expected<ArchiveDocument, ArchiveError> readYaml(std::string_view source) {
+    try {
+        auto value = readYamlValue(source);
         if (!value) {
             return std::unexpected(std::move(value.error()));
         }
         return parseDocument(std::move(*value));
-    } catch (const YamlParseFailure &) {
-        return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, "/"});
+    } catch (...) {
+        return std::unexpected(ArchiveError{ArchiveErrorCode::OperationFailed, {}});
+    }
+}
+
+std::expected<std::string, ArchiveError> writeYamlValue(const ArchiveValue &root) {
+    try {
+        if (!validateValue(root)) {
+            return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, "/"});
+        }
+        std::string output;
+        if (const auto *mapping = std::get_if<ArchiveValue::Mapping>(&root.value); mapping && !mapping->empty()) {
+            for (const auto &[name, field] : *mapping) {
+                appendQuoted(output, name);
+                output.push_back(':');
+                if (const auto *entries = std::get_if<ArchiveValue::Sequence>(&field.value);
+                    entries && !entries->empty()) {
+                    output.push_back('\n');
+                    for (const auto &entry : *entries) {
+                        output.append("  - ");
+                        writeNode(output, entry);
+                        output.push_back('\n');
+                    }
+                } else {
+                    output.push_back(' ');
+                    writeNode(output, field);
+                    output.push_back('\n');
+                }
+            }
+        } else {
+            writeNode(output, root);
+            output.push_back('\n');
+        }
+        return output;
     } catch (...) {
         return std::unexpected(ArchiveError{ArchiveErrorCode::OperationFailed, {}});
     }

@@ -7,3 +7,4 @@
 | 03 | [内置组件与层级变换](03-scene-hierarchy.md) |
 | 04 | [GameObject 生命周期](04-gameobject-lifecycle.md) |
 | 05 | [帧阶段与系统调度](05-system-scheduling.md) |
+| 06 | [场景 YAML 与预制体](06-scene-yaml.md) |
