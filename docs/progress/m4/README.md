@@ -6,3 +6,4 @@
 | 02 派生数据缓存 | [Linux x64 验证记录](02-derived-data-cache.md) |
 | 03 LDR 纹理导入 | [Linux x64 验证记录](03-texture-import.md) |
 | 04 运行时资产加载基础 | [Linux x64 验证记录](04-asset-loading.md) |
+| 05 静态模型导入 | [Linux x64 验证记录](05-static-model-import.md) |
