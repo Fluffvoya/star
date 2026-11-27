@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace star::sample {
+namespace star::renderer {
 
 using EnvironmentPixel = std::array<float, 4>;
 
@@ -21,6 +21,6 @@ struct EnvironmentLighting {
     std::vector<EnvironmentMip> mip_levels;
 };
 
-[[nodiscard]] EnvironmentLighting buildSampleEnvironment();
+[[nodiscard]] EnvironmentLighting buildBuiltinEnvironment();
 
-} // namespace star::sample
+} // namespace star::renderer
