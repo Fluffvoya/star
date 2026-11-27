@@ -89,6 +89,7 @@ add_subdirectory(engine/source/runtime/scene)
 add_subdirectory(engine/source/runtime/rhi)
 add_subdirectory(engine/source/runtime/jobs)
 add_subdirectory(engine/source/runtime/asset)
+add_subdirectory(engine/source/runtime/renderer)
 add_subdirectory(engine/source/runtime/platform)
 add_subdirectory(engine/source/editor/asset-pipeline)
 

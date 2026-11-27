@@ -27,14 +27,7 @@ float readFactor(const serialization::ArchiveValue &value, const std::string &fi
 
 } // namespace
 
-SampleMaterial defaultSampleMaterial() {
-    SampleMaterial material{};
-    material.variant.shader = Guid::parse("6cab949113d24a3db5bb89eadb57769b").value();
-    material.variant.state.double_sided = true;
-    return material;
-}
-
-SampleMaterial loadSampleMaterial(const std::filesystem::path &path) {
+renderer::ForwardMaterial loadSampleMaterial(const std::filesystem::path &path) {
     std::ifstream stream(path, std::ios::binary);
     std::ostringstream yaml;
     if (!stream || !(yaml << stream.rdbuf())) {
@@ -49,9 +42,9 @@ SampleMaterial loadSampleMaterial(const std::filesystem::path &path) {
         throw std::runtime_error("Invalid material field " + asset.error().path);
     }
 
-    SampleMaterial material{};
+    renderer::ForwardMaterial material{};
     material.variant = asset->getVariantKey();
-    if (material.variant.shader != defaultSampleMaterial().variant.shader) {
+    if (material.variant.shader != renderer::defaultForwardMaterial().variant.shader) {
         throw std::runtime_error("The material shader GUID is not registered by the sample");
     }
     if (material.variant.state.blend != MaterialBlendMode::Opaque || !material.variant.state.depth_test) {

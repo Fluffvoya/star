@@ -6,7 +6,7 @@
 #include <array>
 #include <cmath>
 
-namespace star::sample {
+namespace star::renderer {
 namespace {
 
 using namespace math;
@@ -113,7 +113,7 @@ Vector3 prefilter(Vector3 direction, const std::array<Vector3, sample_count> &sa
 
 } // namespace
 
-EnvironmentLighting buildSampleEnvironment() {
+EnvironmentLighting buildBuiltinEnvironment() {
     EnvironmentLighting result{};
     result.diffuse = integrateDiffuse();
     for (std::size_t mip = 0; mip < mip_count; ++mip) {
@@ -134,4 +134,4 @@ EnvironmentLighting buildSampleEnvironment() {
     return result;
 }
 
-} // namespace star::sample
+} // namespace star::renderer
