@@ -11,3 +11,4 @@
 | 07 Vulkan 前向渲染 | [Linux x64 软件 Vulkan 验证记录](07-forward-rendering.md) |
 | 08 GPU 分簇光照 | [Linux x64 软件 Vulkan 验证记录](08-clustered-lighting.md) |
 | 09 方向光级联阴影 | [Linux x64 软件 Vulkan 验证记录](09-cascaded-shadows.md) |
+| 10 基于图像的光照 | [Linux x64 软件 Vulkan 验证记录](10-image-based-lighting.md) |

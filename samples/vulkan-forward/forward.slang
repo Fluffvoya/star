@@ -55,6 +55,42 @@ struct ShadowFrame
 [[vk::binding(3, 0)]] ConstantBuffer<ShadowFrame> shadowFrame;
 [[vk::binding(4, 0)]] Texture2DArray<float> shadowDepth;
 
+struct EnvironmentFrame
+{
+    float4 diffuseCoefficients[9];
+};
+
+[[vk::binding(5, 0)]] ConstantBuffer<EnvironmentFrame> environmentFrame;
+[[vk::binding(6, 0)]] Texture2D<float4> environmentMap;
+[[vk::binding(7, 0)]] SamplerState environmentSampler;
+
+float3 evaluateEnvironment(float3 n, float3 v)
+{
+    float basis[9] = {
+        0.282095, 0.488603 * n.y, 0.488603 * n.z, 0.488603 * n.x, 1.092548 * n.x * n.y,
+        1.092548 * n.y * n.z, 0.315392 * (3.0 * n.z * n.z - 1.0), 1.092548 * n.x * n.z,
+        0.546274 * (n.x * n.x - n.y * n.y)
+    };
+    float3 irradiance = float3(0.0);
+    for (uint i = 0; i < 9; ++i)
+    {
+        irradiance += basis[i] * environmentFrame.diffuseCoefficients[i].rgb;
+    }
+    float roughness = saturate(draw.factors.x);
+    float metallic = saturate(draw.factors.y);
+    float3 f0 = lerp(float3(0.04), draw.albedo.rgb, metallic);
+    float3 fresnel = f0 + (max(float3(1.0 - roughness), f0) - f0) * pow(1.0 - saturate(dot(n, v)), 5.0);
+    float3 reflected = reflect(-v, n);
+    float2 uv = float2(atan2(reflected.z, reflected.x) / (2.0 * pi) + 0.5,
+                       acos(clamp(reflected.y, -1.0, 1.0)) / pi);
+    uint width;
+    uint height;
+    uint levels;
+    environmentMap.GetDimensions(0, width, height, levels);
+    float3 specular = environmentMap.SampleLevel(environmentSampler, uv, roughness * (levels - 1)).rgb;
+    return max(0.0, irradiance) * draw.albedo.rgb * (1.0 - metallic) * (1.0 - fresnel) + specular * fresnel;
+}
+
 float shadowVisibility(float3 world, float depth, float nDotL)
 {
     float3 worldDx = ddx(world);
@@ -192,7 +228,7 @@ float4 fragmentMain(Varyings input, bool frontFacing : SV_IsFrontFace) : SV_Targ
     float3 l = shadowFrame.lightDirection.xyz;
     float depth = dot(draw.clipW, float4(input.worldPosition, 1.0));
     float shadow = shadowVisibility(input.worldPosition, depth, dot(n, l));
-    float3 linear = evaluateBrdf(n, v, l) * (3.5 * shadow) + 0.10 * draw.albedo.rgb;
+    float3 linear = evaluateBrdf(n, v, l) * (3.5 * shadow) + evaluateEnvironment(n, v);
 
     float z = saturate(log(depth / draw.clusterParams.x) / log(draw.clusterParams.y / draw.clusterParams.x));
     uint2 tile = min(uint2(input.position.xy / draw.clusterParams.zw * float2(STAR_CLUSTER_COLUMNS, STAR_CLUSTER_ROWS)),
