@@ -29,6 +29,11 @@ enum class SceneError : std::uint8_t {
     RequiredComponent,
     HierarchyCycle,
     IncompatibleTransform,
+    InvalidSystem,
+    ScheduleCycle,
+    UndeclaredAccess,
+    InvalidDelta,
+    TaskFailed,
 };
 
 class SpawnToken final {
@@ -139,6 +144,7 @@ class STAR_SCENE_API Scene final {
     [[nodiscard]] std::expected<ObjectHandle, SceneError> attachObject(std::unique_ptr<GameObject> object, Guid guid,
                                                                        std::string_view name) noexcept;
     void endPlay(EndPlayReason reason) noexcept;
+    std::expected<void, SceneError> tickObjects(TickGroup group, float dt, std::uint64_t frame) noexcept;
     using ComponentVisitor = void (*)(const void *, ObjectHandle, void *const *) noexcept;
     [[nodiscard]] std::expected<void, SceneError> visitComponents(std::span<const reflect::TypeId> types,
                                                                   std::span<const bool> writable, const void *context,

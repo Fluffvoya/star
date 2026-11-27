@@ -127,7 +127,7 @@ struct Scene::Impl {
     std::vector<ParentCommand> pending_parents;
     std::vector<SpawnCommand> pending_spawns;
     const reflect::TypeId transform_id = componentTypeId<Transform>();
-    std::size_t query_depth = 0;
+    std::atomic_size_t query_depth{0};
     bool mutating = false;
     bool committing = false;
     bool shutting_down = false;
@@ -628,6 +628,89 @@ void Scene::endPlay(EndPlayReason reason) noexcept {
     }
 }
 
+std::expected<void, SceneError> GameObject::addTickPrerequisite(const GameObject &other) noexcept {
+    if (m_scene == nullptr || &other == this || other.m_scene != m_scene || other.m_pending_destroy) {
+        return std::unexpected(SceneError::InvalidHandle);
+    }
+    if (std::ranges::find(m_tick_prerequisites, other.m_handle) != m_tick_prerequisites.end()) {
+        return {};
+    }
+    try {
+        m_tick_prerequisites.push_back(other.m_handle);
+    } catch (...) {
+        return std::unexpected(SceneError::ResourceExhausted);
+    }
+    return {};
+}
+
+std::expected<void, SceneError> Scene::tickObjects(TickGroup group, float dt, std::uint64_t frame) noexcept {
+    auto &impl = *m_impl;
+    MutationScope ticking(impl.committing);
+    auto eligible = [frame](const GameObject &object) {
+        return object.m_tick_enabled && object.m_begun_play && object.m_active_in_hierarchy &&
+               !object.m_pending_destroy && object.m_last_tick != frame;
+    };
+    try {
+        struct TickNode {
+            GameObject *object;
+            std::size_t prerequisites = 0;
+            std::vector<std::size_t> dependents;
+        };
+        std::vector<TickNode> nodes;
+        std::unordered_map<const GameObject *, std::size_t> index_by_object;
+        for (std::size_t i = 0; i < impl.objects.getSize(); ++i) {
+            auto &object = *impl.objects.get(impl.objects.getHandleAt(i))->object;
+            if (eligible(object) && object.m_tick_group == group) {
+                index_by_object.emplace(&object, nodes.size());
+                nodes.push_back({&object, 0, {}});
+            }
+        }
+
+        std::vector<GameObject *> order;
+        order.reserve(nodes.size());
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            auto &node = nodes[i];
+            for (const auto handle : node.object->m_tick_prerequisites) {
+                const auto *other = findObject(handle);
+                if (other == nullptr || !eligible(*other)) {
+                    continue;
+                }
+                if (other->m_tick_group > group) {
+                    return std::unexpected(SceneError::ScheduleCycle);
+                }
+                if (const auto index = index_by_object.find(other); index != index_by_object.end()) {
+                    ++node.prerequisites;
+                    nodes[index->second].dependents.push_back(i);
+                }
+            }
+            if (node.prerequisites == 0) {
+                order.push_back(node.object);
+            }
+        }
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            const auto &node = nodes[index_by_object.at(order[i])];
+            for (const auto dependent : node.dependents) {
+                auto &next = nodes[dependent];
+                if (--next.prerequisites == 0) {
+                    order.push_back(next.object);
+                }
+            }
+        }
+        if (order.size() != nodes.size()) {
+            return std::unexpected(SceneError::ScheduleCycle);
+        }
+        for (auto *object : order) {
+            if (eligible(*object) && object->m_tick_group == group) {
+                object->m_last_tick = frame;
+                object->onTick(dt);
+            }
+        }
+    } catch (...) {
+        return std::unexpected(SceneError::ResourceExhausted);
+    }
+    return {};
+}
+
 const Hierarchy *Scene::findHierarchy(ObjectHandle handle) const noexcept {
     const auto *object = m_impl->entry(handle);
     return object == nullptr ? nullptr : m_impl->registry.try_get<Hierarchy>(object->entity);
@@ -816,7 +899,7 @@ std::expected<void, SceneError> Scene::visitComponents(std::span<const reflect::
             values[index] = entry->second.get();
         }
         if (index == pools.size()) {
-            const auto handle = impl.registry.get<GameObjectRef>(entity).handle;
+            const auto handle = std::as_const(impl.registry).get<GameObjectRef>(entity).handle;
             if (writes_transform) {
                 impl.entry(handle)->transform_dirty = true;
             }

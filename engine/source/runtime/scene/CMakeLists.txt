@@ -5,12 +5,14 @@ star_add_module(Scene scene
     include/scene/game_object.hpp
     include/scene/scene.hpp
     include/scene/world.hpp
+    include/scene/system.hpp
     src/builtin_components.cpp
     src/builtin_components.hpp
     src/scene.cpp
     src/transform_math.cpp
     src/transform_math.hpp
     src/world.cpp
+    src/system.cpp
 )
 
-target_link_libraries(StarScene PUBLIC Star::Core Star::Reflection PRIVATE EnTT::EnTT)
+target_link_libraries(StarScene PUBLIC Star::Core Star::Reflection PRIVATE EnTT::EnTT Star::Jobs)

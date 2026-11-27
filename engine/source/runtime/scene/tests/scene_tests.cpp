@@ -419,3 +419,124 @@ STAR_TEST(worldTransitionsPlayAndPropagatesHierarchyActivity) {
 }
 
 } // namespace
+
+namespace {
+
+class TestSystem final : public star::System {
+  public:
+    explicit TestSystem(std::move_only_function<void(star::SystemContext &) noexcept> run) : m_run(std::move(run)) {}
+
+    void execute(star::SystemContext &context) noexcept override { m_run(context); }
+
+  private:
+    std::move_only_function<void(star::SystemContext &) noexcept> m_run;
+};
+
+STAR_TEST(worldSchedulesSystemsAndCommitsBetweenPhases) {
+    using namespace star;
+    auto position = componentInfo<scene_test::Position>(1);
+    World world;
+    const auto created = world.createScene();
+    STAR_CHECK(created);
+    auto &scene = **created;
+    STAR_CHECK(scene.registerComponent(position));
+    const auto handle = scene.createObject("Object");
+    STAR_CHECK(handle);
+    const auto transform = componentTypeId<Transform>();
+    constexpr reflect::TypeId writer_id = 1;
+    constexpr reflect::TypeId reader_id = 2;
+    constexpr reflect::TypeId physics_id = 3;
+    bool writer_ok = false;
+    bool reader_ok = false;
+    int steps = 0;
+    SystemDescriptor reader;
+    reader.id = reader_id;
+    reader.phase = TickPhase::PrePhysics;
+    reader.reads = {transform, position.id};
+    reader.after = {writer_id};
+    reader.parallel = true;
+    STAR_CHECK(world.registerSystem(
+        std::move(reader), std::make_unique<TestSystem>([&](SystemContext &ctx) noexcept {
+            float written = 0;
+            int components = 0;
+            const auto queried = ctx.each<const Transform>(
+                [&](ObjectHandle, const Transform &value) noexcept { written = value.position.x; });
+            const auto deferred =
+                ctx.each<const scene_test::Position>([&](ObjectHandle, const auto &) noexcept { ++components; });
+            const auto denied = ctx.each<Transform>([](ObjectHandle, Transform &) noexcept {});
+            reader_ok = queried && deferred && !denied && denied.error() == SceneError::UndeclaredAccess &&
+                        written == 3.0F && components == 0;
+        })));
+    SystemDescriptor writer;
+    writer.id = writer_id;
+    writer.phase = TickPhase::PrePhysics;
+    writer.writes = {transform};
+    writer.parallel = true;
+    STAR_CHECK(world.registerSystem(std::move(writer), std::make_unique<TestSystem>([&](SystemContext &ctx) noexcept {
+                                        const auto queried =
+                                            ctx.each<Transform>([&](ObjectHandle object, Transform &value) noexcept {
+                                                value.position.x = 3.0F;
+                                                writer_ok =
+                                                    ctx.queueAddComponent(object, scene_test::Position{9}).has_value();
+                                            });
+                                        writer_ok = writer_ok && queried.has_value();
+                                    })));
+    SystemDescriptor physics;
+    physics.id = physics_id;
+    physics.phase = TickPhase::Physics;
+    physics.reads = {position.id};
+    STAR_CHECK(world.registerSystem(std::move(physics), std::make_unique<TestSystem>([&](SystemContext &ctx) noexcept {
+                                        const auto visible = ctx.each<const scene_test::Position>(
+                                            [&](ObjectHandle, const auto &value) noexcept {
+                                                if (value.value == 9 && ctx.getDeltaTime() == 0.25F) {
+                                                    ++steps;
+                                                }
+                                            });
+                                        if (!visible) {
+                                            steps = -100;
+                                        }
+                                    })));
+
+    STAR_CHECK(world.configureFixedStep(0.25F, 2));
+    STAR_CHECK(world.beginPlay());
+    STAR_CHECK(world.tick(1.0F));
+    STAR_CHECK(writer_ok && reader_ok);
+    STAR_CHECK(steps == 2);
+    STAR_CHECK(scene.findWorldTransform(*handle)->matrix.transformPoint({}).x == 3.0F);
+}
+
+class TickingObject final : public star::GameObject {
+  public:
+    TickingObject(int id, std::array<int, 8> &log, std::size_t &count) noexcept : m_id(id), m_log(log), m_count(count) {
+        setTickEnabled(true);
+    }
+
+  private:
+    void onTick(float) noexcept override { m_log[m_count++] = m_id; }
+    int m_id;
+    std::array<int, 8> &m_log;
+    std::size_t &m_count;
+};
+
+STAR_TEST(worldRunsObjectPrerequisitesAndRejectsCycles) {
+    using namespace star;
+    std::array<int, 8> log{};
+    std::size_t count = 0;
+    World world;
+    const auto created = world.createScene();
+    STAR_CHECK(created);
+    auto &scene = **created;
+    const auto second = scene.queueSpawn("Second", std::make_unique<TickingObject>(2, log, count));
+    const auto first = scene.queueSpawn("First", std::make_unique<TickingObject>(1, log, count));
+    STAR_CHECK(first && second && world.beginPlay());
+    auto *first_object = scene.findObject(scene.resolve(*first));
+    auto *second_object = scene.findObject(scene.resolve(*second));
+    STAR_CHECK(second_object->addTickPrerequisite(*first_object));
+    STAR_CHECK(world.tick(0));
+    STAR_CHECK(count == 2 && log[0] == 1 && log[1] == 2);
+    STAR_CHECK(first_object->addTickPrerequisite(*second_object));
+    const auto failed = world.tick(0);
+    STAR_CHECK(!failed && failed.error() == SceneError::ScheduleCycle && count == 2);
+}
+
+} // namespace

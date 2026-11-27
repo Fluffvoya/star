@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <vector>
 
 namespace star {
 
@@ -14,6 +15,8 @@ class World;
 struct Transform;
 struct WorldTransform;
 enum class SceneError : std::uint8_t;
+
+enum class TickGroup : std::uint8_t { PrePhysics, PostPhysics, Update, LateUpdate };
 
 enum class EndPlayReason : std::uint8_t {
     WorldStopped,
@@ -56,6 +59,10 @@ class STAR_SCENE_API GameObject {
     [[nodiscard]] std::expected<void, SceneError> setParent(GameObject *parent,
                                                             bool keep_world_transform = true) noexcept;
     [[nodiscard]] std::expected<void, SceneError> destroy() noexcept;
+    void setTickEnabled(bool enabled) noexcept { m_tick_enabled = enabled; }
+    void setTickGroup(TickGroup group) noexcept { m_tick_group = group; }
+    [[nodiscard]] std::expected<void, SceneError> addTickPrerequisite(const GameObject &other) noexcept;
+
     void setActive(bool active) noexcept { m_active = active; }
     [[nodiscard]] bool isActiveInHierarchy() const noexcept { return m_active_in_hierarchy; }
 
@@ -70,6 +77,7 @@ class STAR_SCENE_API GameObject {
     virtual void onCreate() noexcept {}
     virtual void onEnable() noexcept {}
     virtual void onBeginPlay() noexcept {}
+    virtual void onTick(float) noexcept {}
     virtual void onEndPlay(EndPlayReason) noexcept {}
     virtual void onDisable() noexcept {}
     virtual void onDestroy() noexcept {}
@@ -81,6 +89,10 @@ class STAR_SCENE_API GameObject {
     std::string m_name;
     Scene *m_scene = nullptr;
     ObjectHandle m_handle;
+    std::vector<ObjectHandle> m_tick_prerequisites;
+    std::uint64_t m_last_tick = 0;
+    TickGroup m_tick_group = TickGroup::Update;
+    bool m_tick_enabled = false;
     bool m_active = true;
     bool m_active_in_hierarchy = false;
     bool m_begun_play = false;

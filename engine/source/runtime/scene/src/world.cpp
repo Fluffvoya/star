@@ -42,6 +42,7 @@ std::expected<void, SceneError> World::endPlay() noexcept {
     if (!std::exchange(m_playing, false)) {
         return {};
     }
+    m_physics_time = 0.0;
     m_dispatching = true;
     for (const auto &scene : m_scenes) {
         scene->endPlay(EndPlayReason::WorldStopped);
