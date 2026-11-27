@@ -6,15 +6,18 @@
 #include <fstream>
 #include <limits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace star {
 namespace detail {
 
+using AssetPayload = std::variant<std::vector<std::byte>, TextureAsset, StaticModelAsset>;
+
 struct AssetLoadEntry {
     std::atomic<AssetState> state{AssetState::Loading};
     JobHandle job;
-    std::expected<std::vector<std::byte>, AssetLoadError> result = std::unexpected(AssetLoadError::ReadFailed);
+    std::expected<AssetPayload, AssetLoadError> result = std::unexpected(AssetLoadError::ReadFailed);
     std::uint32_t idle_frames = 0;
 
     void publish() noexcept { state.store(result ? AssetState::Ready : AssetState::Failed, std::memory_order_release); }
@@ -48,6 +51,29 @@ std::expected<std::vector<std::byte>, AssetLoadError> readBlob(const std::filesy
     return bytes;
 }
 
+std::expected<detail::AssetPayload, AssetLoadError> readAsset(const std::filesystem::path &path,
+                                                              detail::AssetKind kind) {
+    auto bytes = readBlob(path);
+    if (!bytes) {
+        return std::unexpected(bytes.error());
+    }
+    switch (kind) {
+    case detail::AssetKind::Blob:
+        return std::move(*bytes);
+    case detail::AssetKind::Texture:
+        if (auto texture = readTextureAsset(*bytes)) {
+            return std::move(*texture);
+        }
+        break;
+    case detail::AssetKind::Model:
+        if (auto model = readModelAsset(*bytes)) {
+            return std::move(*model);
+        }
+        break;
+    }
+    return std::unexpected(AssetLoadError::DecodeFailed);
+}
+
 } // namespace
 
 AssetBlobHandle::AssetBlobHandle(std::shared_ptr<detail::AssetLoadEntry> entry) noexcept : m_entry(std::move(entry)) {}
@@ -65,9 +91,19 @@ std::optional<AssetLoadError> AssetBlobHandle::getError() const noexcept {
 
 std::span<const std::byte> AssetBlobHandle::getBytes() const noexcept {
     if (getState() == AssetState::Ready) {
-        return *m_entry->result;
+        if (const auto *bytes = std::get_if<std::vector<std::byte>>(&*m_entry->result)) {
+            return *bytes;
+        }
     }
     return {};
+}
+
+const TextureAsset *AssetBlobHandle::getTexture() const noexcept {
+    return getState() == AssetState::Ready ? std::get_if<TextureAsset>(&*m_entry->result) : nullptr;
+}
+
+const StaticModelAsset *AssetBlobHandle::getModel() const noexcept {
+    return getState() == AssetState::Ready ? std::get_if<StaticModelAsset>(&*m_entry->result) : nullptr;
 }
 
 AssetManager::AssetManager(std::uint32_t retention_frames) : m_retention_frames(retention_frames) {}
@@ -82,34 +118,46 @@ AssetManager::~AssetManager() {
 }
 
 std::expected<void, AssetLoadError> AssetManager::registerBlob(Guid guid, const std::filesystem::path &path) {
+    return registerSource(guid, path, detail::AssetKind::Blob);
+}
+
+std::expected<void, AssetLoadError> AssetManager::registerSource(Guid guid, const std::filesystem::path &path,
+                                                                 detail::AssetKind kind) {
     std::error_code error;
     const auto absolute = std::filesystem::absolute(path, error);
     if (!guid.isValid() || path.empty() || error) {
         return std::unexpected(AssetLoadError::InvalidSource);
     }
-    if (!m_sources.try_emplace(guid, absolute).second) {
+    if (!m_sources.try_emplace(guid, Source{absolute, kind}).second) {
         return std::unexpected(AssetLoadError::DuplicateGuid);
     }
     return {};
 }
 
 std::expected<AssetBlobHandle, AssetLoadError> AssetManager::loadAsync(Guid guid) {
-    if (const auto loaded = m_loaded.find(guid); loaded != m_loaded.end()) {
-        loaded->second->idle_frames = 0;
-        return AssetBlobHandle(loaded->second);
-    }
+    return loadSourceAsync(guid, detail::AssetKind::Blob);
+}
+
+std::expected<AssetBlobHandle, AssetLoadError> AssetManager::loadSourceAsync(Guid guid, detail::AssetKind kind) {
     const auto source = m_sources.find(guid);
     if (source == m_sources.end()) {
         return std::unexpected(AssetLoadError::NotRegistered);
+    }
+    if (source->second.kind != kind) {
+        return std::unexpected(AssetLoadError::TypeMismatch);
+    }
+    if (const auto loaded = m_loaded.find(guid); loaded != m_loaded.end()) {
+        loaded->second->idle_frames = 0;
+        return AssetBlobHandle(loaded->second);
     }
     auto entry = std::make_shared<detail::AssetLoadEntry>();
     m_loaded.emplace(guid, entry);
     try {
         // The manager retains loading entries through completion, including at shutdown.
         entry->job = Jobs::run(
-            [pending = entry.get(), path = source->second]() noexcept {
+            [pending = entry.get(), path = source->second.path, kind]() noexcept {
                 try {
-                    pending->result = readBlob(path);
+                    pending->result = readAsset(path, kind);
                 } catch (...) {
                     pending->result = std::unexpected(AssetLoadError::ReadFailed);
                 }
@@ -122,8 +170,10 @@ std::expected<AssetBlobHandle, AssetLoadError> AssetManager::loadAsync(Guid guid
     return AssetBlobHandle(std::move(entry));
 }
 
-std::expected<AssetBlobHandle, AssetLoadError> AssetManager::load(Guid guid) {
-    auto handle = loadAsync(guid);
+std::expected<AssetBlobHandle, AssetLoadError> AssetManager::load(Guid guid) { return finishLoad(loadAsync(guid)); }
+
+std::expected<AssetBlobHandle, AssetLoadError>
+AssetManager::finishLoad(std::expected<AssetBlobHandle, AssetLoadError> handle) {
     if (!handle) {
         return handle;
     }
