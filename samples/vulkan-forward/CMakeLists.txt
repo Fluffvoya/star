@@ -15,7 +15,7 @@ star_compile_slang_spirv("${cluster_shader}" "${shader_source}" clusterMain comp
 star_compile_slang_spirv("${vertex_shader}" "${shader_source}" vertexMain vertex)
 star_compile_slang_spirv("${fragment_shader}" "${shader_source}" fragmentMain fragment)
 
-add_executable(StarVulkanForward main.cpp "${vertex_shader}" "${fragment_shader}" "${cluster_shader}")
+add_executable(StarVulkanForward main.cpp environment.cpp environment.hpp "${vertex_shader}" "${fragment_shader}" "${cluster_shader}")
 target_link_libraries(StarVulkanForward PRIVATE Star::AssetPipeline Star::RHI StarVulkanRuntime)
 set_target_properties(StarVulkanForward PROPERTIES OUTPUT_NAME star-vulkan-forward)
 foreach(asset IN ITEMS "${vertex_shader}" "${fragment_shader}" "${cluster_shader}" "${CMAKE_CURRENT_SOURCE_DIR}/forward-scene.obj")

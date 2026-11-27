@@ -1,5 +1,6 @@
 #include "asset-pipeline/model_importer.hpp"
 #include "cluster_sizes.h"
+#include "environment.hpp"
 #include "vulkan_runtime.hpp"
 
 #include <algorithm>
@@ -28,6 +29,7 @@ using star::math::Vector3;
 
 constexpr VkExtent2D resolution{960, 640};
 constexpr VkExtent2D shadow_resolution{1024, 1024};
+constexpr VkFormat environment_format = VK_FORMAT_R32G32B32A32_SFLOAT;
 constexpr VkFormat color_format = VK_FORMAT_R8G8B8A8_SRGB;
 constexpr VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
 constexpr std::size_t image_bytes = resolution.width * resolution.height * 4;
@@ -127,14 +129,15 @@ struct Image {
     }
 
     void create(VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, VkExtent2D extent = resolution,
-                std::uint32_t layers = 1) {
+                std::uint32_t layers = 1, std::uint32_t mip_count = 1) {
         range.aspectMask = aspect;
         range.layerCount = layers;
+        range.levelCount = mip_count;
         auto image = vkInfo<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
         image.imageType = VK_IMAGE_TYPE_2D;
         image.format = format;
         image.extent = {extent.width, extent.height, 1};
-        image.mipLevels = 1;
+        image.mipLevels = mip_count;
         image.arrayLayers = layers;
         image.samples = VK_SAMPLE_COUNT_1_BIT;
         image.usage = usage;
@@ -290,7 +293,8 @@ class ForwardSample {
   public:
     explicit ForwardSample(const VulkanRuntime &gpu)
         : m_gpu(gpu), m_vertices{gpu}, m_indices{gpu}, m_capture{gpu}, m_lights{gpu}, m_cluster_lists{gpu},
-          m_shadow_buffer{gpu}, m_color{gpu}, m_depth{gpu}, m_shadows{gpu} {}
+          m_shadow_buffer{gpu}, m_environment_buffer{gpu}, m_color{gpu}, m_depth{gpu}, m_shadows{gpu},
+          m_environment{gpu} {}
 
     ~ForwardSample() {
         const auto &vk = m_gpu.vk;
@@ -306,6 +310,7 @@ class ForwardSample {
         vk.vkDestroyPipelineLayout(device, m_layout, nullptr);
         vk.vkDestroyDescriptorPool(device, m_descriptor_pool, nullptr);
         vk.vkDestroyDescriptorSetLayout(device, m_descriptor_layout, nullptr);
+        vk.vkDestroySampler(device, m_environment_sampler, nullptr);
         vk.vkDestroyQueryPool(device, m_queries, nullptr);
         vk.vkDestroyFence(device, m_fence, nullptr);
         vk.vkDestroyCommandPool(device, m_pool, nullptr);
@@ -321,6 +326,8 @@ class ForwardSample {
     void renderPass(bool depth_only) const;
     void createLightingDescriptors();
     void createShadows();
+    void createEnvironment();
+    void submitCommands() const;
     void renderShadows() const;
     void drawParts(const DrawConstants &frame) const;
     void dispatchClusters() const;
@@ -332,9 +339,12 @@ class ForwardSample {
     Buffer m_lights;
     Buffer m_cluster_lists;
     Buffer m_shadow_buffer;
+    Buffer m_environment_buffer;
     Image m_color;
     Image m_depth;
     Image m_shadows;
+    Image m_environment;
+    VkSampler m_environment_sampler = VK_NULL_HANDLE;
     ShadowFrame m_shadow_frame{};
     std::array<VkImageView, STAR_SHADOW_CASCADES> m_shadow_layers{};
     std::vector<DrawPart> m_parts;
@@ -410,6 +420,7 @@ void ForwardSample::initialize(const ImportedStaticModel &model, const std::file
         check(vk.vkCreateQueryPool(device, &query, nullptr, &m_queries), "Create timestamp queries");
     }
     createShadows();
+    createEnvironment();
     createLightingDescriptors();
     const VkPushConstantRange constants{all_shader_stages, 0, sizeof(DrawConstants)};
     auto layout = vkInfo<VkPipelineLayoutCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
@@ -467,6 +478,9 @@ void ForwardSample::createLightingDescriptors() {
         VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         VkDescriptorSetLayoutBinding{3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         VkDescriptorSetLayoutBinding{4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{7, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     };
     auto layout = vkInfo<VkDescriptorSetLayoutCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
     layout.bindingCount = static_cast<std::uint32_t>(bindings.size());
@@ -474,8 +488,9 @@ void ForwardSample::createLightingDescriptors() {
     check(vk.vkCreateDescriptorSetLayout(device, &layout, nullptr, &m_descriptor_layout), "Create descriptor layout");
     constexpr std::array pool_sizes{
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1},
     };
     auto pool = vkInfo<VkDescriptorPoolCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
     pool.maxSets = 1;
@@ -507,6 +522,13 @@ void ForwardSample::createLightingDescriptors() {
     }
     const VkDescriptorImageInfo shadow_image{VK_NULL_HANDLE, m_shadows.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     writes[4].pImageInfo = &shadow_image;
+    const VkDescriptorBufferInfo environment_buffer{m_environment_buffer.handle, 0, VK_WHOLE_SIZE};
+    writes[5].pBufferInfo = &environment_buffer;
+    const VkDescriptorImageInfo environment_image{VK_NULL_HANDLE, m_environment.view,
+                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo environment_sampler{m_environment_sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+    writes[6].pImageInfo = &environment_image;
+    writes[7].pImageInfo = &environment_sampler;
     vk.vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
@@ -530,6 +552,54 @@ void ForwardSample::createShadows() {
         check(m_gpu.vk.vkCreateImageView(m_gpu.device, &view, nullptr, &m_shadow_layers[layer]),
               "Create shadow layer view");
     }
+}
+
+void ForwardSample::createEnvironment() {
+    VkFormatProperties format{};
+    m_gpu.inst.vkGetPhysicalDeviceFormatProperties(m_gpu.physicalDevice, environment_format, &format);
+    constexpr auto required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if ((format.optimalTilingFeatures & required) != required) {
+        throw std::runtime_error("The device does not support filtered RGBA32F environment images");
+    }
+
+    const auto lighting = star::sample::buildSampleEnvironment();
+    const auto &base = lighting.mip_levels.front();
+    const auto mip_count = static_cast<std::uint32_t>(lighting.mip_levels.size());
+    m_environment.create(environment_format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                         VK_IMAGE_ASPECT_COLOR_BIT, {base.width, base.height}, 1, mip_count);
+    m_environment_buffer.upload(std::as_bytes(std::span(lighting.diffuse)), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    Buffer staging(m_gpu);
+    staging.upload(std::as_bytes(std::span(lighting.specular)), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    std::vector<VkBufferImageCopy> regions;
+    for (std::uint32_t level = 0; level < mip_count; ++level) {
+        const auto &mip = lighting.mip_levels[level];
+        VkBufferImageCopy region{};
+        region.bufferOffset = mip.first_pixel * sizeof(star::sample::EnvironmentPixel);
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+        region.imageExtent = {mip.width, mip.height, 1};
+        regions.push_back(region);
+    }
+
+    const auto &vk = m_gpu.vk;
+    const auto begin = vkInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+    check(vk.vkBeginCommandBuffer(m_commands, &begin), "Begin environment upload");
+    transitionVulkanImage(m_gpu, m_commands, m_environment.handle, m_environment.range,
+                          vulkanTextureSync(TextureState::Undefined), vulkanTextureSync(TextureState::CopyDestination));
+    vk.vkCmdCopyBufferToImage(m_commands, staging.handle, m_environment.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              static_cast<std::uint32_t>(regions.size()), regions.data());
+    transitionVulkanImage(m_gpu, m_commands, m_environment.handle, m_environment.range,
+                          vulkanTextureSync(TextureState::CopyDestination), vulkanTextureSync(TextureState::Sampled));
+    submitCommands();
+
+    auto sampler = vkInfo<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
+    sampler.magFilter = VK_FILTER_LINEAR;
+    sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.maxLod = static_cast<float>(mip_count - 1);
+    check(vk.vkCreateSampler(m_gpu.device, &sampler, nullptr, &m_environment_sampler), "Create environment sampler");
 }
 
 void ForwardSample::dispatchClusters() const {
@@ -743,13 +813,7 @@ double ForwardSample::draw() {
     if (m_queries) {
         vk.vkCmdWriteTimestamp2(m_commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_queries, 1);
     }
-    check(vk.vkEndCommandBuffer(m_commands), "End command buffer");
-    auto submit = vkInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &m_commands;
-    check(vk.vkResetFences(m_gpu.device, 1, &m_fence), "Reset fence");
-    check(vk.vkQueueSubmit(m_gpu.queue, 1, &submit, m_fence), "Submit draw");
-    check(vk.vkWaitForFences(m_gpu.device, 1, &m_fence, VK_TRUE, UINT64_MAX), "Wait for draw");
+    submitCommands();
     if (m_gpu.validationErrors.load() != 0) {
         throw std::runtime_error("Vulkan validation reported errors");
     }
@@ -763,6 +827,17 @@ double ForwardSample::draw() {
     const auto bits = m_gpu.queueProperties.timestampValidBits;
     const auto mask = bits == 64 ? UINT64_MAX : (std::uint64_t{1} << bits) - 1;
     return static_cast<double>((ticks[1] - ticks[0]) & mask) * m_gpu.properties.limits.timestampPeriod / 1e6;
+}
+
+void ForwardSample::submitCommands() const {
+    const auto &vk = m_gpu.vk;
+    check(vk.vkEndCommandBuffer(m_commands), "End command buffer");
+    auto submit = vkInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &m_commands;
+    check(vk.vkResetFences(m_gpu.device, 1, &m_fence), "Reset fence");
+    check(vk.vkQueueSubmit(m_gpu.queue, 1, &submit, m_fence), "Submit draw");
+    check(vk.vkWaitForFences(m_gpu.device, 1, &m_fence, VK_TRUE, UINT64_MAX), "Wait for draw");
 }
 
 void ForwardSample::saveCapture(const std::filesystem::path &path) const {
