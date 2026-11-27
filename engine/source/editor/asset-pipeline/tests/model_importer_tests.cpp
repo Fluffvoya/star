@@ -1,9 +1,13 @@
+#include "asset-pipeline/cached_model_import.hpp"
 #include "asset-pipeline/model_importer.hpp"
+#include "asset-pipeline/texture_importer.hpp"
 #include "test_support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
+#include <filesystem>
 #include <span>
 #include <string_view>
 
@@ -224,4 +228,50 @@ STAR_TEST(model_importer_keeps_color_and_metallic_roughness_images_in_distinct_c
     const std::vector<std::uint8_t> expected{32, 64, 128, 255};
     STAR_CHECK(color.mips.at(0).rgba == expected);
     STAR_CHECK(metallic_roughness.mips.at(0).rgba == expected);
+
+    const auto payload = star::writeModelAsset(*model);
+    STAR_CHECK(payload.has_value());
+    const auto decoded = star::readModelAsset(*payload);
+    STAR_CHECK(decoded.has_value());
+    STAR_CHECK(decoded->textures == model->textures);
+    STAR_CHECK(decoded->parts.at(0).material->base_color_texture == material.base_color_texture);
+    STAR_CHECK(decoded->parts.at(0).material->metallic_roughness_texture == material.metallic_roughness_texture);
+
+    struct TemporaryCache {
+        std::filesystem::path path = std::filesystem::temp_directory_path() / star::Guid::generate().toString();
+        ~TemporaryCache() {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    } directory;
+    const DerivedDataCache cache(directory.path);
+    AssetMeta meta;
+    meta.guid = star::Guid::generate();
+    meta.importer = "star::GltfImporter";
+    meta.importer_version = 1;
+    STAR_CHECK(!importCachedModel(asBytes(source), meta, "linux", cache, resolver).has_value());
+
+    auto buffer = triangleBytes();
+    buffer.resize(60);
+    std::array fingerprints{fingerprintDerivedDataInput(buffer), fingerprintDerivedDataInput(asBytes("image-v1"))};
+    const auto stored = importCachedModel(asBytes(source), meta, "linux", cache, resolver, fingerprints);
+    STAR_CHECK(stored.has_value());
+    STAR_CHECK(!stored->cache_hit);
+
+    const auto hit = importCachedModel(
+        asBytes(source), meta, "linux", cache,
+        [](std::string_view) {
+            STAR_CHECK(false);
+            return std::vector<std::byte>{};
+        },
+        fingerprints);
+    STAR_CHECK(hit.has_value());
+    STAR_CHECK(hit->cache_hit);
+    STAR_CHECK(hit->model.textures == model->textures);
+
+    fingerprints[0] = fingerprintDerivedDataInput(asBytes("buffer-v2"));
+    const auto changed = importCachedModel(asBytes(source), meta, "linux", cache, resolver, fingerprints);
+    STAR_CHECK(changed.has_value());
+    STAR_CHECK(!changed->cache_hit);
+    STAR_CHECK(changed->key != stored->key);
 }

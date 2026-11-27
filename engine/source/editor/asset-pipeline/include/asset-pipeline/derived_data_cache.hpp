@@ -16,6 +16,8 @@ namespace star::asset_pipeline {
 
 using DerivedDataKey = std::array<std::byte, 16>;
 
+[[nodiscard]] STAR_ASSETPIPELINE_API DerivedDataKey fingerprintDerivedDataInput(std::span<const std::byte> bytes);
+
 enum class DerivedDataErrorCode { InvalidInput, IoFailure };
 
 struct DerivedDataError {

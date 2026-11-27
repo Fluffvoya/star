@@ -1,15 +1,12 @@
 #pragma once
 
 #include "asset-pipeline/export.hpp"
-#include "asset-pipeline/texture_importer.hpp"
-#include "core/math.hpp"
+#include "asset/model_asset.hpp"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -19,32 +16,10 @@ namespace star::asset_pipeline {
 
 enum class StaticModelFormat : std::uint8_t { Fbx, Obj };
 
-struct StaticMeshVertex {
-    math::Vector3 position;
-    math::Vector3 normal;
-    math::Vector2 uv;
-};
-
-struct ImportedPbrMaterial {
-    std::array<float, 4> base_color{1, 1, 1, 1};
-    float metallic = 1.0F;
-    float roughness = 1.0F;
-    std::optional<std::size_t> base_color_texture;
-    std::optional<std::size_t> metallic_roughness_texture;
-};
-
-struct StaticMeshPart {
-    std::string name;
-    std::string material_name;
-    std::optional<ImportedPbrMaterial> material;
-    std::vector<StaticMeshVertex> vertices;
-    std::vector<std::uint32_t> indices;
-};
-
-struct ImportedStaticModel {
-    std::vector<StaticMeshPart> parts;
-    std::vector<ImportedTexture> textures;
-};
+using star::StaticMeshPart;
+using star::StaticMeshVertex;
+using ImportedPbrMaterial = StaticPbrMaterial;
+using ImportedStaticModel = StaticModelAsset;
 
 struct ModelImportError {
     std::string message;

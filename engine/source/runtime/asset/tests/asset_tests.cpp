@@ -1,4 +1,5 @@
 #include "asset/asset_manager.hpp"
+#include "asset/model_asset.hpp"
 #include "asset/texture_asset.hpp"
 #include "test_support.hpp"
 
@@ -125,4 +126,31 @@ STAR_TEST(asset_manager_loads_a_derived_texture_without_an_importer) {
     auto invalid = texture;
     invalid.mips.at(1).width = 2;
     STAR_CHECK(!writeTextureAsset(invalid).has_value());
+}
+
+STAR_TEST(asset_manager_loads_a_static_model_without_model_parsers) {
+    StaticModelAsset model;
+    auto &part = model.parts.emplace_back();
+    part.name = "Triangle";
+    part.vertices = {{{0, 0, 0}, {0, 0, 1}, {0, 0}}, {{1, 0, 0}, {0, 0, 1}, {1, 0}}, {{0, 1, 0}, {0, 0, 1}, {0, 1}}};
+    part.indices = {0, 1, 2};
+    const auto payload = writeModelAsset(model);
+    STAR_CHECK(payload.has_value());
+
+    AssetFile file;
+    file.write(asText(*payload));
+    AssetManager manager;
+    const auto guid = Guid::generate();
+    STAR_CHECK(manager.registerBlob(guid, file.path).has_value());
+    const auto loaded = manager.load(guid);
+    STAR_CHECK(loaded.has_value());
+    const auto decoded = readModelAsset(loaded->getBytes());
+    STAR_CHECK(decoded.has_value());
+    STAR_CHECK(decoded->parts.at(0).name == "Triangle");
+    STAR_CHECK(decoded->parts.at(0).indices == part.indices);
+    STAR_CHECK(decoded->parts.at(0).vertices.at(1).position == part.vertices.at(1).position);
+
+    auto corrupt = *payload;
+    corrupt.back() = std::byte{1};
+    STAR_CHECK(!readModelAsset(corrupt).has_value());
 }

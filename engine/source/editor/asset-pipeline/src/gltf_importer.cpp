@@ -1,4 +1,5 @@
 #include "asset-pipeline/model_importer.hpp"
+#include "asset-pipeline/texture_importer.hpp"
 
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
