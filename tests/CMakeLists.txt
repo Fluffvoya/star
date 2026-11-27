@@ -6,7 +6,7 @@ endif()
 
 add_custom_target(StarPublicHeadersCheck)
 
-foreach(module IN ITEMS Core Reflection Serialization Scene RHI Jobs Platform AssetPipeline)
+foreach(module IN ITEMS Core Reflection Serialization Scene RHI Jobs Platform Asset AssetPipeline)
     get_target_property(module_output Star${module} OUTPUT_NAME)
     string(REGEX REPLACE "^star-" "" module_slug "${module_output}")
     set(target "Star${module}Tests")
@@ -17,7 +17,7 @@ foreach(module IN ITEMS Core Reflection Serialization Scene RHI Jobs Platform As
         set(test_source "${module_source_dir}/tests/asset_database_tests.cpp")
         list(APPEND test_source "${module_source_dir}/tests/derived_data_cache_tests.cpp")
         list(APPEND test_source "${module_source_dir}/tests/texture_importer_tests.cpp")
-    elseif(module MATCHES "^(Serialization|Scene)$")
+    elseif(module MATCHES "^(Serialization|Scene|Asset)$")
         set(test_source "${module_source_dir}/tests/${module_slug}_tests.cpp")
     else()
         set(test_source "${module_slug}_tests.cpp")
