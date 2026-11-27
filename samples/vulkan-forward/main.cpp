@@ -180,7 +180,7 @@ struct DrawPart {
     std::array<float, 4> factors;
 };
 
-DrawConstants makeCamera(std::span<const StaticMeshVertex> vertices) {
+DrawConstants makeCamera(std::span<const StaticMeshVertex> vertices, bool front_view) {
     using namespace star::math;
     Vector3 low = vertices.front().position;
     Vector3 high = low;
@@ -190,8 +190,9 @@ DrawConstants makeCamera(std::span<const StaticMeshVertex> vertices) {
         high = {std::max(high.x, p.x), std::max(high.y, p.y), std::max(high.z, p.z)};
     }
     const auto center = (low + high) * 0.5F;
-    const float radius = std::max(length(high - low) * 0.5F, 0.05F);
-    const auto eye = center + normalize(Vector3{0.9F, 0.62F, 1.0F}) * (radius * 2.6F);
+    const float radius = std::max(length(high - low) * 0.5F, 1e-6F);
+    const auto camera_direction = front_view ? Vector3{0, 0, 1} : normalize(Vector3{0.9F, 0.62F, 1.0F});
+    const auto eye = center + camera_direction * (radius * 2.6F);
     const auto forward = normalize(center - eye);
     const auto right = normalize(cross(forward, {0.0F, 1.0F, 0.0F}));
     const auto up = cross(right, forward);
@@ -316,7 +317,7 @@ class ForwardSample {
         vk.vkDestroyCommandPool(device, m_pool, nullptr);
     }
 
-    void initialize(const ImportedStaticModel &model, const std::filesystem::path &assets);
+    void initialize(const ImportedStaticModel &model, const std::filesystem::path &assets, bool front_view);
     double draw();
     void saveCapture(const std::filesystem::path &path) const;
 
@@ -363,7 +364,7 @@ class ForwardSample {
     VkQueryPool m_queries = VK_NULL_HANDLE;
 };
 
-void ForwardSample::initialize(const ImportedStaticModel &model, const std::filesystem::path &assets) {
+void ForwardSample::initialize(const ImportedStaticModel &model, const std::filesystem::path &assets, bool front_view) {
     if ((m_gpu.queueProperties.queueFlags & VK_QUEUE_COMPUTE_BIT) == 0) {
         throw std::runtime_error("The graphics queue must also support compute shaders");
     }
@@ -380,7 +381,10 @@ void ForwardSample::initialize(const ImportedStaticModel &model, const std::file
                       static_cast<std::int32_t>(vertices.size()),
                       {0.48F, 0.55F, 0.62F, 1},
                       {0.7F, 0.0F, 0, 0}};
-        if (part.name == "Copper") {
+        if (part.material) {
+            draw.albedo = part.material->base_color;
+            draw.factors = {part.material->roughness, part.material->metallic, 0, 0};
+        } else if (part.name == "Copper") {
             draw.albedo = {0.95F, 0.56F, 0.37F, 1};
             draw.factors = {0.26F, 0.85F, 0, 0};
         } else if (part.name == "Ceramic") {
@@ -393,7 +397,7 @@ void ForwardSample::initialize(const ImportedStaticModel &model, const std::file
         vertices.insert(vertices.end(), part.vertices.begin(), part.vertices.end());
         indices.insert(indices.end(), part.indices.begin(), part.indices.end());
     }
-    m_camera = makeCamera(vertices);
+    m_camera = makeCamera(vertices, front_view);
     m_vertices.upload(std::as_bytes(std::span(vertices)), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     m_indices.upload(std::as_bytes(std::span(indices)), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     m_color.create(color_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -859,8 +863,9 @@ void ForwardSample::saveCapture(const std::filesystem::path &path) const {
 
 int main(int argc, char **argv) {
     try {
-        if (argc > 4) {
-            throw std::runtime_error("Usage: star-vulkan-forward [model] [capture.ppm] [frames]");
+        const bool front_view = argc == 5 && std::string_view(argv[4]) == "--front";
+        if (argc > 4 && !front_view) {
+            throw std::runtime_error("Usage: star-vulkan-forward [model] [capture.ppm] [frames] [--front]");
         }
         const auto assets = std::filesystem::canonical(argv[0]).parent_path();
         const auto source = argc > 1 ? std::filesystem::path(argv[1]) : assets / "forward-scene.obj";
@@ -879,7 +884,7 @@ int main(int argc, char **argv) {
             throw std::runtime_error("A Vulkan device with validation is required");
         }
         ForwardSample sample(gpu);
-        sample.initialize(model, assets);
+        sample.initialize(model, assets, front_view);
         const auto warmup_ms = sample.draw();
         double total_ms = 0.0;
         for (unsigned frame = 0; frame < frames; ++frame) {

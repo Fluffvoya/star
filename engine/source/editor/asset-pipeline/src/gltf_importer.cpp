@@ -103,7 +103,14 @@ std::expected<StaticMeshPart, ModelImportError> importPrimitive(const fastgltf::
     StaticMeshPart output;
     output.name = mesh.name;
     if (primitive.materialIndex) {
-        output.material_name = asset.materials[*primitive.materialIndex].name;
+        const auto &material = asset.materials[*primitive.materialIndex];
+        output.material_name = material.name;
+        const auto &pbr = material.pbrData;
+        const auto &base = pbr.baseColorFactor;
+        output.material =
+            ImportedPbrMaterial{{base[0], base[1], base[2], base[3]}, pbr.metallicFactor, pbr.roughnessFactor};
+    } else {
+        output.material.emplace();
     }
     output.vertices.resize(positions->count);
     if (primitive.indicesAccessor) {

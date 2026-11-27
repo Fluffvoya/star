@@ -109,7 +109,8 @@ constexpr std::string_view gltf_prefix = R"(
   "scenes": [{"nodes": [0]}],
   "nodes": [{"translation": [2, 0, 0], "children": [1]}, {"mesh": 0, "scale": [-1, 1, 1]}],
   "meshes": [{"name": "Triangle", "primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
-  "materials": [{"name": "Paint"}],
+  "materials": [{"name": "Paint", "pbrMetallicRoughness": {
+      "baseColorFactor": [1.0, 0.25, 0.125, 1.0], "metallicFactor": 0.4, "roughnessFactor": 0.8}}],
   "bufferViews": [{"buffer": 0, "byteLength": 36}],
   "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
                  "min": [0, 0, 0], "max": [1, 1, 0]}],
@@ -159,6 +160,10 @@ STAR_TEST(model_importer_reads_glb_and_bakes_parent_and_mirrored_transforms) {
     STAR_CHECK(mesh.vertices[0].normal.z > 0.99F);
     STAR_CHECK(mesh.indices == std::vector<std::uint32_t>({0, 2, 1}));
     STAR_CHECK(mesh.material_name == "Paint");
+    STAR_CHECK(mesh.material.has_value());
+    STAR_CHECK(mesh.material->base_color[1] == 0.25F);
+    STAR_CHECK(mesh.material->metallic == 0.4F);
+    STAR_CHECK(mesh.material->roughness == 0.8F);
 }
 
 STAR_TEST(model_importer_resolves_external_gltf_buffers_and_checks_bounds) {

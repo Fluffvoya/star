@@ -3,10 +3,12 @@
 #include "asset-pipeline/export.hpp"
 #include "core/math.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -22,9 +24,16 @@ struct StaticMeshVertex {
     math::Vector2 uv;
 };
 
+struct ImportedPbrMaterial {
+    std::array<float, 4> base_color{1, 1, 1, 1};
+    float metallic = 1.0F;
+    float roughness = 1.0F;
+};
+
 struct StaticMeshPart {
     std::string name;
     std::string material_name;
+    std::optional<ImportedPbrMaterial> material;
     std::vector<StaticMeshVertex> vertices;
     std::vector<std::uint32_t> indices;
 };
