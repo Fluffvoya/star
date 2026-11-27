@@ -86,6 +86,9 @@ class Archive final {
 // A migration can advance an older document before field matching.
 using UpgradeFields = bool (*)(ArchiveValue::Mapping &fields, std::uint32_t from_version, std::uint32_t to_version);
 
+[[nodiscard]] STAR_SERIALIZATION_API std::expected<ArchiveValue, ArchiveError> readYamlValue(std::string_view source);
+[[nodiscard]] STAR_SERIALIZATION_API std::expected<std::string, ArchiveError> writeYamlValue(const ArchiveValue &root);
+
 [[nodiscard]] STAR_SERIALIZATION_API std::expected<ArchiveDocument, ArchiveError> readYaml(std::string_view source);
 [[nodiscard]] STAR_SERIALIZATION_API std::expected<std::string, ArchiveError>
 writeYaml(const ArchiveDocument &document);

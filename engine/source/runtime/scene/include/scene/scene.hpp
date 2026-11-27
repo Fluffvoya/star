@@ -138,6 +138,7 @@ class STAR_SCENE_API Scene final {
 
   private:
     friend class World;
+    friend struct SceneArchiveAccess;
 
     explicit Scene(World &world);
     [[nodiscard]] bool isBusy() const noexcept;

@@ -84,6 +84,7 @@ class STAR_SCENE_API GameObject {
 
   private:
     friend class Scene;
+    friend struct SceneArchiveAccess;
 
     Guid m_guid;
     std::string m_name;
