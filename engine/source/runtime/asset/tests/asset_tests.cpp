@@ -1,4 +1,5 @@
 #include "asset/asset_manager.hpp"
+#include "asset/texture_asset.hpp"
 #include "test_support.hpp"
 
 #include <chrono>
@@ -101,4 +102,27 @@ STAR_TEST(asset_handles_keep_results_after_manager_shutdown) {
     STAR_CHECK(handle.getBytes().empty());
     STAR_CHECK(failed.getState() == AssetState::Failed);
     STAR_CHECK(failed.getError() == AssetLoadError::ReadFailed);
+}
+
+STAR_TEST(asset_manager_loads_a_derived_texture_without_an_importer) {
+    const TextureAsset texture{TextureColorSpace::Color,
+                               {{2, 1, {1, 2, 3, 255, 4, 5, 6, 255}}, {1, 1, {2, 3, 4, 255}}}};
+    const auto payload = writeTextureAsset(texture);
+    STAR_CHECK(payload.has_value());
+    AssetFile file;
+    file.write(asText(*payload));
+    AssetManager manager;
+    const auto guid = Guid::generate();
+    STAR_CHECK(manager.registerBlob(guid, file.path).has_value());
+    const auto loaded = manager.load(guid);
+    STAR_CHECK(loaded.has_value());
+    STAR_CHECK(readTextureAsset(loaded->getBytes()).value() == texture);
+
+    const auto bytes = std::span(*payload);
+    const auto truncated = readTextureAsset(bytes.first(bytes.size() - 1));
+    STAR_CHECK(!truncated.has_value());
+    STAR_CHECK(truncated.error() == TextureAssetError::InvalidMipChain);
+    auto invalid = texture;
+    invalid.mips.at(1).width = 2;
+    STAR_CHECK(!writeTextureAsset(invalid).has_value());
 }

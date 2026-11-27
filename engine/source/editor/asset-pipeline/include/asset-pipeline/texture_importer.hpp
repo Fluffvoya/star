@@ -1,32 +1,22 @@
 #pragma once
 
 #include "asset-pipeline/export.hpp"
+#include "asset/texture_asset.hpp"
 
 #include <cstddef>
-#include <cstdint>
 #include <expected>
 #include <span>
 #include <string>
-#include <vector>
 
 namespace star::asset_pipeline {
 
-enum class TextureUsage : std::uint8_t { Color, Linear, Normal };
+using TextureUsage = TextureColorSpace;
+using TextureMip = star::TextureMip;
+using ImportedTexture = TextureAsset;
 
 struct TextureImportSettings {
     TextureUsage usage = TextureUsage::Color;
     bool generate_mips = true;
-};
-
-struct TextureMip {
-    std::uint32_t width;
-    std::uint32_t height;
-    std::vector<std::uint8_t> rgba;
-};
-
-struct ImportedTexture {
-    TextureUsage usage;
-    std::vector<TextureMip> mips;
 };
 
 struct TextureImportError {
