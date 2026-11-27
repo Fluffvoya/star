@@ -6,6 +6,7 @@
 | M1 | [反射与序列化](m1/README.md) | [生成器与联合验收](m1/03-generated-reflection.md) | [Windows 验收](m1/04-windows-acceptance.md) |
 | M2 | [RHI 与 Vulkan](m2/README.md) | [Vulkan 呈现与抓帧](m2/09-vulkan-textured-mesh.md) | [Windows 验收](m2/10-windows-acceptance.md) |
 | M3 | [Gameplay 框架](m3/README.md) | [独立游戏模块与 Linux 验收](m3/07-game-module-acceptance.md) | 尚未验证 |
+| M4 | [资产管线与 3D 渲染基础](m4/README.md) | [资产数据库阶段](m4/01-asset-database.md) | 尚未验证 |
 
 各报告记录对应阶段的交付范围和实测结果。Windows 上复验时参照 [构建与测试指南](../windows-build.md)。
 

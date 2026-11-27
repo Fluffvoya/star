@@ -89,6 +89,7 @@ add_subdirectory(engine/source/runtime/scene)
 add_subdirectory(engine/source/runtime/rhi)
 add_subdirectory(engine/source/runtime/jobs)
 add_subdirectory(engine/source/runtime/platform)
+add_subdirectory(engine/source/editor/asset-pipeline)
 
 if(STAR_BUILD_HEADER_TOOL)
     add_subdirectory(tools/star-header-tool)
