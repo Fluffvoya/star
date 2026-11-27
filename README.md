@@ -27,9 +27,11 @@ Initialize the pinned EnTT 3.14.0 (MIT) and rapidyaml dependencies after cloning
 git submodule update --init --recursive
 ```
 
-Linux Debug and Development presets discover installed CMake packages. If fastgltf is installed in a
-separate vcpkg prefix, pass that prefix in `CMAKE_PREFIX_PATH`. To install dependencies from the project
-manifest, set `VCPKG_ROOT` and configure a separate build
+Linux Debug and Development presets discover installed CMake packages, including packages installed
+through pacman. On native Linux x64 without a toolchain file, CMake also searches
+`$VCPKG_ROOT/installed/x64-linux` for fastgltf if the normal search fails. For other installation
+prefixes, set `CMAKE_PREFIX_PATH`. To install dependencies from the project manifest, set
+`VCPKG_ROOT` and configure a separate build
 with `cmake --preset linux-dev -B build/linux-dev-vcpkg -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"`.
 
 Configure Shipping and Profile builds with the vcpkg toolchain on the target host.
