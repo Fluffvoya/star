@@ -16,3 +16,4 @@
 | 12 glTF PBR 贴图材质 | [Linux x64 软件 Vulkan 验证记录](12-gltf-material-textures.md) |
 | 13 纹理派生数据与运行时读取 | [Linux x64 验证记录](13-texture-cache-integration.md) |
 | 14 材质着色器变体 | [Linux x64 软件 Vulkan 验证记录](14-material-variants.md) |
+| 15 静态模型派生数据 | [Linux x64 验证记录](15-model-cache-integration.md) |

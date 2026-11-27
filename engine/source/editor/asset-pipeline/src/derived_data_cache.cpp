@@ -22,7 +22,15 @@ std::string hexKey(const DerivedDataKey &key) {
     return text;
 }
 
-DerivedDataKey hashBytes(std::span<const std::byte> bytes) {
+std::span<const std::byte> bytesOf(std::string_view text) { return std::as_bytes(std::span(text)); }
+
+std::unexpected<DerivedDataError> ioFailure(const std::filesystem::path &path) {
+    return std::unexpected(DerivedDataError{DerivedDataErrorCode::IoFailure, path});
+}
+
+} // namespace
+
+DerivedDataKey fingerprintDerivedDataInput(std::span<const std::byte> bytes) {
     XXH128_canonical_t canonical;
     XXH128_canonicalFromHash(&canonical, XXH3_128bits(bytes.data(), bytes.size()));
     DerivedDataKey key{};
@@ -31,14 +39,6 @@ DerivedDataKey hashBytes(std::span<const std::byte> bytes) {
     }
     return key;
 }
-
-std::span<const std::byte> bytesOf(std::string_view text) { return std::as_bytes(std::span(text)); }
-
-std::unexpected<DerivedDataError> ioFailure(const std::filesystem::path &path) {
-    return std::unexpected(DerivedDataError{DerivedDataErrorCode::IoFailure, path});
-}
-
-} // namespace
 
 std::expected<DerivedDataKey, DerivedDataError> makeDerivedDataKey(std::span<const std::byte> source,
                                                                    const AssetMeta &meta, std::string_view platform,
@@ -49,10 +49,11 @@ std::expected<DerivedDataKey, DerivedDataError> makeDerivedDataKey(std::span<con
     }
 
     // Hash the fields separately so their boundaries cannot be ambiguous.
-    std::vector<DerivedDataKey> fields{hashBytes(bytesOf("star-ddc-v1")), hashBytes(source), hashBytes(bytesOf(*yaml)),
-                                       hashBytes(bytesOf(platform))};
+    std::vector<DerivedDataKey> fields{fingerprintDerivedDataInput(bytesOf("star-ddc-v1")),
+                                       fingerprintDerivedDataInput(source), fingerprintDerivedDataInput(bytesOf(*yaml)),
+                                       fingerprintDerivedDataInput(bytesOf(platform))};
     fields.insert(fields.end(), dependencies.begin(), dependencies.end());
-    return hashBytes(std::as_bytes(std::span(fields)));
+    return fingerprintDerivedDataInput(std::as_bytes(std::span(fields)));
 }
 
 DerivedDataCache::DerivedDataCache(std::filesystem::path root) : m_root(std::move(root)) {}

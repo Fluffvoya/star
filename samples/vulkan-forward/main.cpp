@@ -1,4 +1,5 @@
 #include "asset-pipeline/model_importer.hpp"
+#include "asset-pipeline/texture_importer.hpp"
 #include "cluster_sizes.h"
 #include "environment.hpp"
 #include "sample_material.hpp"
