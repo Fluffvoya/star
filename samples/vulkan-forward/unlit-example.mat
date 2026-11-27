@@ -1,0 +1,11 @@
+Type: star::Material
+Version: 1
+Properties:
+  Shader: 6cab949113d24a3db5bb89eadb57769b
+  Parameters:
+    BaseColor: [0.8, 0.18, 0.03, 1.0]
+  RenderState:
+    Blend: Opaque
+    Shading: Unlit
+    DoubleSided: false
+    DepthTest: true
