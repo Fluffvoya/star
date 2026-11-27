@@ -7,11 +7,6 @@
 
 namespace star {
 
-World::~World() {
-    m_dispatching = true;
-    m_scenes.clear();
-}
-
 bool World::isBusy() const noexcept {
     return m_dispatching || std::ranges::any_of(m_scenes, [](const auto &scene) { return scene->isBusy(); });
 }
@@ -57,6 +52,9 @@ std::expected<Scene *, SceneError> World::createScene() noexcept {
     }
     try {
         auto scene = std::unique_ptr<Scene>(new Scene(*this));
+        if (!installGameComponents(*scene)) {
+            return std::unexpected(SceneError::CreationFailed);
+        }
         return m_scenes.emplace_back(std::move(scene)).get();
     } catch (const std::bad_alloc &) {
         return std::unexpected(SceneError::ResourceExhausted);

@@ -8,3 +8,4 @@
 | 04 | [GameObject 生命周期](04-gameobject-lifecycle.md) |
 | 05 | [帧阶段与系统调度](05-system-scheduling.md) |
 | 06 | [场景 YAML 与预制体](06-scene-yaml.md) |
+| 07 | [独立游戏模块与 Linux 验收](07-game-module-acceptance.md) |
