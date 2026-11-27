@@ -1,3 +1,9 @@
+if(CMAKE_GENERATOR MATCHES "^Ninja")
+    set(star_test_ninja "${CMAKE_MAKE_PROGRAM}")
+else()
+    find_program(star_test_ninja NAMES ninja ninja-build REQUIRED)
+endif()
+
 add_custom_target(StarPublicHeadersCheck)
 
 foreach(module IN ITEMS Core Reflection Serialization Scene RHI Jobs Platform)
@@ -55,7 +61,7 @@ if(TARGET StarHeaderTool)
             "-Dtool=$<TARGET_FILE:StarHeaderTool>"
             "-Droot=${PROJECT_SOURCE_DIR}"
             "-Dcompiler=${CMAKE_CXX_COMPILER}"
-            "-Dninja=${CMAKE_MAKE_PROGRAM}"
+            "-Dninja=${star_test_ninja}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/generated_reflection_incremental.cmake")
 endif()
 
@@ -126,7 +132,7 @@ if(NOT STAR_MONOLITHIC)
     add_custom_command(
         OUTPUT "${game_fixture_file}"
         COMMAND "${CMAKE_COMMAND}" -S "${game_fixture_source}" -B "${game_fixture_build}" -G Ninja
-            "-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+            "-DCMAKE_MAKE_PROGRAM=${star_test_ninja}"
             "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
             "-DCMAKE_BUILD_TYPE=$<CONFIG>"
             "-DSTAR_MODULE_SUFFIX=${CMAKE_SHARED_MODULE_SUFFIX}"

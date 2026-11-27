@@ -15,31 +15,33 @@ asynchronous runs, priority queues, parallel-for helpers, and nested-safe job wa
 - A C++23 compiler
 - SDL3 3.2 or newer
 - xxHash 0.8 or newer
-- EnTT 3.14.0 (via the vcpkg manifest)
 
 Reflection generation uses libclang 18 or newer and its matching Clang driver. CMake skips
 StarHeaderTool when libclang is unavailable. The `generated-reflection` and
 `generated-reflection-incremental` tests verify the generator when it is built.
 
-Initialize the pinned YAML parser and its dependencies after cloning the repository.
+Initialize the pinned EnTT 3.14.0 (MIT) and rapidyaml dependencies after cloning the repository.
 
 ```sh
 git submodule update --init --recursive
 ```
 
-Shipping and Profile dependency versions are pinned by the repository vcpkg manifest. Configure those builds with
-the vcpkg toolchain on the target host.
+Linux Debug and Development presets discover dependencies installed through the system package manager.
+If a required dependency is missing or incompatible, set `VCPKG_ROOT` and configure a separate build
+with `cmake --preset linux-dev -B build/linux-dev-vcpkg -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"`.
 
-On Linux, set `VCPKG_ROOT` to your vcpkg installation and configure and validate the engine with:
+Configure Shipping and Profile builds with the vcpkg toolchain on the target host.
+Windows presets select that toolchain from `VCPKG_ROOT`.
+
+On Linux, configure and build with the Development preset:
 
 ```sh
-cmake --preset linux-dev -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --preset linux-dev
 cmake --build --preset linux-dev
 ctest --preset linux-dev --output-on-failure
 ```
 
-This preset uses `build/linux-dev/` for its CMake cache, with executables in `build/linux-dev/bin/` and
-libraries in `build/linux-dev/lib/`. Each preset uses its own build directory.
+The preset uses `build/linux-dev/`. For a custom build, pass the same directory to configure and build.
 
 Runtime modules keep public headers under `include/<module>/` and implementation files under `src/`.
 

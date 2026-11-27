@@ -47,6 +47,7 @@
             "name": "win-host",
             "hidden": true,
             "inherits": "ninja",
+            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
             "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"}
         },
         {
