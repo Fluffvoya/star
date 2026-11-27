@@ -7,6 +7,7 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <utility>
 
@@ -17,36 +18,109 @@ std::unexpected<ModelImportError> invalid(std::string message) {
     return std::unexpected(ModelImportError{std::move(message)});
 }
 
+std::expected<std::vector<std::byte>, ModelImportError> readExternal(const fastgltf::sources::URI &external,
+                                                                     const GltfBufferResolver &resolver) {
+    const auto path = external.uri.path();
+    const auto local_path = external.uri.fspath();
+    if (!resolver || !external.uri.isLocalPath() || local_path.has_root_path() || path.empty() ||
+        path.find_first_of("\\:") != std::string_view::npos || path.find('\0') != std::string_view::npos ||
+        std::ranges::find(local_path, "..") != local_path.end() || external.fileByteOffset != 0) {
+        return invalid("Unsupported or unresolved external glTF resource");
+    }
+    return resolver(path);
+}
+
+std::span<const std::byte> dataBytes(const fastgltf::DataSource &source) {
+    return std::visit(
+        [](const auto &data) -> std::span<const std::byte> {
+            if constexpr (requires { data.bytes.size(); }) {
+                return {data.bytes.data(), data.bytes.size()};
+            }
+            return {};
+        },
+        source);
+}
+
 std::expected<void, ModelImportError> resolveBuffers(fastgltf::Asset &asset, const GltfBufferResolver &resolver) {
     for (auto &buffer : asset.buffers) {
         if (const auto *external = std::get_if<fastgltf::sources::URI>(&buffer.data)) {
-            const auto path = external->uri.path();
-            const auto local_path = external->uri.fspath();
-            if (!resolver || !external->uri.isLocalPath() || local_path.has_root_path() || path.empty() ||
-                path.find_first_of("\\:") != std::string_view::npos || path.find('\0') != std::string_view::npos ||
-                std::ranges::find(local_path, "..") != local_path.end() || external->fileByteOffset != 0) {
-                return invalid("Unsupported or unresolved external glTF buffer");
-            }
-            auto bytes = resolver(path);
+            auto bytes = readExternal(*external, resolver);
             if (!bytes) {
                 return std::unexpected(std::move(bytes.error()));
             }
             buffer.data = fastgltf::sources::Vector{std::move(*bytes)};
         }
-        const auto available = std::visit(
-            [](const auto &data) -> std::size_t {
-                if constexpr (requires { data.bytes.size(); }) {
-                    return data.bytes.size();
-                }
-                return 0;
-            },
-            buffer.data);
-        if (available < buffer.byteLength) {
+        if (dataBytes(buffer.data).size() < buffer.byteLength) {
             return invalid("glTF buffer is shorter than its declared length");
         }
     }
     return {};
 }
+
+std::expected<ImportedTexture, ModelImportError> importImage(const fastgltf::Asset &asset, std::size_t index,
+                                                             TextureUsage usage, const GltfBufferResolver &resolver) {
+    const auto &image = asset.images[index];
+    std::vector<std::byte> owned;
+    auto bytes = dataBytes(image.data);
+    if (const auto *buffer = std::get_if<fastgltf::sources::BufferView>(&image.data)) {
+        const auto &view = asset.bufferViews[buffer->bufferViewIndex];
+        const auto &source = asset.buffers[view.bufferIndex];
+        if (view.byteOffset > source.byteLength || view.byteLength > source.byteLength - view.byteOffset) {
+            return invalid("glTF image exceeds the buffer boundaries");
+        }
+        bytes = dataBytes(source.data).subspan(view.byteOffset, view.byteLength);
+    } else if (const auto *external = std::get_if<fastgltf::sources::URI>(&image.data)) {
+        auto loaded = readExternal(*external, resolver);
+        if (!loaded) {
+            return std::unexpected(std::move(loaded.error()));
+        }
+        owned = std::move(*loaded);
+        bytes = owned;
+    }
+    auto texture = importTexture(bytes, {usage, true});
+    if (!texture) {
+        return invalid("Cannot decode glTF image " + std::to_string(index) + ": " + texture.error().message);
+    }
+    return std::move(*texture);
+}
+
+class MaterialTextures {
+  public:
+    MaterialTextures(ImportedStaticModel &model, const fastgltf::Asset &asset, const GltfBufferResolver &resolver)
+        : m_model(model), m_asset(asset), m_resolve(resolver) {}
+
+    std::expected<std::optional<std::size_t>, ModelImportError>
+    import(const fastgltf::Optional<fastgltf::TextureInfo> &info, TextureUsage usage) {
+        if (!info) {
+            return std::nullopt;
+        }
+        if (info->texCoordIndex != 0) {
+            return invalid("Only TEXCOORD_0 is supported for glTF material textures");
+        }
+        const auto &texture = m_asset.textures[info->textureIndex];
+        if (!texture.imageIndex) {
+            return invalid("glTF material texture is missing an image");
+        }
+        const auto key = std::pair{*texture.imageIndex, usage};
+        if (const auto cached = m_cached.find(key); cached != m_cached.end()) {
+            return cached->second;
+        }
+        auto imported = importImage(m_asset, key.first, usage, m_resolve);
+        if (!imported) {
+            return std::unexpected(std::move(imported.error()));
+        }
+        const auto index = m_model.textures.size();
+        m_model.textures.push_back(std::move(*imported));
+        m_cached.emplace(key, index);
+        return index;
+    }
+
+  private:
+    ImportedStaticModel &m_model;
+    const fastgltf::Asset &m_asset;
+    const GltfBufferResolver &m_resolve;
+    std::map<std::pair<std::size_t, TextureUsage>, std::size_t> m_cached;
+};
 
 const fastgltf::Accessor *findAccessor(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive,
                                        std::string_view attribute) {
@@ -72,10 +146,9 @@ bool finite(math::Vector3 vector) {
     return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
 }
 
-std::expected<StaticMeshPart, ModelImportError> importPrimitive(const fastgltf::Asset &asset,
-                                                                const fastgltf::Mesh &mesh,
-                                                                const fastgltf::Primitive &primitive,
-                                                                const fastgltf::math::fmat4x4 &transform) {
+std::expected<StaticMeshPart, ModelImportError>
+importPrimitive(const fastgltf::Asset &asset, const fastgltf::Mesh &mesh, const fastgltf::Primitive &primitive,
+                const fastgltf::math::fmat4x4 &transform, MaterialTextures *textures) {
     if (primitive.type != fastgltf::PrimitiveType::Triangles || !primitive.targets.empty()) {
         return invalid("Static glTF importer requires triangle primitives without morph targets");
     }
@@ -107,8 +180,25 @@ std::expected<StaticMeshPart, ModelImportError> importPrimitive(const fastgltf::
         output.material_name = material.name;
         const auto &pbr = material.pbrData;
         const auto &base = pbr.baseColorFactor;
-        output.material =
-            ImportedPbrMaterial{{base[0], base[1], base[2], base[3]}, pbr.metallicFactor, pbr.roughnessFactor};
+        auto &parameters = output.material.emplace();
+        parameters.base_color = {base[0], base[1], base[2], base[3]};
+        parameters.metallic = pbr.metallicFactor;
+        parameters.roughness = pbr.roughnessFactor;
+        if (textures) {
+            if ((pbr.baseColorTexture || pbr.metallicRoughnessTexture) && !uvs) {
+                return invalid("Textured glTF primitive is missing TEXCOORD_0");
+            }
+            auto color = textures->import(pbr.baseColorTexture, TextureUsage::Color);
+            if (!color) {
+                return std::unexpected(std::move(color.error()));
+            }
+            auto metallic_roughness = textures->import(pbr.metallicRoughnessTexture, TextureUsage::Linear);
+            if (!metallic_roughness) {
+                return std::unexpected(std::move(metallic_roughness.error()));
+            }
+            parameters.base_color_texture = *color;
+            parameters.metallic_roughness_texture = *metallic_roughness;
+        }
     } else {
         output.material.emplace();
     }
@@ -184,9 +274,10 @@ std::expected<StaticMeshPart, ModelImportError> importPrimitive(const fastgltf::
 }
 
 std::expected<void, ModelImportError> appendMesh(ImportedStaticModel &output, const fastgltf::Asset &asset,
-                                                 const fastgltf::Mesh &mesh, const fastgltf::math::fmat4x4 &transform) {
+                                                 const fastgltf::Mesh &mesh, const fastgltf::math::fmat4x4 &transform,
+                                                 MaterialTextures *textures) {
     for (const auto &primitive : mesh.primitives) {
-        auto part = importPrimitive(asset, mesh, primitive, transform);
+        auto part = importPrimitive(asset, mesh, primitive, transform, textures);
         if (!part) {
             return std::unexpected(std::move(part.error()));
         }
@@ -195,10 +286,8 @@ std::expected<void, ModelImportError> appendMesh(ImportedStaticModel &output, co
     return {};
 }
 
-} // namespace
-
-std::expected<ImportedStaticModel, ModelImportError> importGltfStaticModel(std::span<const std::byte> source,
-                                                                           const GltfBufferResolver &resolve_buffer) {
+std::expected<ImportedStaticModel, ModelImportError>
+importGltfModel(std::span<const std::byte> source, const GltfBufferResolver &resolve_buffer, bool import_textures) {
     if (source.empty()) {
         return invalid("Empty glTF source");
     }
@@ -220,10 +309,12 @@ std::expected<ImportedStaticModel, ModelImportError> importGltfStaticModel(std::
     }
 
     ImportedStaticModel model;
+    MaterialTextures material_textures(model, asset, resolve_buffer);
+    auto *textures = import_textures ? &material_textures : nullptr;
     const fastgltf::math::fmat4x4 identity;
     if (asset.scenes.empty()) {
         for (const auto &mesh : asset.meshes) {
-            if (auto result = appendMesh(model, asset, mesh, identity); !result) {
+            if (auto result = appendMesh(model, asset, mesh, identity, textures); !result) {
                 return std::unexpected(std::move(result.error()));
             }
         }
@@ -255,7 +346,8 @@ std::expected<ImportedStaticModel, ModelImportError> importGltfStaticModel(std::
                 return invalid("Skinned glTF nodes require a non-static importer");
             }
             if (node.meshIndex) {
-                if (auto result = appendMesh(model, asset, asset.meshes[*node.meshIndex], transform); !result) {
+                if (auto result = appendMesh(model, asset, asset.meshes[*node.meshIndex], transform, textures);
+                    !result) {
                     return std::unexpected(std::move(result.error()));
                 }
             }
@@ -268,6 +360,18 @@ std::expected<ImportedStaticModel, ModelImportError> importGltfStaticModel(std::
         return invalid("glTF contains no triangle geometry");
     }
     return model;
+}
+
+} // namespace
+
+std::expected<ImportedStaticModel, ModelImportError> importGltfStaticModel(std::span<const std::byte> source,
+                                                                           const GltfBufferResolver &resolve_buffer) {
+    return importGltfModel(source, resolve_buffer, false);
+}
+
+std::expected<ImportedStaticModel, ModelImportError>
+importGltfTexturedModel(std::span<const std::byte> source, const GltfBufferResolver &resolve_resource) {
+    return importGltfModel(source, resolve_resource, true);
 }
 
 } // namespace star::asset_pipeline

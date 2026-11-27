@@ -1,6 +1,7 @@
 #pragma once
 
 #include "asset-pipeline/export.hpp"
+#include "asset-pipeline/texture_importer.hpp"
 #include "core/math.hpp"
 
 #include <array>
@@ -28,6 +29,8 @@ struct ImportedPbrMaterial {
     std::array<float, 4> base_color{1, 1, 1, 1};
     float metallic = 1.0F;
     float roughness = 1.0F;
+    std::optional<std::size_t> base_color_texture;
+    std::optional<std::size_t> metallic_roughness_texture;
 };
 
 struct StaticMeshPart {
@@ -40,6 +43,7 @@ struct StaticMeshPart {
 
 struct ImportedStaticModel {
     std::vector<StaticMeshPart> parts;
+    std::vector<ImportedTexture> textures;
 };
 
 struct ModelImportError {
@@ -56,5 +60,9 @@ using GltfBufferResolver =
 // The resolver supplies a glTF document's external buffer contents. The importer does not open files.
 [[nodiscard]] STAR_ASSETPIPELINE_API std::expected<ImportedStaticModel, ModelImportError>
 importGltfStaticModel(std::span<const std::byte> source, const GltfBufferResolver &resolve_buffer = {});
+
+// The resolver supplies external buffer and image contents for this entry point.
+[[nodiscard]] STAR_ASSETPIPELINE_API std::expected<ImportedStaticModel, ModelImportError>
+importGltfTexturedModel(std::span<const std::byte> source, const GltfBufferResolver &resolve_resource = {});
 
 } // namespace star::asset_pipeline
