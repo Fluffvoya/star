@@ -1,5 +1,6 @@
 #include "asset-pipeline/model_importer.hpp"
 #include "asset-pipeline/texture_importer.hpp"
+#include "asset/asset_manager.hpp"
 #include "cluster_sizes.h"
 #include "environment.hpp"
 #include "sample_material.hpp"
@@ -22,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -80,6 +82,24 @@ ImportedStaticModel importModel(const std::filesystem::path &path) {
         throw std::runtime_error(model.error().message);
     }
     return std::move(*model);
+}
+
+using SampleModel = std::variant<ImportedStaticModel, star::AssetHandle<star::StaticModelAsset>>;
+
+SampleModel loadModel(const std::filesystem::path &path) {
+    if (path.extension() != ".smdl") {
+        return importModel(path);
+    }
+    star::AssetManager manager;
+    const star::AssetRef<star::StaticModelAsset> reference{star::Guid::generate()};
+    if (!manager.registerAsset<star::StaticModelAsset>(reference.guid, path)) {
+        throw std::runtime_error("Cannot register derived model " + path.string());
+    }
+    auto loaded = reference.load(manager);
+    if (!loaded) {
+        throw std::runtime_error("Cannot load derived model " + path.string());
+    }
+    return std::move(*loaded);
 }
 
 struct Buffer {
@@ -1029,7 +1049,10 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("Frames must be a positive integer");
             }
         }
-        const auto model = importModel(source);
+        const auto loaded = loadModel(source);
+        const auto *source_model = std::get_if<ImportedStaticModel>(&loaded);
+        const auto &model =
+            source_model ? *source_model : *std::get<star::AssetHandle<star::StaticModelAsset>>(loaded).get();
         VulkanRuntime gpu;
         if (const auto initialized = gpu.initialize(true); !initialized || !gpu.validationEnabled) {
             throw std::runtime_error("A Vulkan device with validation is required");

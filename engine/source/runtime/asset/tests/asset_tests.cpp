@@ -151,6 +151,50 @@ STAR_TEST(asset_manager_loads_a_static_model_without_model_parsers) {
     STAR_CHECK(decoded->parts.at(0).vertices.at(1).position == part.vertices.at(1).position);
 
     auto corrupt = *payload;
-    corrupt.back() = std::byte{1};
+    corrupt.at(corrupt.size() - 1) = std::byte{1};
     STAR_CHECK(!readModelAsset(corrupt).has_value());
+}
+
+STAR_TEST(typed_asset_requests_share_background_decode_and_retain_the_result) {
+    const TextureAsset texture{TextureColorSpace::Normal, {{1, 1, {128, 128, 255, 255}}}};
+    AssetFile file;
+    file.write(asText(writeTextureAsset(texture).value()));
+    const AssetRef<TextureAsset> reference{Guid::generate()};
+    AssetHandle<TextureAsset> retained;
+    {
+        AssetManager manager;
+        STAR_CHECK(manager.registerAsset<TextureAsset>(reference.guid, file.path).has_value());
+        const auto wrong_type = manager.loadAsync<StaticModelAsset>(reference.guid);
+        STAR_CHECK(!wrong_type.has_value());
+        STAR_CHECK(wrong_type.error() == AssetLoadError::TypeMismatch);
+        auto first = reference.loadAsync(manager);
+        STAR_CHECK(first.has_value());
+        STAR_CHECK(first->getState() == AssetState::Loading);
+        STAR_CHECK(first->get() == nullptr);
+        auto second = reference.load(manager);
+        STAR_CHECK(second.has_value());
+        STAR_CHECK(first->isReady());
+        STAR_CHECK(second->get() == first->get());
+        retained = std::move(*second);
+    }
+    STAR_CHECK(retained.isReady());
+    STAR_CHECK(*retained.get() == texture);
+}
+
+STAR_TEST(typed_asset_requests_report_decode_failures) {
+    AssetFile file;
+    file.write("invalid texture");
+    const auto id = Guid::generate();
+    AssetHandle<TextureAsset> handle;
+    {
+        AssetManager manager;
+        STAR_CHECK(manager.registerAsset<TextureAsset>(id, file.path).has_value());
+        handle = manager.loadAsync<TextureAsset>(id).value();
+        const auto failed = manager.load<TextureAsset>(id);
+        STAR_CHECK(!failed.has_value());
+        STAR_CHECK(failed.error() == AssetLoadError::DecodeFailed);
+    }
+    STAR_CHECK(handle.getState() == AssetState::Failed);
+    STAR_CHECK(handle.getError() == AssetLoadError::DecodeFailed);
+    STAR_CHECK(handle.get() == nullptr);
 }
