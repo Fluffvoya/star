@@ -1,4 +1,5 @@
 #include "asset-pipeline/model_importer.hpp"
+#include "cluster_sizes.h"
 #include "vulkan_runtime.hpp"
 
 #include <algorithm>
@@ -152,6 +153,16 @@ struct DrawConstants {
     std::array<float, 4> eye;
     std::array<float, 4> albedo;
     std::array<float, 4> factors;
+    std::array<float, 4> cluster_params;
+};
+
+static_assert(sizeof(DrawConstants) == 128);
+constexpr auto all_shader_stages =
+    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+
+struct PointLight {
+    std::array<float, 4> position_radius;
+    std::array<float, 4> color_intensity;
 };
 
 struct DrawPart {
@@ -192,13 +203,16 @@ DrawConstants makeCamera(std::span<const StaticMeshVertex> vertices) {
     constants.clip_z = row(forward * scale_z);
     constants.clip_z[3] -= near_plane * scale_z;
     constants.eye = {eye.x, eye.y, eye.z, 1.0F};
+    constants.cluster_params = {near_plane, far_plane, static_cast<float>(resolution.width),
+                                static_cast<float>(resolution.height)};
     return constants;
 }
 
 class ForwardSample {
   public:
     explicit ForwardSample(const VulkanRuntime &gpu)
-        : m_gpu(gpu), m_vertices{gpu}, m_indices{gpu}, m_capture{gpu}, m_color{gpu}, m_depth{gpu} {}
+        : m_gpu(gpu), m_vertices{gpu}, m_indices{gpu}, m_capture{gpu}, m_lights{gpu}, m_cluster_lists{gpu},
+          m_color{gpu}, m_depth{gpu} {}
 
     ~ForwardSample() {
         const auto &vk = m_gpu.vk;
@@ -206,7 +220,10 @@ class ForwardSample {
         vk.vkDeviceWaitIdle(device);
         vk.vkDestroyPipeline(device, m_prepass, nullptr);
         vk.vkDestroyPipeline(device, m_forward, nullptr);
+        vk.vkDestroyPipeline(device, m_cluster_pipeline, nullptr);
         vk.vkDestroyPipelineLayout(device, m_layout, nullptr);
+        vk.vkDestroyDescriptorPool(device, m_descriptor_pool, nullptr);
+        vk.vkDestroyDescriptorSetLayout(device, m_descriptor_layout, nullptr);
         vk.vkDestroyQueryPool(device, m_queries, nullptr);
         vk.vkDestroyFence(device, m_fence, nullptr);
         vk.vkDestroyCommandPool(device, m_pool, nullptr);
@@ -220,16 +237,24 @@ class ForwardSample {
     VkPipeline createPipeline(VkShaderModule vertex, VkShaderModule fragment) const;
     VkShaderModule loadShader(const std::filesystem::path &path) const;
     void renderPass(bool depth_only) const;
+    void createLightingDescriptors();
+    void dispatchClusters() const;
 
     const VulkanRuntime &m_gpu;
     Buffer m_vertices;
     Buffer m_indices;
     Buffer m_capture;
+    Buffer m_lights;
+    Buffer m_cluster_lists;
     Image m_color;
     Image m_depth;
     std::vector<DrawPart> m_parts;
     DrawConstants m_camera{};
     VkPipelineLayout m_layout = VK_NULL_HANDLE;
+    VkDescriptorPool m_descriptor_pool = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_descriptor_layout = VK_NULL_HANDLE;
+    VkDescriptorSet m_descriptors = VK_NULL_HANDLE;
+    VkPipeline m_cluster_pipeline = VK_NULL_HANDLE;
     VkPipeline m_prepass = VK_NULL_HANDLE;
     VkPipeline m_forward = VK_NULL_HANDLE;
     VkCommandPool m_pool = VK_NULL_HANDLE;
@@ -239,6 +264,9 @@ class ForwardSample {
 };
 
 void ForwardSample::initialize(const ImportedStaticModel &model, const std::filesystem::path &assets) {
+    if ((m_gpu.queueProperties.queueFlags & VK_QUEUE_COMPUTE_BIT) == 0) {
+        throw std::runtime_error("The graphics queue must also support compute shaders");
+    }
     std::vector<StaticMeshVertex> vertices;
     std::vector<std::uint32_t> indices;
     for (const auto &part : model.parts) {
@@ -291,9 +319,11 @@ void ForwardSample::initialize(const ImportedStaticModel &model, const std::file
         query.queryCount = 2;
         check(vk.vkCreateQueryPool(device, &query, nullptr, &m_queries), "Create timestamp queries");
     }
-    const VkPushConstantRange constants{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                                        sizeof(DrawConstants)};
+    createLightingDescriptors();
+    const VkPushConstantRange constants{all_shader_stages, 0, sizeof(DrawConstants)};
     auto layout = vkInfo<VkPipelineLayoutCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+    layout.setLayoutCount = 1;
+    layout.pSetLayouts = &m_descriptor_layout;
     layout.pushConstantRangeCount = 1;
     layout.pPushConstantRanges = &constants;
     check(vk.vkCreatePipelineLayout(device, &layout, nullptr, &m_layout), "Create pipeline layout");
@@ -304,6 +334,102 @@ void ForwardSample::initialize(const ImportedStaticModel &model, const std::file
     const Shader fragment(loadShader(assets / "forward-fragment.spv"), destroy_shader);
     m_prepass = createPipeline(vertex.get(), VK_NULL_HANDLE);
     m_forward = createPipeline(vertex.get(), fragment.get());
+    const Shader cluster(loadShader(assets / "forward-cluster.spv"), destroy_shader);
+    auto compute = vkInfo<VkComputePipelineCreateInfo>(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
+    compute.stage = vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
+    compute.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    compute.stage.module = cluster.get();
+    compute.stage.pName = "main";
+    compute.layout = m_layout;
+    check(vk.vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compute, nullptr, &m_cluster_pipeline),
+          "Create cluster compute pipeline");
+}
+
+void ForwardSample::createLightingDescriptors() {
+    const auto &vk = m_gpu.vk;
+    const auto device = m_gpu.device;
+    const float radius = m_camera.cluster_params[0] / 0.05F;
+    const auto &eye = m_camera.eye;
+    const auto &forward = m_camera.clip_w;
+    const auto light = [&](Vector3 offset, float range, std::array<float, 3> color, float intensity) {
+        const auto position = Vector3{eye[0], eye[1], eye[2]} +
+                              Vector3{forward[0], forward[1], forward[2]} * (radius * 2.6F) + offset * radius;
+        return PointLight{{position.x, position.y, position.z, radius * range},
+                          {color[0], color[1], color[2], intensity * radius * radius}};
+    };
+    const std::array lights{
+        light({-0.42F, 0.48F, 0.20F}, 0.75F, {1.0F, 0.55F, 0.20F}, 1.8F),
+        light({0.42F, 0.28F, 0.38F}, 0.72F, {0.20F, 0.45F, 1.0F}, 1.6F),
+        light({0.03F, 0.41F, -0.42F}, 0.62F, {0.20F, 1.0F, 0.48F}, 1.0F),
+    };
+    static_assert(lights.size() <= STAR_CLUSTER_MAX_LIGHTS);
+    m_lights.upload(std::as_bytes(std::span(lights)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    constexpr auto cluster_bytes = STAR_CLUSTER_COLUMNS * STAR_CLUSTER_ROWS * STAR_CLUSTER_SLICES *
+                                   (1 + STAR_CLUSTER_MAX_LIGHTS) * sizeof(std::uint32_t);
+    m_cluster_lists.create(cluster_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, MemoryType::GpuOnly);
+
+    constexpr auto lighting_stages = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    constexpr std::array bindings{
+        VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, lighting_stages, nullptr},
+        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+    };
+    auto layout = vkInfo<VkDescriptorSetLayoutCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
+    layout.bindingCount = static_cast<std::uint32_t>(bindings.size());
+    layout.pBindings = bindings.data();
+    check(vk.vkCreateDescriptorSetLayout(device, &layout, nullptr, &m_descriptor_layout), "Create descriptor layout");
+    constexpr VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3};
+    auto pool = vkInfo<VkDescriptorPoolCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
+    pool.maxSets = 1;
+    pool.poolSizeCount = 1;
+    pool.pPoolSizes = &pool_size;
+    check(vk.vkCreateDescriptorPool(device, &pool, nullptr, &m_descriptor_pool), "Create descriptor pool");
+    auto sets = vkInfo<VkDescriptorSetAllocateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO);
+    sets.descriptorPool = m_descriptor_pool;
+    sets.descriptorSetCount = 1;
+    sets.pSetLayouts = &m_descriptor_layout;
+    check(vk.vkAllocateDescriptorSets(device, &sets, &m_descriptors), "Allocate lighting descriptor set");
+    const std::array buffers{
+        VkDescriptorBufferInfo{m_lights.handle, 0, VK_WHOLE_SIZE},
+        VkDescriptorBufferInfo{m_cluster_lists.handle, 0, VK_WHOLE_SIZE},
+        VkDescriptorBufferInfo{m_cluster_lists.handle, 0, VK_WHOLE_SIZE},
+    };
+    std::array<VkWriteDescriptorSet, buffers.size()> writes{};
+    for (std::uint32_t binding = 0; binding < writes.size(); ++binding) {
+        auto &write = writes[binding];
+        write = vkInfo<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+        write.dstSet = m_descriptors;
+        write.dstBinding = binding;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &buffers[binding];
+    }
+    vk.vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
+void ForwardSample::dispatchClusters() const {
+    static_assert(STAR_CLUSTER_COLUMNS % STAR_CLUSTER_WORKGROUP_X == 0);
+    static_assert(STAR_CLUSTER_ROWS % STAR_CLUSTER_WORKGROUP_Y == 0);
+    static_assert(STAR_CLUSTER_SLICES % STAR_CLUSTER_WORKGROUP_Z == 0);
+    const auto &vk = m_gpu.vk;
+    vk.vkCmdBindPipeline(m_commands, VK_PIPELINE_BIND_POINT_COMPUTE, m_cluster_pipeline);
+    vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_COMPUTE, m_layout, 0, 1, &m_descriptors, 0, nullptr);
+    vk.vkCmdPushConstants(m_commands, m_layout, all_shader_stages, 0, sizeof(m_camera), &m_camera);
+    vk.vkCmdDispatch(m_commands, STAR_CLUSTER_COLUMNS / STAR_CLUSTER_WORKGROUP_X,
+                     STAR_CLUSTER_ROWS / STAR_CLUSTER_WORKGROUP_Y, STAR_CLUSTER_SLICES / STAR_CLUSTER_WORKGROUP_Z);
+    auto barrier = vkInfo<VkBufferMemoryBarrier2>(VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = m_cluster_lists.handle;
+    barrier.size = VK_WHOLE_SIZE;
+    auto dependency = vkInfo<VkDependencyInfo>(VK_STRUCTURE_TYPE_DEPENDENCY_INFO);
+    dependency.bufferMemoryBarrierCount = 1;
+    dependency.pBufferMemoryBarriers = &barrier;
+    vk.vkCmdPipelineBarrier2(m_commands, &dependency);
 }
 
 VkShaderModule ForwardSample::loadShader(const std::filesystem::path &path) const {
@@ -414,6 +540,10 @@ void ForwardSample::renderPass(bool depth_only) const {
     rendering.pDepthAttachment = &depth;
     vk.vkCmdBeginRendering(m_commands, &rendering);
     vk.vkCmdBindPipeline(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, depth_only ? m_prepass : m_forward);
+    if (!depth_only) {
+        vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 0, 1, &m_descriptors, 0,
+                                   nullptr);
+    }
     constexpr VkDeviceSize offset = 0;
     vk.vkCmdBindVertexBuffers(m_commands, 0, 1, &m_vertices.handle, &offset);
     vk.vkCmdBindIndexBuffer(m_commands, m_indices.handle, 0, VK_INDEX_TYPE_UINT32);
@@ -421,8 +551,7 @@ void ForwardSample::renderPass(bool depth_only) const {
         auto push = m_camera;
         push.albedo = part.albedo;
         push.factors = part.factors;
-        vk.vkCmdPushConstants(m_commands, m_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                              sizeof(push), &push);
+        vk.vkCmdPushConstants(m_commands, m_layout, all_shader_stages, 0, sizeof(push), &push);
         vk.vkCmdDrawIndexed(m_commands, part.index_count, 1, part.index_offset, part.vertex_offset, 0);
     }
     vk.vkCmdEndRendering(m_commands);
@@ -443,6 +572,7 @@ double ForwardSample::draw() {
     };
     transition(m_depth, TextureState::Undefined, TextureState::DepthAttachment);
     renderPass(true);
+    dispatchClusters();
     transition(m_depth, TextureState::DepthAttachment, TextureState::DepthAttachment);
     transition(m_color, TextureState::Undefined, TextureState::ColorAttachment);
     renderPass(false);
