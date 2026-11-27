@@ -10,3 +10,4 @@
 | 06 材质资产与变体键 | [Linux x64 验证记录](06-material-assets.md) |
 | 07 Vulkan 前向渲染 | [Linux x64 软件 Vulkan 验证记录](07-forward-rendering.md) |
 | 08 GPU 分簇光照 | [Linux x64 软件 Vulkan 验证记录](08-clustered-lighting.md) |
+| 09 方向光级联阴影 | [Linux x64 软件 Vulkan 验证记录](09-cascaded-shadows.md) |

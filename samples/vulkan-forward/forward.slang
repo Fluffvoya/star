@@ -38,6 +38,71 @@ struct PointLight
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> clusterOutput;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> clusterLists;
 
+struct ShadowView
+{
+    float4 clipX;
+    float4 clipY;
+    float4 clipZ;
+};
+
+struct ShadowFrame
+{
+    ShadowView views[STAR_SHADOW_CASCADES];
+    float4 splitDistances;
+    float4 lightDirection;
+};
+
+[[vk::binding(3, 0)]] ConstantBuffer<ShadowFrame> shadowFrame;
+[[vk::binding(4, 0)]] Texture2DArray<float> shadowDepth;
+
+float shadowVisibility(float3 world, float depth, float nDotL)
+{
+    float3 worldDx = ddx(world);
+    float3 worldDy = ddy(world);
+    uint cascade = 0;
+    for (; cascade + 1 < STAR_SHADOW_CASCADES && depth > shadowFrame.splitDistances[cascade]; ++cascade)
+    {
+    }
+    ShadowView view = shadowFrame.views[cascade];
+    float4 position = float4(world, 1.0);
+    float2 uv = float2(dot(view.clipX, position), dot(view.clipY, position)) * 0.5 + 0.5;
+    float z = dot(view.clipZ, position);
+    if (any(uv < 0.0) || any(uv >= 1.0) || z < 0.0 || z > 1.0)
+    {
+        return 1.0;
+    }
+    uint width;
+    uint height;
+    uint layers;
+    shadowDepth.GetDimensions(width, height, layers);
+    int2 maximum = int2(width, height) - 1;
+    float2 resolution = float2(width, height);
+    int2 texel = int2(uv * resolution);
+    // Project screen-space surface derivatives to the shadow plane.
+    float3 dx = float3(dot(view.clipX.xyz, worldDx) * 0.5, dot(view.clipY.xyz, worldDx) * 0.5,
+                       dot(view.clipZ.xyz, worldDx));
+    float3 dy = float3(dot(view.clipX.xyz, worldDy) * 0.5, dot(view.clipY.xyz, worldDy) * 0.5,
+                       dot(view.clipZ.xyz, worldDy));
+    float determinant = dx.x * dy.y - dx.y * dy.x;
+    float2 slope = float2(0.0);
+    if (abs(determinant) > 1e-10)
+    {
+        slope = float2(dx.z * dy.y - dy.z * dx.y, dy.z * dx.x - dx.z * dy.x) / determinant;
+    }
+    float bias = max(0.00010, 0.00030 * (1.0 - saturate(nDotL)));
+    float visibility = 0.0;
+    for (int y = -1; y <= 1; ++y)
+    {
+        for (int x = -1; x <= 1; ++x)
+        {
+            int2 tap = clamp(texel + int2(x, y), int2(0), maximum);
+            float depthAtTap = z + dot(slope, (float2(tap) + 0.5) / resolution - uv);
+            visibility += depthAtTap - bias <= shadowDepth.Load(int4(tap, cascade, 0)) ? 1.0 : 0.0;
+        }
+    }
+    return visibility / 9.0;
+}
+
 uint clusterOffset(uint3 cell)
 {
     return ((cell.z * STAR_CLUSTER_ROWS + cell.y) * STAR_CLUSTER_COLUMNS + cell.x) *
@@ -124,10 +189,11 @@ float4 fragmentMain(Varyings input, bool frontFacing : SV_IsFrontFace) : SV_Targ
 {
     float3 n = normalize(input.worldNormal) * (frontFacing ? 1.0 : -1.0);
     float3 v = normalize(draw.eye.xyz - input.worldPosition);
-    float3 l = normalize(float3(-0.45, 0.85, 0.35));
-    float3 linear = evaluateBrdf(n, v, l) * 3.5 + 0.10 * draw.albedo.rgb;
-
+    float3 l = shadowFrame.lightDirection.xyz;
     float depth = dot(draw.clipW, float4(input.worldPosition, 1.0));
+    float shadow = shadowVisibility(input.worldPosition, depth, dot(n, l));
+    float3 linear = evaluateBrdf(n, v, l) * (3.5 * shadow) + 0.10 * draw.albedo.rgb;
+
     float z = saturate(log(depth / draw.clusterParams.x) / log(draw.clusterParams.y / draw.clusterParams.x));
     uint2 tile = min(uint2(input.position.xy / draw.clusterParams.zw * float2(STAR_CLUSTER_COLUMNS, STAR_CLUSTER_ROWS)),
                      uint2(STAR_CLUSTER_COLUMNS - 1, STAR_CLUSTER_ROWS - 1));
