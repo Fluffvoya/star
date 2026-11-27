@@ -71,6 +71,8 @@ if(TARGET StarHeaderTool)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/generated_reflection_incremental.cmake")
 endif()
 
+target_sources(StarAssetTests PRIVATE "${PROJECT_SOURCE_DIR}/engine/source/runtime/asset/tests/material_tests.cpp")
+
 find_package(Threads REQUIRED)
 find_package(SDL3 3.2 REQUIRED CONFIG)
 target_sources(StarCoreTests PRIVATE config_tests.cpp containers_tests.cpp cvar_tests.cpp delegate_tests.cpp global_allocator_tests.cpp math_tests.cpp small_vector_tests.cpp)
