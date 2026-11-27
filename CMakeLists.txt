@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.28)
+
+option(STAR_BUILD_ASSET_PIPELINE "Build source asset import and derived data tools" ON)
+if(STAR_BUILD_ASSET_PIPELINE AND NOT "asset-pipeline" IN_LIST VCPKG_MANIFEST_FEATURES)
+    list(APPEND VCPKG_MANIFEST_FEATURES asset-pipeline)
+endif()
+
 project(StarEngine VERSION 0.1.0 DESCRIPTION "Star Engine" LANGUAGES C CXX)
 
 option(STAR_BUILD_SAMPLES "Build sample programs" ON)
@@ -91,7 +97,9 @@ add_subdirectory(engine/source/runtime/jobs)
 add_subdirectory(engine/source/runtime/asset)
 add_subdirectory(engine/source/runtime/renderer)
 add_subdirectory(engine/source/runtime/platform)
-add_subdirectory(engine/source/editor/asset-pipeline)
+if(STAR_BUILD_ASSET_PIPELINE)
+    add_subdirectory(engine/source/editor/asset-pipeline)
+endif()
 
 if(STAR_BUILD_HEADER_TOOL)
     add_subdirectory(tools/star-header-tool)

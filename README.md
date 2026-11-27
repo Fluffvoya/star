@@ -15,7 +15,7 @@ asynchronous runs, priority queues, parallel-for helpers, and nested-safe job wa
 - A C++23 compiler and a C compiler
 - SDL3 3.2 or newer
 - xxHash 0.8 or newer
-- fastgltf (from the vcpkg manifest)
+- fastgltf for source asset tools (from the vcpkg manifest)
 
 Reflection generation uses libclang 18 or newer and its matching Clang driver. CMake skips
 StarHeaderTool when libclang is unavailable. The `generated-reflection` and
@@ -42,6 +42,11 @@ cmake --preset linux-dev
 cmake --build --preset linux-dev
 ctest --preset linux-dev --output-on-failure
 ```
+
+Set `-DSTAR_BUILD_ASSET_PIPELINE=OFF` to configure a runtime-only build without the source asset
+importers or the forward rendering import sample. The Renderer module consumes derived model and
+texture assets. With the vcpkg toolchain, CMake selects the `asset-pipeline` manifest feature when
+the source asset tools are enabled.
 
 The preset uses `build/linux-dev/`. For a custom build, pass the same directory to configure and build.
 

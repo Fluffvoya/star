@@ -1,4 +1,4 @@
-if(NOT TARGET StarForwardShaders)
+if(NOT TARGET StarForwardShaders OR NOT TARGET StarAssetPipeline)
     return()
 endif()
 

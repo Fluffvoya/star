@@ -19,3 +19,4 @@
 | 15 静态模型派生数据 | [Linux x64 验证记录](15-model-cache-integration.md) |
 | 16 类型化资产与端到端验证 | [Linux x64 软件 Vulkan 验证记录](16-typed-asset-loading.md) |
 | 17 独立运行时 Renderer | [Linux x64 软件 Vulkan 验证记录](17-runtime-forward-renderer.md) |
+| 18 纯运行时构建与基础验收 | [Linux x64 验收记录](18-runtime-only-acceptance.md) |
