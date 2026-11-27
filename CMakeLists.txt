@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(StarEngine VERSION 0.1.0 DESCRIPTION "Star Engine" LANGUAGES CXX)
+project(StarEngine VERSION 0.1.0 DESCRIPTION "Star Engine" LANGUAGES C CXX)
 
 option(STAR_BUILD_SAMPLES "Build sample programs" ON)
 option(STAR_BUILD_TESTS "Build local tests" ON)
@@ -56,14 +56,14 @@ add_compile_definitions(
 
 if(MSVC)
     add_compile_options(
-        /W4 /permissive- /utf-8 /Zc:__cplusplus
+        /W4 /utf-8 $<$<COMPILE_LANGUAGE:CXX>:/permissive-> $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>
         $<$<CONFIG:Debug>:/Od>
         $<$<CONFIG:Development,Profile,Shipping>:/O2>
         $<$<NOT:$<CONFIG:Debug>>:/Oi>
     )
 else()
     add_compile_options(
-        -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnon-virtual-dtor
+        -Wall -Wextra -Wpedantic -Wconversion -Wshadow $<$<COMPILE_LANGUAGE:CXX>:-Wnon-virtual-dtor>
         $<$<CONFIG:Debug>:-O0>
         $<$<CONFIG:Development,Profile>:-O2>
         $<$<CONFIG:Debug,Development,Profile>:-g>

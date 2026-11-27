@@ -12,9 +12,10 @@ asynchronous runs, priority queues, parallel-for helpers, and nested-safe job wa
 
 - CMake 3.28 or newer
 - Ninja
-- A C++23 compiler
+- A C++23 compiler and a C compiler
 - SDL3 3.2 or newer
 - xxHash 0.8 or newer
+- fastgltf (from the vcpkg manifest)
 
 Reflection generation uses libclang 18 or newer and its matching Clang driver. CMake skips
 StarHeaderTool when libclang is unavailable. The `generated-reflection` and
@@ -26,8 +27,9 @@ Initialize the pinned EnTT 3.14.0 (MIT) and rapidyaml dependencies after cloning
 git submodule update --init --recursive
 ```
 
-Linux Debug and Development presets discover dependencies installed through the system package manager.
-If a required dependency is missing or incompatible, set `VCPKG_ROOT` and configure a separate build
+Linux Debug and Development presets discover installed CMake packages. If fastgltf is installed in a
+separate vcpkg prefix, pass that prefix in `CMAKE_PREFIX_PATH`. To install dependencies from the project
+manifest, set `VCPKG_ROOT` and configure a separate build
 with `cmake --preset linux-dev -B build/linux-dev-vcpkg -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"`.
 
 Configure Shipping and Profile builds with the vcpkg toolchain on the target host.
