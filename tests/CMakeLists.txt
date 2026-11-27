@@ -16,6 +16,7 @@ foreach(module IN ITEMS Core Reflection Serialization Scene RHI Jobs Platform As
     if(module STREQUAL "AssetPipeline")
         set(test_source "${module_source_dir}/tests/asset_database_tests.cpp")
         list(APPEND test_source "${module_source_dir}/tests/derived_data_cache_tests.cpp")
+        list(APPEND test_source "${module_source_dir}/tests/texture_importer_tests.cpp")
     elseif(module MATCHES "^(Serialization|Scene)$")
         set(test_source "${module_source_dir}/tests/${module_slug}_tests.cpp")
     else()

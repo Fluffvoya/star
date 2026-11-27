@@ -1,0 +1,82 @@
+#include "asset-pipeline/texture_importer.hpp"
+#include "test_support.hpp"
+
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <initializer_list>
+#include <vector>
+
+namespace {
+
+using namespace star::asset_pipeline;
+
+std::vector<std::uint8_t> makeTga(std::initializer_list<std::array<std::uint8_t, 3>> pixels) {
+    std::vector<std::uint8_t> image(18, 0);
+    image[2] = 2; // Uncompressed true-color TGA.
+    image[12] = static_cast<std::uint8_t>(pixels.size());
+    image[14] = 1;
+    image[16] = 24;
+    image[17] = 32; // Top-left origin.
+    for (const auto &pixel : pixels) {
+        image.insert(image.end(), {pixel[2], pixel[1], pixel[0]});
+    }
+    return image;
+}
+
+} // namespace
+
+STAR_TEST(texture_importer_filters_srgb_in_linear_light_and_includes_odd_edges) {
+    const auto source = makeTga({{0, 0, 0}, {0, 0, 0}, {255, 255, 255}});
+    const auto bytes = std::as_bytes(std::span(source));
+    const auto color = importTexture(bytes);
+    STAR_CHECK(color.has_value());
+    STAR_CHECK(color->mips.size() == 2);
+    STAR_CHECK(color->mips[0].width == 3);
+    STAR_CHECK(color->mips[0].rgba[8] == 255);
+    STAR_CHECK(color->mips[1].width == 1);
+    STAR_CHECK(color->mips[1].height == 1);
+    STAR_CHECK(color->mips[1].rgba[0] == 156);
+    STAR_CHECK(color->mips[1].rgba[3] == 255);
+
+    const auto linear = importTexture(bytes, {TextureUsage::Linear, true});
+    STAR_CHECK(linear.has_value());
+    STAR_CHECK(linear->mips[1].rgba[0] == 85);
+
+    const auto base_only = importTexture(bytes, {TextureUsage::Linear, false});
+    STAR_CHECK(base_only.has_value());
+    STAR_CHECK(base_only->mips.size() == 1);
+}
+
+STAR_TEST(texture_importer_renormalizes_normal_mips) {
+    const auto source = makeTga({{255, 128, 128}, {128, 128, 255}});
+    const auto texture = importTexture(std::as_bytes(std::span(source)), {TextureUsage::Normal, true});
+    STAR_CHECK(texture.has_value());
+    const auto &pixel = texture->mips.at(1).rgba;
+    const auto x = pixel[0] / 255.0 * 2.0 - 1.0;
+    const auto y = pixel[1] / 255.0 * 2.0 - 1.0;
+    const auto z = pixel[2] / 255.0 * 2.0 - 1.0;
+    STAR_CHECK(std::abs(std::hypot(x, y, z) - 1.0) < 0.01);
+    STAR_CHECK(x > 0.7);
+    STAR_CHECK(z > 0.7);
+}
+
+STAR_TEST(texture_importer_rejects_unknown_input) {
+    const std::array data{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
+    const auto result = importTexture(data);
+    STAR_CHECK(!result.has_value());
+    STAR_CHECK(!result.error().message.empty());
+}
+
+STAR_TEST(texture_importer_preserves_png_alpha) {
+    constexpr std::uint8_t png[] = {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+                                    0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+                                    0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78,
+                                    0x9c, 0x63, 0xe0, 0x12, 0x91, 0xd3, 0x00, 0x00, 0x00, 0xcd, 0x00, 0x65, 0x6a, 0x99,
+                                    0x84, 0x42, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+    const auto result = importTexture(std::as_bytes(std::span(png)));
+    STAR_CHECK(result.has_value());
+    STAR_CHECK(result->mips.size() == 1);
+    const std::vector<std::uint8_t> expected{10, 20, 30, 40};
+    STAR_CHECK(result->mips[0].rgba == expected);
+}
