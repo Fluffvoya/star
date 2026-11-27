@@ -85,3 +85,14 @@ ctest --test-dir $buildDir -L windows-vulkan --output-on-failure
 ```
 
 开启选项后，完整 CTest 也会运行 `windows-vulkan-rhi` 和 `windows-vulkan-present`。Vulkan 实机结果和抓帧步骤见 [M2 Windows 验收阶段报告](progress/m2/10-windows-acceptance.md)。
+
+## 运行 M4 渲染样例
+
+同时启用资产管线和 Slang 的构建会生成 `bin/star-vulkan-forward.exe`。它离屏渲染静态模型并写出 PPM，默认读取构建目录中的 `forward-scene.obj`。
+
+```powershell
+& "$buildDir/bin/star-vulkan-forward.exe" forward-scene.obj fixed-scene.ppm 30
+& "$buildDir/bin/star-vulkan-forward.exe" MetalRoughSpheresNoTextures.glb metal-rough-values.ppm 30 --front
+```
+
+`--material=` 指定材质文件，`.smdl` 参数按派生数据路径加载模型。标准场景来源、帧时和派生数据复验步骤见 [M4 Windows 验收阶段报告](progress/m4/19-windows-acceptance.md)。
