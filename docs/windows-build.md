@@ -10,10 +10,8 @@ git submodule update --init --recursive
 $buildDir = 'build/windows-dev'
 $triplet = 'x64-mingw-dynamic'
 $gcc = (Get-Command g++.exe).Source
-$toolchain = Join-Path $env:VCPKG_ROOT 'scripts/buildsystems/vcpkg.cmake'
 $cmakeArgs = @(
     "-DCMAKE_CXX_COMPILER=$gcc"
-    "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
     "-DVCPKG_TARGET_TRIPLET=$triplet"
     '-DVCPKG_HOST_TRIPLET=x64-mingw-static'
     '-DSTAR_TEST_WINDOWS_VULKAN=OFF'
@@ -22,7 +20,7 @@ cmake --preset win-dev -B $buildDir @cmakeArgs
 cmake --build $buildDir
 ```
 
-EnTT 3.14.0 和 rapidyaml 由 Git 子模块提供。vcpkg 在配置时安装仓库清单中的其他依赖。产物位于 `$buildDir/bin` 和 `$buildDir/lib`。编译器或 triplet 变化时，为新配置选用独立的构建目录。
+EnTT 3.14.0 和 rapidyaml 由 Git 子模块提供。Windows 预设从 `VCPKG_ROOT` 选择工具链，vcpkg 在配置时按根目录清单安装其他依赖。产物位于 `$buildDir/bin` 和 `$buildDir/lib`。编译器或 triplet 变化时，为新配置选用独立的构建目录。
 
 | 预设 | vcpkg 目标 triplet | 运行时依赖目录 |
 | --- | --- | --- |
