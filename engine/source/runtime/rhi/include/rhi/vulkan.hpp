@@ -2,12 +2,24 @@
 
 #include "rhi/rhi.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string_view>
 
 namespace star::rhi {
+
+// Mirrors VkPhysicalDeviceType so the selection policy stays free of Vulkan headers.
+enum class VulkanDeviceType : std::uint8_t {
+    Other = 0,
+    Integrated = 1,
+    Discrete = 2,
+    Virtual = 3,
+    Cpu = 4,
+};
 
 enum class VulkanProbeError : std::uint8_t {
     LoaderUnavailable,
@@ -71,6 +83,11 @@ class STAR_RHI_API VulkanContext final {
 
 [[nodiscard]] STAR_RHI_API std::expected<VulkanProbeInfo, VulkanProbeError>
 probeVulkan(const VulkanProbeOptions &options = {});
+
+// Prefers discrete GPUs, then integrated, virtual, other and CPU devices. Devices of equal type keep
+// their enumeration order. Returns std::nullopt when the list is empty.
+[[nodiscard]] STAR_RHI_API std::optional<std::size_t>
+selectPreferredDevice(std::span<const VulkanDeviceType> deviceTypes) noexcept;
 
 [[nodiscard]] STAR_RHI_API std::expected<VulkanContext, VulkanProbeError>
 createVulkanContext(const VulkanProbeOptions &options = {});

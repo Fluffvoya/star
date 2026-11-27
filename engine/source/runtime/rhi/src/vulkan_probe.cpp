@@ -1,5 +1,7 @@
 #include "rhi/vulkan.hpp"
 
+#include "device_selection.hpp"
+
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_loadso.h>
 
@@ -212,6 +214,16 @@ struct VkPhysicalDeviceMemoryProperties {
     VkMemoryHeap memoryHeaps[16];
 };
 
+// Only the leading fields are read. The driver writes the full structure, so the tail stays opaque.
+struct VkPhysicalDeviceProperties {
+    std::uint32_t apiVersion;
+    std::uint32_t driverVersion;
+    std::uint32_t vendorId;
+    std::uint32_t deviceId;
+    std::uint32_t deviceType;
+    std::uint8_t remainder[2048];
+};
+
 using VkVoidFunction = void (*)();
 using VkGetInstanceProcAddr = VkVoidFunction (*)(VkInstance instance, const char *name);
 using VkEnumerateInstanceVersion = VkResult (*)(std::uint32_t *version);
@@ -262,6 +274,8 @@ using VkBindImageMemory = VkResult (*)(VkDevice device, VkImage image, VkDeviceM
                                        std::uint64_t memoryOffset);
 using VkGetPhysicalDeviceMemoryProperties = void (*)(VkPhysicalDevice physicalDevice,
                                                       VkPhysicalDeviceMemoryProperties *properties);
+using VkGetPhysicalDeviceProperties = void (*)(VkPhysicalDevice physicalDevice,
+                                                VkPhysicalDeviceProperties *properties);
 
 using VulkanLoader = std::unique_ptr<SDL_SharedObject, decltype(&SDL_UnloadObject)>;
 
@@ -732,11 +746,14 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         loadInstance<VkEnumeratePhysicalDevices>(getProcAddr, instance, "vkEnumeratePhysicalDevices");
     const auto getQueueFamilyProperties = loadInstance<VkGetPhysicalDeviceQueueFamilyProperties>(
         getProcAddr, instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+    const auto getPhysicalDeviceProperties =
+        loadInstance<VkGetPhysicalDeviceProperties>(getProcAddr, instance, "vkGetPhysicalDeviceProperties");
     const auto createDevice = loadInstance<VkCreateDevice>(getProcAddr, instance, "vkCreateDevice");
     const auto destroyDevice = loadInstance<VkDestroyDevice>(getProcAddr, instance, "vkDestroyDevice");
     const auto getDeviceQueue = loadInstance<VkGetDeviceQueue>(getProcAddr, instance, "vkGetDeviceQueue");
     if (destroyInstance == nullptr || enumeratePhysicalDevices == nullptr || getQueueFamilyProperties == nullptr ||
-        createDevice == nullptr || destroyDevice == nullptr || getDeviceQueue == nullptr) {
+        getPhysicalDeviceProperties == nullptr || createDevice == nullptr || destroyDevice == nullptr ||
+        getDeviceQueue == nullptr) {
         if (destroyInstance != nullptr) {
             destroyInstance(instance, nullptr);
         }
@@ -760,10 +777,13 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
         return std::unexpected(VulkanProbeError::PhysicalDeviceUnavailable);
     }
 
-    VkPhysicalDevice selectedPhysicalDevice = nullptr;
-    std::uint32_t graphicsFamily = 0;
-    std::uint32_t computeFamily = 0;
-    std::uint32_t copyFamily = 0;
+    struct ProbeCandidate {
+        VkPhysicalDevice device = nullptr;
+        std::uint32_t graphics = 0;
+        std::uint32_t compute = 0;
+        std::uint32_t copy = 0;
+    };
+    std::vector<ProbeCandidate> candidates;
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
         std::uint32_t familyCount = 0;
         getQueueFamilyProperties(physicalDevice, &familyCount, nullptr);
@@ -791,17 +811,33 @@ std::expected<VulkanContext, VulkanProbeError> createVulkanContext(const VulkanP
             }
         }
         if (graphics.has_value()) {
-            selectedPhysicalDevice = physicalDevice;
-            graphicsFamily = *graphics;
-            computeFamily = compute.value_or(graphicsFamily);
-            copyFamily = copy.value_or(computeFamily);
-            break;
+            const std::uint32_t computeFamily = compute.value_or(*graphics);
+            candidates.push_back(
+                ProbeCandidate{physicalDevice, *graphics, computeFamily, copy.value_or(computeFamily)});
         }
     }
-    if (selectedPhysicalDevice == nullptr) {
+    std::vector<VulkanDeviceType> deviceTypes;
+    try {
+        deviceTypes.reserve(candidates.size());
+        for (const ProbeCandidate &candidate : candidates) {
+            VkPhysicalDeviceProperties properties{};
+            getPhysicalDeviceProperties(candidate.device, &properties);
+            deviceTypes.push_back(static_cast<VulkanDeviceType>(properties.deviceType));
+        }
+    } catch (...) {
+        destroyInstance(instance, nullptr);
+        return std::unexpected(VulkanProbeError::OutOfMemory);
+    }
+    const auto selected = selectPreferredDeviceIndex(deviceTypes);
+    if (!selected) {
         destroyInstance(instance, nullptr);
         return std::unexpected(VulkanProbeError::QueueFamilyUnavailable);
     }
+    const ProbeCandidate &chosen = candidates[*selected];
+    VkPhysicalDevice selectedPhysicalDevice = chosen.device;
+    const std::uint32_t graphicsFamily = chosen.graphics;
+    const std::uint32_t computeFamily = chosen.compute;
+    const std::uint32_t copyFamily = chosen.copy;
 
     const float queuePriority = 1.0F;
     std::array<std::uint32_t, 3> familyIndices{graphicsFamily, computeFamily, copyFamily};

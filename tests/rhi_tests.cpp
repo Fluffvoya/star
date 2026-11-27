@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <memory>
+#include <span>
 
 namespace {
 
@@ -82,6 +83,29 @@ STAR_TEST(nullDeviceSubmitsEachCommandListOnce) {
     STAR_CHECK(submit_result && submit_result->value == 1);
     const auto second_submit = device->submit(star::rhi::QueueType::Graphics, command_lists, {});
     STAR_CHECK(!second_submit && second_submit.error() == star::rhi::DeviceError::InvalidState);
+}
+
+STAR_TEST(deviceSelectionPrefersDiscreteGpu) {
+    const std::array types{star::rhi::VulkanDeviceType::Integrated, star::rhi::VulkanDeviceType::Discrete,
+                           star::rhi::VulkanDeviceType::Cpu};
+    const auto selected = star::rhi::selectPreferredDevice(types);
+    STAR_CHECK(selected.has_value() && *selected == 1);
+}
+
+STAR_TEST(deviceSelectionKeepsEnumerationOrderForEqualTypes) {
+    const std::array types{star::rhi::VulkanDeviceType::Integrated, star::rhi::VulkanDeviceType::Integrated};
+    const auto selected = star::rhi::selectPreferredDevice(types);
+    STAR_CHECK(selected.has_value() && *selected == 0);
+}
+
+STAR_TEST(deviceSelectionFallsBackToLowerRankedDevices) {
+    const std::array types{star::rhi::VulkanDeviceType::Cpu, star::rhi::VulkanDeviceType::Virtual};
+    const auto selected = star::rhi::selectPreferredDevice(types);
+    STAR_CHECK(selected.has_value() && *selected == 1);
+}
+
+STAR_TEST(deviceSelectionRejectsEmptyDeviceList) {
+    STAR_CHECK(!star::rhi::selectPreferredDevice(std::span<const star::rhi::VulkanDeviceType>{}));
 }
 
 STAR_TEST(vulkanProbeReportsLoaderOrRuntimeAvailability) {
