@@ -239,8 +239,9 @@ float4 fragmentMain(Varyings input, bool frontFacing : SV_IsFrontFace) : SV_Targ
     {
         PointLight light = pointLights[clusterLists[offset + index + 1]];
         float3 delta = light.positionRadius.xyz - input.worldPosition;
-        float distanceSquared = max(dot(delta, delta), 1e-5);
-        float falloff = saturate(1.0 - distanceSquared / (light.positionRadius.w * light.positionRadius.w));
+        float radiusSquared = light.positionRadius.w * light.positionRadius.w;
+        float distanceSquared = max(dot(delta, delta), radiusSquared * 1e-6);
+        float falloff = saturate(1.0 - distanceSquared / radiusSquared);
         float3 radiance = light.colorIntensity.rgb * (light.colorIntensity.w * falloff * falloff / distanceSquared);
         linear += evaluateBrdf(n, v, delta * rsqrt(distanceSquared)) * radiance;
     }
