@@ -53,6 +53,8 @@ struct ObjectEntry {
     bool spawned = false;
     bool created = false;
     std::uint64_t order = 0;
+    reflect::ModuleId owner = reflect::builtin_module;
+    std::string type_name;
     std::unique_ptr<ObjectArchiveState> archive;
 };
 
@@ -107,6 +109,8 @@ struct SpawnCommand {
     std::unique_ptr<GameObject> object;
     Guid guid;
     std::string name;
+    reflect::ModuleId owner;
+    std::string type_name;
 };
 
 struct ParentCommand {
@@ -143,6 +147,12 @@ struct Scene::Impl {
     bool committing = false;
     bool shutting_down = false;
     std::uint64_t next_order = 0;
+    reflect::ModuleId callback_owner = reflect::builtin_module;
+    template <class F> void invoke(const ObjectEntry &entry, F &&callback) noexcept {
+        const auto previous = std::exchange(callback_owner, entry.owner);
+        std::invoke(callback, *entry.object);
+        callback_owner = previous;
+    }
     serialization::ArchiveValue::Mapping archive_fields;
 
     [[nodiscard]] ObjectEntry *entry(ObjectHandle handle) noexcept;
@@ -280,20 +290,24 @@ void Scene::Impl::destroySubtree(ObjectHandle root, EndPlayReason reason) noexce
         const auto parent = links.parent;
         const auto slot = resolve(node.m_index, node.m_generation);
         const auto &object = *objects.get(slot);
-        auto &instance = *object.object;
-        instance.m_pending_destroy = true;
-        if (std::exchange(instance.m_begun_play, false)) {
-            instance.onEndPlay(reason);
-        }
-        if (std::exchange(instance.m_active_in_hierarchy, false)) {
-            instance.onDisable();
-        }
-        if (object.created) {
-            instance.onDestroy();
-        }
+        object.object->m_pending_destroy = true;
+        invoke(object, [&](GameObject &instance) {
+            if (std::exchange(instance.m_begun_play, false)) {
+                instance.onEndPlay(reason);
+            }
+            if (std::exchange(instance.m_active_in_hierarchy, false)) {
+                instance.onDisable();
+            }
+            if (object.created) {
+                instance.onDestroy();
+            }
+        });
         unlink(links);
         MutationScope scope(mutating);
         by_guid.erase(object.object->getGuid());
+        std::erase_if(pending_components, [&object](const auto &command) { return command.entity == object.entity; });
+        std::erase_if(pending_parents,
+                      [node](const auto &command) { return command.child == node || command.parent == node; });
         for (auto &[type, pool] : components) {
             pool.values.erase(object.entity);
         }
@@ -314,7 +328,8 @@ void Scene::Impl::refreshActivity(bool playing) noexcept {
             continue;
         }
         for (auto node = root; node != ObjectHandle{}; node = nextInSubtree(node, root)) {
-            auto &object = *entry(node)->object;
+            auto &item = *entry(node);
+            auto &object = *item.object;
             if (object.m_pending_destroy) {
                 continue;
             }
@@ -323,13 +338,13 @@ void Scene::Impl::refreshActivity(bool playing) noexcept {
                 object.m_active && (parent == ObjectHandle{} || entry(parent)->object->m_active_in_hierarchy);
             if (std::exchange(object.m_active_in_hierarchy, active) != active) {
                 if (active) {
-                    object.onEnable();
+                    invoke(item, [](GameObject &value) { value.onEnable(); });
                 } else {
-                    object.onDisable();
+                    invoke(item, [](GameObject &value) { value.onDisable(); });
                 }
             }
             if (playing && active && !object.m_pending_destroy && !std::exchange(object.m_begun_play, true)) {
-                object.onBeginPlay();
+                invoke(item, [](GameObject &value) { value.onBeginPlay(); });
             }
         }
     }
@@ -534,6 +549,22 @@ const GameObject *Scene::findObject(const Guid &guid) const noexcept {
 
 std::expected<SpawnToken, SceneError> Scene::queueSpawn(std::string_view name,
                                                         std::unique_ptr<GameObject> object) noexcept {
+    return enqueueSpawn(name, std::move(object), m_impl->callback_owner, {});
+}
+
+std::expected<SpawnToken, SceneError> Scene::queueSpawn(std::string_view name, reflect::TypeId type) noexcept {
+    if (m_impl->mutating || m_impl->shutting_down) {
+        return std::unexpected(SceneError::Busy);
+    }
+    const auto registered = m_world.findGameObjectType(type);
+    if (registered.type == nullptr) {
+        return std::unexpected(SceneError::CreationFailed);
+    }
+    return enqueueSpawn(name, registered.type->create(), registered.owner, registered.type->name);
+}
+
+std::expected<SpawnToken, SceneError> Scene::enqueueSpawn(std::string_view name, std::unique_ptr<GameObject> object,
+                                                          reflect::ModuleId owner, std::string_view type) noexcept {
     if (m_impl->mutating || m_impl->shutting_down) {
         return std::unexpected(SceneError::Busy);
     }
@@ -542,7 +573,7 @@ std::expected<SpawnToken, SceneError> Scene::queueSpawn(std::string_view name,
     }
     try {
         const Guid guid = Guid::generate();
-        m_impl->pending_spawns.push_back({std::move(object), guid, std::string(name)});
+        m_impl->pending_spawns.push_back({std::move(object), guid, std::string(name), owner, std::string(type)});
         return SpawnToken(m_impl->id, guid);
     } catch (...) {
         return std::unexpected(SceneError::ResourceExhausted);
@@ -626,7 +657,9 @@ std::expected<void, SceneError> Scene::commitCommands() noexcept {
             auto &entry = *impl.entry(*attached);
             entry.spawned = true;
             entry.created = true;
-            entry.object->onCreate();
+            entry.owner = spawn.owner;
+            entry.type_name = std::move(spawn.type_name);
+            impl.invoke(entry, [](GameObject &object) { object.onCreate(); });
         } else if (result) {
             result = std::unexpected(attached.error());
         }
@@ -641,11 +674,53 @@ void Scene::endPlay(EndPlayReason reason) noexcept {
     auto &impl = *m_impl;
     MutationScope committing(impl.committing);
     for (std::size_t index = 0; index < impl.objects.getSize(); ++index) {
-        auto &object = *impl.objects.get(impl.objects.getHandleAt(index))->object;
-        if (std::exchange(object.m_begun_play, false)) {
-            object.onEndPlay(reason);
+        auto &entry = *impl.objects.get(impl.objects.getHandleAt(index));
+        if (std::exchange(entry.object->m_begun_play, false)) {
+            impl.invoke(entry, [reason](GameObject &object) { object.onEndPlay(reason); });
         }
     }
+}
+
+bool Scene::hasComponentsOwnedBy(reflect::ModuleId owner) const noexcept {
+    return std::ranges::any_of(m_impl->components,
+                               [owner](const auto &pool) { return pool.second.type->owner == owner; });
+}
+
+void Scene::releaseModuleObjects(reflect::ModuleId owner) noexcept {
+    auto &impl = *m_impl;
+    MutationScope committing(impl.committing);
+    MutationScope shutdown(impl.shutting_down);
+    std::erase_if(impl.pending_spawns, [owner](const auto &spawn) { return spawn.owner == owner; });
+    for (std::size_t index = 0; index < impl.objects.getSize(); ++index) {
+        const auto &entry = *impl.objects.get(impl.objects.getHandleAt(index));
+        if (entry.owner != owner) {
+            continue;
+        }
+        for (auto child = impl.hierarchy(entry.object->getHandle()).first_child; child != ObjectHandle{};) {
+            const auto next = impl.hierarchy(child).next_sibling;
+            if (impl.entry(child)->owner != owner && !impl.entry(child)->object->isPendingDestroy()) {
+                auto &links = impl.hierarchy(child);
+                const auto local = scene_detail::relativeTransform(math::Mat4::identity(), impl.computeWorld(child));
+                auto &target = *impl.entry(child);
+                if (local) {
+                    impl.transform(target.entity) = *local;
+                }
+                impl.unlink(links);
+                target.transform_dirty = true;
+            }
+            child = next;
+        }
+    }
+    std::size_t index = 0;
+    while (index < impl.objects.getSize()) {
+        const auto &entry = *impl.objects.get(impl.objects.getHandleAt(index));
+        if (entry.owner == owner) {
+            impl.destroySubtree(entry.object->getHandle(), EndPlayReason::Destroyed);
+        } else {
+            ++index;
+        }
+    }
+    impl.propagateTransforms();
 }
 
 std::expected<void, SceneError> GameObject::addTickPrerequisite(const GameObject &other) noexcept {
@@ -722,7 +797,7 @@ std::expected<void, SceneError> Scene::tickObjects(TickGroup group, float dt, st
         for (auto *object : order) {
             if (eligible(*object) && object->m_tick_group == group) {
                 object->m_last_tick = frame;
-                object->onTick(dt);
+                impl.invoke(*impl.entry(object->getHandle()), [dt](GameObject &value) { value.onTick(dt); });
             }
         }
     } catch (...) {
@@ -968,6 +1043,9 @@ std::expected<std::vector<ArchivedObject>, serialization::ArchiveError> SceneArc
             record.hierarchy_fields = entry.archive->hierarchy_fields;
             record.components = entry.archive->unknown_components;
         }
+        if (!entry.type_name.empty()) {
+            record.fields.insert_or_assign("Type", ArchiveValue{entry.type_name});
+        }
         for (const auto &[id, pool] : impl.components) {
             if (entry.archive && std::ranges::any_of(entry.archive->unknown_components, [&](const auto &unknown) {
                     return unknown.type_name == pool.type->name || unknown.type_name == pool.type->former_name;
@@ -1047,13 +1125,31 @@ SceneArchiveAccess::restore(Scene &scene, std::span<ArchivedObject> objects, ser
     attached.reserve(objects.size());
     for (auto &record : objects) {
         const auto location = "/GameObjects/" + record.guid.toString();
-        auto handle = scene.attachObject(std::unique_ptr<GameObject>(new GameObject()), record.guid, record.name);
+        World::RegisteredObject registered;
+        if (const auto type = record.fields.find("Type"); type != record.fields.end()) {
+            if (const auto *name = std::get_if<std::string>(&type->second.value); name && *name != "star::GameObject") {
+                registered = scene.m_world.findGameObjectType(reflect::makeTypeId(*name));
+                if (registered.type != nullptr && registered.type->name != *name) {
+                    registered = {};
+                }
+            }
+        }
+        auto object =
+            registered.type == nullptr ? std::unique_ptr<GameObject>(new GameObject()) : registered.type->create();
+        if (!object) {
+            return std::unexpected(ArchiveError{ArchiveErrorCode::OperationFailed, location + "/Type"});
+        }
+        auto handle = scene.attachObject(std::move(object), record.guid, record.name);
         if (!handle) {
             return std::unexpected(ArchiveError{ArchiveErrorCode::InvalidInput, location});
         }
         attached.push_back(*handle);
         auto &entry = *impl.entry(*handle);
         entry.object->m_active = record.active;
+        if (registered.type != nullptr) {
+            entry.owner = registered.owner;
+            entry.type_name = registered.type->name;
+        }
         auto state = std::make_unique<ObjectArchiveState>();
         state->fields = std::move(record.fields);
         state->hierarchy_fields = std::move(record.hierarchy_fields);
@@ -1066,7 +1162,7 @@ SceneArchiveAccess::restore(Scene &scene, std::span<ArchivedObject> objects, ser
         }
         if (const auto type = state->fields.find("Type"); type != state->fields.end()) {
             const auto *name = std::get_if<std::string>(&type->second.value);
-            if (name == nullptr || *name != "star::GameObject") {
+            if (name == nullptr || (*name != "star::GameObject" && registered.type == nullptr)) {
                 ArchiveError diagnostic{ArchiveErrorCode::TypeMismatch, location + "/Type"};
                 if (policy == LoadPolicy::Strict) {
                     return std::unexpected(std::move(diagnostic));
@@ -1157,7 +1253,7 @@ SceneArchiveAccess::restore(Scene &scene, std::span<ArchivedObject> objects, ser
     for (const auto handle : attached) {
         auto &entry = *impl.entry(handle);
         entry.created = true;
-        entry.object->onCreate();
+        impl.invoke(entry, [](GameObject &object) { object.onCreate(); });
     }
     impl.refreshActivity(false);
     impl.propagateTransforms();

@@ -108,3 +108,40 @@ if(STAR_TEST_WINDOWS_VULKAN)
     set_tests_properties(windows-vulkan-present PROPERTIES
         ENVIRONMENT "SDL_VIDEODRIVER=windows;${sync_validation}")
 endif()
+
+if(NOT STAR_MONOLITHIC)
+    set(game_fixture_source "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/game-module")
+    set(game_fixture_build "${CMAKE_CURRENT_BINARY_DIR}/game-module/$<CONFIG>")
+    set(game_fixture_file "${game_fixture_build}/star-m3-game-module${CMAKE_SHARED_MODULE_SUFFIX}")
+    set(game_fixture_sdk)
+    foreach(module IN ITEMS Scene Core Reflection Serialization)
+        string(TOLOWER "${module}" module_slug)
+        string(TOUPPER "${module}" module_upper)
+        get_target_property(module_source Star${module} SOURCE_DIR)
+        list(APPEND game_fixture_sdk
+            "-DSTAR_${module_upper}_INCLUDE=${module_source}/include"
+            "-DSTAR_${module_upper}_GENERATED=${CMAKE_BINARY_DIR}/generated/${module_slug}"
+            "-DSTAR_${module_upper}_LINK=$<TARGET_LINKER_FILE:Star${module}>")
+    endforeach()
+    add_custom_command(
+        OUTPUT "${game_fixture_file}"
+        COMMAND "${CMAKE_COMMAND}" -S "${game_fixture_source}" -B "${game_fixture_build}" -G Ninja
+            "-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+            "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+            "-DCMAKE_BUILD_TYPE=$<CONFIG>"
+            "-DSTAR_MODULE_SUFFIX=${CMAKE_SHARED_MODULE_SUFFIX}"
+            ${game_fixture_sdk}
+        COMMAND "${CMAKE_COMMAND}" --build "${game_fixture_build}"
+        DEPENDS StarScene StarCore StarReflection StarSerialization
+            "${game_fixture_source}/CMakeLists.txt"
+            "${game_fixture_source}/game_module_fixture.cpp"
+            "${game_fixture_source}/game_module_fixture.hpp"
+        VERBATIM)
+    add_custom_target(StarIndependentGameModuleFixture DEPENDS "${game_fixture_file}")
+    add_executable(StarGameModuleTests game_module_tests.cpp test_main.cpp)
+    target_link_libraries(StarGameModuleTests PRIVATE Star::Scene ${CMAKE_DL_LIBS})
+    target_compile_definitions(StarGameModuleTests PRIVATE "STAR_GAME_MODULE_PATH=\"${game_fixture_file}\"")
+    set_target_properties(StarGameModuleTests PROPERTIES OUTPUT_NAME star-game-module-tests)
+    add_dependencies(StarGameModuleTests StarIndependentGameModuleFixture)
+    add_test(NAME game-module-tests COMMAND StarGameModuleTests)
+endif()

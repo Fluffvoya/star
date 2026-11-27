@@ -72,6 +72,8 @@ class STAR_SCENE_API Scene final {
     [[nodiscard]] std::expected<SpawnToken, SceneError> queueSpawn(std::string_view name,
                                                                    std::unique_ptr<GameObject> object) noexcept;
     [[nodiscard]] std::expected<SpawnToken, SceneError> queueSpawn(std::string_view name) noexcept;
+    [[nodiscard]] std::expected<SpawnToken, SceneError> queueSpawn(std::string_view name,
+                                                                   reflect::TypeId game_object_type) noexcept;
 
     template <std::derived_from<GameObject> T>
         requires std::default_initializable<T>
@@ -144,6 +146,10 @@ class STAR_SCENE_API Scene final {
     [[nodiscard]] bool isBusy() const noexcept;
     [[nodiscard]] std::expected<ObjectHandle, SceneError> attachObject(std::unique_ptr<GameObject> object, Guid guid,
                                                                        std::string_view name) noexcept;
+    std::expected<SpawnToken, SceneError> enqueueSpawn(std::string_view name, std::unique_ptr<GameObject> object,
+                                                       reflect::ModuleId owner, std::string_view type) noexcept;
+    void releaseModuleObjects(reflect::ModuleId owner) noexcept;
+    [[nodiscard]] bool hasComponentsOwnedBy(reflect::ModuleId owner) const noexcept;
     void endPlay(EndPlayReason reason) noexcept;
     std::expected<void, SceneError> tickObjects(TickGroup group, float dt, std::uint64_t frame) noexcept;
     using ComponentVisitor = void (*)(const void *, ObjectHandle, void *const *) noexcept;
