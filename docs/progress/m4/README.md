@@ -14,3 +14,4 @@
 | 10 基于图像的光照 | [Linux x64 软件 Vulkan 验证记录](10-image-based-lighting.md) |
 | 11 标准场景渲染验证 | [Linux x64 软件 Vulkan 验证记录](11-standard-render-scene.md) |
 | 12 glTF PBR 贴图材质 | [Linux x64 软件 Vulkan 验证记录](12-gltf-material-textures.md) |
+| 13 纹理派生数据与运行时读取 | [Linux x64 验证记录](13-texture-cache-integration.md) |

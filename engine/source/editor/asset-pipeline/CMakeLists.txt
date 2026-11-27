@@ -2,15 +2,17 @@ star_add_module(AssetPipeline asset-pipeline
     include/asset-pipeline/asset_database.hpp
     include/asset-pipeline/derived_data_cache.hpp
     include/asset-pipeline/texture_importer.hpp
+    include/asset-pipeline/cached_texture_import.hpp
     include/asset-pipeline/model_importer.hpp
     src/asset_database.cpp
     src/derived_data_cache.cpp
     src/texture_importer.cpp
+    src/cached_texture_import.cpp
     src/model_importer.cpp
     src/gltf_importer.cpp
 )
 
-target_link_libraries(StarAssetPipeline PUBLIC Star::Core Star::Serialization)
+target_link_libraries(StarAssetPipeline PUBLIC Star::Core Star::Serialization Star::Asset)
 target_include_directories(StarAssetPipeline SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/engine/source/third-party/stb")
 
 find_package(xxHash 0.8 CONFIG QUIET)

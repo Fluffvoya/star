@@ -1,9 +1,11 @@
+#include "asset-pipeline/cached_texture_import.hpp"
 #include "asset-pipeline/texture_importer.hpp"
 #include "test_support.hpp"
 
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <initializer_list>
 #include <vector>
 
@@ -79,4 +81,50 @@ STAR_TEST(texture_importer_preserves_png_alpha) {
     STAR_CHECK(result->mips.size() == 1);
     const std::vector<std::uint8_t> expected{10, 20, 30, 40};
     STAR_CHECK(result->mips[0].rgba == expected);
+}
+
+STAR_TEST(texture_importer_caches_versioned_runtime_payload_and_recovers_corruption) {
+    struct TemporaryCache {
+        std::filesystem::path path = std::filesystem::temp_directory_path() / star::Guid::generate().toString();
+        ~TemporaryCache() {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    } directory;
+    const DerivedDataCache cache(directory.path);
+    const auto source = makeTga({{0, 0, 0}, {255, 255, 255}});
+    const auto bytes = std::as_bytes(std::span(source));
+    auto meta = readAssetMeta(R"(
+StarFile: Meta
+Guid: 9b2d4c6e8f0a1b3c5d7e9f1a2b3c4d5e
+Importer: star::TextureImporter
+ImporterVersion: 1
+Settings: {Usage: Linear, GenerateMips: true}
+)")
+                    .value();
+
+    const auto first = importCachedTexture(bytes, meta, "linux", cache);
+    STAR_CHECK(first.has_value());
+    STAR_CHECK(!first->cache_hit);
+    STAR_CHECK(first->texture.mips.at(1).rgba.at(0) == 128);
+
+    const auto hit = importCachedTexture(bytes, meta, "linux", cache);
+    STAR_CHECK(hit.has_value());
+    STAR_CHECK(hit->cache_hit);
+    STAR_CHECK(hit->texture == first->texture);
+    const auto stored = cache.read(first->key).value().value();
+    STAR_CHECK(star::readTextureAsset(stored).value() == first->texture);
+
+    STAR_CHECK(cache.store(first->key, {}).has_value());
+    const auto repaired = importCachedTexture(bytes, meta, "linux", cache);
+    STAR_CHECK(repaired.has_value());
+    STAR_CHECK(!repaired->cache_hit);
+    STAR_CHECK(repaired->texture == first->texture);
+
+    meta.settings["GenerateMips"] = star::serialization::ArchiveValue{star::serialization::PlainScalar{"false"}};
+    const auto new_settings = importCachedTexture(bytes, meta, "linux", cache);
+    STAR_CHECK(new_settings.has_value());
+    STAR_CHECK(!new_settings->cache_hit);
+    STAR_CHECK(new_settings->key != first->key);
+    STAR_CHECK(new_settings->texture.mips.size() == 1);
 }
