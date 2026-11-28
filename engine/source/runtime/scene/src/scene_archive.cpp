@@ -353,7 +353,7 @@ std::expected<std::string, ArchiveError> savePrefabYaml(const Scene &scene, Obje
 std::expected<PrefabInstance, ArchiveError> instantiatePrefabYaml(Scene &scene, std::string_view source,
                                                                   Guid prefab_asset,
                                                                   std::span<const PrefabOverride> overrides,
-                                                                  LoadPolicy policy) {
+                                                                  LoadPolicy policy, bool preserve_guids) {
     try {
         if (!prefab_asset.isValid() || SceneArchiveAccess::isBusy(scene)) {
             return invalid("/Prefab");
@@ -374,18 +374,20 @@ std::expected<PrefabInstance, ArchiveError> instantiatePrefabYaml(Scene &scene, 
                                                  {"Path", ArchiveValue{std::string(change.path)}},
                                                  {"Value", change.value}}});
         }
-        root->fields.insert_or_assign("PrefabInstance",
-                                      ArchiveValue{Mapping{{"Prefab", ArchiveValue{prefab_asset.toString()}},
-                                                           {"RootGuidInPrefab", ArchiveValue{root->guid.toString()}},
-                                                           {"Overrides", ArchiveValue{std::move(edits)}}}});
-        std::map<Guid, Guid> remap;
-        for (const auto &object : document->objects) {
-            remap.emplace(object.guid, Guid::generate());
-        }
-        for (auto &object : document->objects) {
-            object.guid = remap.at(object.guid);
-            if (object.parent.isValid()) {
-                object.parent = remap.at(object.parent);
+        if (!preserve_guids) {
+            root->fields.insert_or_assign(
+                "PrefabInstance", ArchiveValue{Mapping{{"Prefab", ArchiveValue{prefab_asset.toString()}},
+                                                       {"RootGuidInPrefab", ArchiveValue{root->guid.toString()}},
+                                                       {"Overrides", ArchiveValue{std::move(edits)}}}});
+            std::map<Guid, Guid> remap;
+            for (const auto &object : document->objects) {
+                remap.emplace(object.guid, Guid::generate());
+            }
+            for (auto &object : document->objects) {
+                object.guid = remap.at(object.guid);
+                if (object.parent.isValid()) {
+                    object.parent = remap.at(object.parent);
+                }
             }
         }
         PrefabInstance result{};

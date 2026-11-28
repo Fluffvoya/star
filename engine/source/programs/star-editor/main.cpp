@@ -1,6 +1,7 @@
 #include "core/core.hpp"
 #include "editor-ui/editor_shell.hpp"
 #include "editor-ui/imgui_layer.hpp"
+#include "editor/document.hpp"
 #include "platform/platform.hpp"
 #include "rhi/rhi.hpp"
 #include "rhi/vulkan.hpp"
@@ -152,8 +153,45 @@ int main(int argc, char **argv) {
         star::log::error(k_log_category, "ImGui initialization failed: {}", layer_result.error().message);
         return 1;
     }
+    const std::filesystem::path scene_path = parse_path_option(argc, argv, "--scene=");
+    std::filesystem::path project_root = parse_path_option(argc, argv, "--project=");
+    if (project_root.empty()) {
+        for (int index = 1; index < argc; ++index) {
+            const std::string_view argument(argv[index]);
+            if (!argument.starts_with("--")) {
+                project_root = std::filesystem::path(argument);
+                break;
+            }
+        }
+    }
+
     std::unique_ptr<star::editor::ImGuiLayer> layer = std::move(*layer_result);
     star::editor::EditorShell shell;
+    shell.setProjectRoot(project_root.empty() ? std::filesystem::path(".") : project_root);
+
+    std::shared_ptr<star::editor::EditorDocument> document;
+    if (!scene_path.empty()) {
+        auto opened = star::editor::EditorDocument::open(scene_path);
+        if (!opened) {
+            star::log::error(k_log_category, "Open failed: {}", opened.error().message);
+        } else {
+            document = *opened;
+        }
+    }
+    if (!document) {
+        auto created = star::editor::EditorDocument::createEmpty("Untitled");
+        if (!created) {
+            star::log::error(k_log_category, "Scene creation failed: {}", created.error().message);
+            return 1;
+        }
+        document = *created;
+    }
+    if (const auto objects = document->getScene().getObjects(); !objects.empty()) {
+        if (const star::GameObject *first = document->getScene().findObject(objects.front()); first != nullptr) {
+            document->select(first->getGuid(), false);
+        }
+    }
+    shell.setDocument(document);
 
     const auto recreate_swapchain = [&]() {
         const auto next_width = static_cast<std::uint32_t>((*window)->getWidth() > 0 ? (*window)->getWidth() : 1600);
@@ -167,6 +205,7 @@ int main(int argc, char **argv) {
 
     const std::array<float, 4> clear_color{0.10F, 0.11F, 0.13F, 1.0F};
     const std::filesystem::path screenshot_path = parse_path_option(argc, argv, "--screenshot=");
+
     bool capture_pending = !screenshot_path.empty();
 
     auto previous = std::chrono::steady_clock::now();

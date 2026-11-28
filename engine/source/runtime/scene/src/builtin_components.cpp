@@ -48,3 +48,9 @@ std::span<const reflect::TypeInfo> builtinComponents() noexcept {
 }
 
 } // namespace star::scene_detail
+
+namespace star {
+
+std::span<const reflect::TypeInfo> builtinComponentTypes() noexcept { return scene_detail::builtinComponents(); }
+
+} // namespace star

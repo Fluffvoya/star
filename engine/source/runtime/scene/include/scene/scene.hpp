@@ -8,6 +8,7 @@
 #include <functional>
 #include <span>
 #include <type_traits>
+#include <vector>
 
 #include <cstddef>
 #include <expected>
@@ -61,6 +62,10 @@ class STAR_SCENE_API Scene final {
 
     [[nodiscard]] World &getWorld() const noexcept { return m_world; }
     [[nodiscard]] std::size_t getObjectCount() const noexcept;
+    // Handles in creation order. Destroyed objects are not included.
+    [[nodiscard]] std::vector<ObjectHandle> getObjects() const;
+    // Component types present on one object, ordered by registration.
+    [[nodiscard]] std::vector<reflect::TypeId> getComponentTypes(ObjectHandle handle) const;
 
     [[nodiscard]] std::expected<ObjectHandle, SceneError> createObject(std::string_view name) noexcept;
     [[nodiscard]] std::expected<ObjectHandle, SceneError> createObject(std::string_view name, Guid guid) noexcept;
@@ -99,6 +104,7 @@ class STAR_SCENE_API Scene final {
 
     // Type metadata and callbacks must stay loaded until unregistration succeeds. Destruction must not throw.
     [[nodiscard]] std::expected<void, SceneError> registerComponent(const reflect::TypeInfo &type) noexcept;
+    [[nodiscard]] const reflect::TypeInfo *findComponentType(reflect::TypeId type) const noexcept;
     [[nodiscard]] std::expected<void, SceneError> unregisterComponents(reflect::ModuleId owner) noexcept;
 
     // Component pointers are borrowed until the next structural commit.
