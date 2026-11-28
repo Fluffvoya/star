@@ -2,6 +2,7 @@
 
 #include "core/log.hpp"
 #include "editor/command.hpp"
+#include "file_io.hpp"
 #include "scene/scene_archive.hpp"
 #include "scene/world.hpp"
 
@@ -275,29 +276,8 @@ std::expected<void, EditorError> EditorDocument::save(const std::filesystem::pat
     if (!yaml) {
         return std::unexpected(EditorError{EditorErrorCode::SceneSaveFailed, "Scene serialization failed"});
     }
-    std::error_code error;
-    if (const auto parent = scene_path.parent_path(); !parent.empty()) {
-        std::filesystem::create_directories(parent, error);
-    }
-    const auto staging = scene_path.parent_path() / (".star-save-" + Guid::generate().toString());
-    if (error || !std::filesystem::create_directory(staging, error)) {
-        return std::unexpected(
-            EditorError{EditorErrorCode::FileWriteFailed, "Cannot stage save for " + scene_path.string()});
-    }
-    const auto temporary = staging / "scene";
-    std::ofstream file(temporary, std::ios::binary);
-    file.write(yaml->data(), static_cast<std::streamsize>(yaml->size()));
-    file.close();
-    const bool written = file.good();
-    if (written) {
-        std::filesystem::rename(temporary, scene_path, error);
-    }
-    std::error_code cleanup_error;
-    std::filesystem::remove(temporary, cleanup_error);
-    std::filesystem::remove(staging, cleanup_error);
-    if (!written || error) {
-        return std::unexpected(
-            EditorError{EditorErrorCode::FileWriteFailed, "Write failed for " + scene_path.string()});
+    if (auto written = writeEditorFile(scene_path, *yaml); !written) {
+        return written;
     }
     m_path = scene_path;
     m_name = scene_path.stem().string();

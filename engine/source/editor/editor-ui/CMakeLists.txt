@@ -10,6 +10,7 @@ if(NOT TARGET StarImGui)
         "${star_imgui_dir}/imgui_tables.cpp"
         "${star_imgui_dir}/imgui_widgets.cpp"
         "${star_imgui_dir}/imgui_demo.cpp"
+        "${star_imgui_dir}/misc/cpp/imgui_stdlib.cpp"
     )
     target_include_directories(StarImGui SYSTEM PUBLIC "${star_imgui_dir}")
     target_compile_definitions(StarImGui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)

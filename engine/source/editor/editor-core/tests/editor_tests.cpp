@@ -2,6 +2,7 @@
 
 #include "editor/command.hpp"
 #include "editor/document.hpp"
+#include "editor/project.hpp"
 #include "scene/components.hpp"
 #include "scene/scene_archive.hpp"
 #include "scene/world.hpp"
@@ -164,6 +165,45 @@ STAR_TEST(documentAppliesWorldTransformToChildAsOneUndoableCommand) {
     parent->setTransform({.position = {}, .rotation = {}, .scale = {0, 1, 1}});
     const auto singular = scene.localTransformForWorld(child->getHandle(), next_world);
     STAR_CHECK(!singular && singular.error() == SceneError::IncompatibleTransform);
+}
+
+STAR_TEST(projectSettingsRoundTripWithoutDroppingUnknownData) {
+    using namespace star::editor;
+    const auto path = temp_scene_path(star::Guid::generate().toString()).replace_extension(".starproject");
+    {
+        std::ofstream file(path);
+        file << R"yaml(StarFile: Project
+Version: 1
+Name: Example
+EngineVersion: "0.1.0"
+Modules: ["Build/Game.so"]
+StartupScene: "Content/Start.scene"
+FutureSetting: {Mode: retained}
+)yaml";
+        file.close();
+        STAR_CHECK(file.good());
+    }
+    auto project = EditorProject::open(path);
+    STAR_CHECK(project);
+    STAR_CHECK((*project)->getSettings().name == "Example");
+    STAR_CHECK((*project)->getSettings().modules.size() == 1);
+    STAR_CHECK((*project)->resolve((*project)->getSettings().modules.front()) == path.parent_path() / "Build/Game.so");
+    auto edited = (*project)->getSettings();
+    edited.startup_scene = "invalid.txt";
+    STAR_CHECK(!(*project)->save(edited));
+    STAR_CHECK((*project)->getSettings().startup_scene == "Content/Start.scene");
+    edited.startup_scene = "Content/Next.scene";
+    edited.name = "Renamed";
+    STAR_CHECK((*project)->save(edited));
+    auto reopened = EditorProject::open(path);
+    STAR_CHECK(reopened && (*reopened)->getSettings().name == "Renamed");
+    STAR_CHECK((*reopened)->resolve((*reopened)->getSettings().startup_scene) ==
+               path.parent_path() / "Content/Next.scene");
+    std::ifstream saved(path);
+    const std::string text(std::istreambuf_iterator<char>{saved}, {});
+    STAR_CHECK(text.find("FutureSetting") != std::string::npos);
+    saved.close();
+    std::filesystem::remove(path);
 }
 
 #ifdef STAR_GAME_MODULE_PATH
