@@ -26,3 +26,4 @@
 | [ADR-0016](0016-default-render-pipeline.md) | 3D 默认渲染管线 | 已确认 | 2026-11-20 |
 | [ADR-0017](0017-build-artifacts.md) | 构建产物形态 | 已确认 | 2026-11-20 |
 | [ADR-0018](0018-implementation-baseline.md) | 实施基线补充 | 已确认 | 2026-11-19 |
+| [ADR-0019](0019-renderer-vulkan-boundary.md) | M4 阶段渲染器直接使用 Vulkan | 提议 | 2026-11-28 |

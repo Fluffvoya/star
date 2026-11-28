@@ -27,3 +27,4 @@
 | 23 场景渲染桥接与透明材质 | [Linux x64 验证记录](23-scene-bridge.md) |
 | 24 逐实例材质覆盖 | [Linux x64 验证记录](24-material-overrides.md) |
 | 25 纹理块压缩 | [Linux x64 验证记录](25-block-compressed-textures.md) |
+| 26 里程碑收尾 | [M4 验收核对](26-m4-completion.md) |
