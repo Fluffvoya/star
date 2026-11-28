@@ -134,6 +134,16 @@ std::span<const WindowEvent> Window::pollEvents() {
     return m_implementation->events;
 }
 
+std::expected<void, PlatformError> Window::startTextInput() {
+    if (!m_implementation) {
+        return std::unexpected(PlatformError{"Window is not available"});
+    }
+    if (!SDL_StartTextInput(m_implementation->handle)) {
+        return std::unexpected(PlatformError{SDL_GetError()});
+    }
+    return {};
+}
+
 std::expected<void, PlatformError> Window::presentSolidColor(std::uint8_t red, std::uint8_t green, std::uint8_t blue) {
     if (!m_implementation) {
         return std::unexpected(PlatformError{"Window is not available"});

@@ -38,7 +38,8 @@ std::optional<PropertySlot> resolveProperty(Scene &scene, const Guid &object, re
     }
     for (std::size_t index = 0; index < path.size(); ++index) {
         const reflect::PropertyInfo *property = findProperty(*current_type, path[index]);
-        if (property == nullptr) {
+        if (property == nullptr || property->get_mutable == nullptr ||
+            reflect::hasFlag(property->flags, reflect::PropertyFlags::ReadOnly)) {
             return std::nullopt;
         }
         void *member = property->get_mutable(current);
