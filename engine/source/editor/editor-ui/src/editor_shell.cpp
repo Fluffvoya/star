@@ -143,8 +143,8 @@ struct EditorShell::Impl {
         return play_document ? play_document.get() : document.get();
     }
 
-    [[nodiscard]] std::filesystem::path gameModulePath() const {
-        return document ? document->getGameModulePath() : std::filesystem::path{};
+    [[nodiscard]] std::span<const std::filesystem::path> gameModulePaths() const {
+        return document ? document->getGameModulePaths() : std::span<const std::filesystem::path>{};
     }
 
     void stopPlay() {
@@ -297,7 +297,8 @@ struct EditorShell::Impl {
         }
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Scene")) {
-                if (auto created = EditorDocument::createEmpty("Untitled", gameModulePath()); created) {
+                if (auto created = document ? document->newScene("Untitled") : EditorDocument::createEmpty("Untitled");
+                    created) {
                     requestTransition(*created);
                 } else {
                     log::error(k_log_category, "New scene failed: {}", created.error().message);
@@ -338,13 +339,13 @@ struct EditorShell::Impl {
         if (ImGui::BeginMenu("Play")) {
             drawPlayControls();
             ImGui::Separator();
-            if (ImGui::MenuItem("Reload Game Module", nullptr, false, !gameModulePath().empty())) {
-                const auto result = document->reloadGameModule(gameModulePath(), project_root / "Saved" / "Recovery",
-                                                               [this] { stopPlay(); });
+            if (ImGui::MenuItem("Reload Game Modules", nullptr, false, !gameModulePaths().empty())) {
+                const auto result = document->reloadGameModules(gameModulePaths(), project_root / "Saved" / "Recovery",
+                                                                [this] { stopPlay(); });
                 rename_target = {};
                 if (result) {
                     reload_status.clear();
-                    log::info(k_log_category, "Game module reloaded");
+                    log::info(k_log_category, "Game modules reloaded");
                 } else {
                     reload_status = result.error().message;
                     log::error(k_log_category, "{}", reload_status);
@@ -629,7 +630,7 @@ struct EditorShell::Impl {
             ImGui::PushID(scene.string().c_str());
             if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                    if (auto opened = EditorDocument::open(scene, gameModulePath()); opened) {
+                    if (auto opened = document ? document->openScene(scene) : EditorDocument::open(scene); opened) {
                         pending = *opened;
                     } else {
                         log::error(k_log_category, "Open failed: {}", opened.error().message);
@@ -665,16 +666,37 @@ struct EditorShell::Impl {
                     static_cast<void>(property.parse_scalar(text, value));
                 }
             }
-            if (settings.modules.size() <= 1) {
-                const auto path_type = reflect::makeValueInfo<std::filesystem::path>();
-                std::string module = settings.modules.empty() ? "" : path_type.format_scalar(&settings.modules.front());
-                if (ImGui::InputText("Game Module", &module)) {
-                    settings.modules.clear();
-                    if (!module.empty()) {
-                        auto &path = settings.modules.emplace_back();
-                        static_cast<void>(path_type.parse_scalar(module, &path));
-                    }
+            ImGui::SeparatorText("Game Modules");
+            const auto path_type = reflect::makeValueInfo<std::filesystem::path>();
+            std::optional<std::size_t> remove;
+            std::optional<std::size_t> move_up;
+            for (std::size_t index = 0; index < settings.modules.size(); ++index) {
+                auto &path = settings.modules[index];
+                auto module = path_type.format_scalar(&path);
+                ImGui::PushID(static_cast<int>(index));
+                ImGui::SetNextItemWidth(-115.0F);
+                if (ImGui::InputText("##module", &module)) {
+                    static_cast<void>(path_type.parse_scalar(module, &path));
                 }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(index == 0);
+                if (ImGui::SmallButton("Up")) {
+                    move_up = index;
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) {
+                    remove = index;
+                }
+                ImGui::PopID();
+            }
+            if (remove) {
+                settings.modules.erase(settings.modules.begin() + static_cast<std::ptrdiff_t>(*remove));
+            } else if (move_up) {
+                std::swap(settings.modules[*move_up], settings.modules[*move_up - 1]);
+            }
+            if (ImGui::Button("Add Module")) {
+                settings.modules.emplace_back();
             }
             ImGui::TextDisabled("Startup scene and module changes apply on restart.");
             if (ImGui::Button("Save Project")) {

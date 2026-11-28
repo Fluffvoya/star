@@ -10,6 +10,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -39,9 +40,9 @@ struct RestoredWorld {
 };
 
 std::expected<RestoredWorld, EditorError> restoreSnapshot(std::span<const std::byte> snapshot,
-                                                          const std::filesystem::path &module) {
+                                                          std::span<const std::filesystem::path> modules) {
     auto world = std::make_unique<World>();
-    if (!module.empty()) {
+    for (const auto &module : modules) {
         const auto loaded = world->loadGameModule(module);
         if (!loaded) {
             return std::unexpected(moduleError(module, loaded.error()));
@@ -90,6 +91,15 @@ struct EditorDocument::ModuleImage {
         std::filesystem::remove(path, error);
     }
 
+    static std::vector<std::filesystem::path> paths(const std::vector<std::unique_ptr<ModuleImage>> &images) {
+        std::vector<std::filesystem::path> result;
+        result.reserve(images.size());
+        for (const auto &image : images) {
+            result.push_back(image->path);
+        }
+        return result;
+    }
+
     static std::expected<std::unique_ptr<ModuleImage>, EditorError> copy(const std::filesystem::path &source) {
         // Preserve the source directory for the platform loader and relative runpaths.
         auto filename = std::filesystem::path(".star-module-" + Guid::generate().toString());
@@ -118,8 +128,15 @@ EditorDocument::~EditorDocument() {
     m_world.reset();
 }
 
-std::expected<void, EditorError> EditorDocument::loadGameModule(const std::filesystem::path &path) {
-    if (!path.empty()) {
+const std::filesystem::path &EditorDocument::getGameModulePath() const noexcept {
+    static const std::filesystem::path empty;
+    return m_game_modules.empty() ? empty : m_game_modules.front();
+}
+
+std::expected<void, EditorError> EditorDocument::loadGameModules(std::span<const std::filesystem::path> paths) {
+    m_game_modules.assign(paths.begin(), paths.end());
+    m_module_images.reserve(paths.size());
+    for (const auto &path : paths) {
         auto image = ModuleImage::copy(path);
         if (!image) {
             return std::unexpected(std::move(image.error()));
@@ -128,17 +145,21 @@ std::expected<void, EditorError> EditorDocument::loadGameModule(const std::files
         if (!loaded) {
             return std::unexpected(moduleError(path, loaded.error()));
         }
-        m_game_module = path;
-        m_module_image = std::move(*image);
+        m_module_images.push_back(std::move(*image));
     }
     return {};
 }
 
 std::expected<std::shared_ptr<EditorDocument>, EditorError>
 EditorDocument::createEmpty(std::string name, const std::filesystem::path &game_module) {
+    return createEmptyWithModules(std::move(name), std::span(&game_module, game_module.empty() ? 0U : 1U));
+}
+
+std::expected<std::shared_ptr<EditorDocument>, EditorError>
+EditorDocument::createEmptyWithModules(std::string name, std::span<const std::filesystem::path> game_modules) {
     auto document = std::shared_ptr<EditorDocument>(new EditorDocument());
     document->m_world = std::make_unique<World>();
-    if (auto loaded = document->loadGameModule(game_module); !loaded) {
+    if (auto loaded = document->loadGameModules(game_modules); !loaded) {
         return std::unexpected(std::move(loaded.error()));
     }
     auto scene = document->m_world->createScene();
@@ -152,13 +173,19 @@ EditorDocument::createEmpty(std::string name, const std::filesystem::path &game_
 
 std::expected<std::shared_ptr<EditorDocument>, EditorError>
 EditorDocument::open(const std::filesystem::path &scene_path, const std::filesystem::path &game_module) {
+    return openWithModules(scene_path, std::span(&game_module, game_module.empty() ? 0U : 1U));
+}
+
+std::expected<std::shared_ptr<EditorDocument>, EditorError>
+EditorDocument::openWithModules(const std::filesystem::path &scene_path,
+                                std::span<const std::filesystem::path> game_modules) {
     const std::string source = read_text_file(scene_path);
     if (source.empty()) {
         return std::unexpected(EditorError{EditorErrorCode::FileReadFailed, "Cannot read " + scene_path.string()});
     }
     auto document = std::shared_ptr<EditorDocument>(new EditorDocument());
     document->m_world = std::make_unique<World>();
-    if (auto loaded = document->loadGameModule(game_module); !loaded) {
+    if (auto loaded = document->loadGameModules(game_modules); !loaded) {
         return std::unexpected(std::move(loaded.error()));
     }
     auto loaded = loadSceneYaml(*document->m_world, source);
@@ -174,6 +201,23 @@ EditorDocument::open(const std::filesystem::path &scene_path, const std::filesys
     return document;
 }
 
+std::expected<std::shared_ptr<EditorDocument>, EditorError>
+EditorDocument::openScene(const std::filesystem::path &scene_path) const {
+    return openWithModules(scene_path, ModuleImage::paths(m_module_images))
+        .transform([this](std::shared_ptr<EditorDocument> next) {
+            next->m_game_modules = m_game_modules;
+            return next;
+        });
+}
+
+std::expected<std::shared_ptr<EditorDocument>, EditorError> EditorDocument::newScene(std::string name) const {
+    return createEmptyWithModules(std::move(name), ModuleImage::paths(m_module_images))
+        .transform([this](std::shared_ptr<EditorDocument> next) {
+            next->m_game_modules = m_game_modules;
+            return next;
+        });
+}
+
 std::expected<std::shared_ptr<EditorDocument>, EditorError> EditorDocument::createPlayCopy() {
     if (isRecovering() || m_world->isPlaying() || !m_scene->commitCommands()) {
         return std::unexpected(EditorError{EditorErrorCode::PlayFailed, "The editor scene is not at a safe point"});
@@ -185,7 +229,7 @@ std::expected<std::shared_ptr<EditorDocument>, EditorError> EditorDocument::crea
     }
     auto play = std::shared_ptr<EditorDocument>(new EditorDocument());
     play->m_world = std::make_unique<World>();
-    if (auto loaded = play->loadGameModule(m_module_image ? m_module_image->path : std::filesystem::path{}); !loaded) {
+    if (auto loaded = play->loadGameModules(ModuleImage::paths(m_module_images)); !loaded) {
         return std::unexpected(std::move(loaded.error()));
     }
     auto restored = loadSceneBinary(*play->m_world, *snapshot);
@@ -209,16 +253,38 @@ std::expected<std::shared_ptr<EditorDocument>, EditorError> EditorDocument::crea
 std::expected<void, EditorError> EditorDocument::reloadGameModule(const std::filesystem::path &source,
                                                                   const std::filesystem::path &recovery_directory,
                                                                   const std::function<void()> &stop_play) {
+    return reloadGameModules(std::span(&source, 1), recovery_directory, stop_play);
+}
+
+std::expected<void, EditorError> EditorDocument::reloadGameModules(std::span<const std::filesystem::path> sources,
+                                                                   const std::filesystem::path &recovery_directory,
+                                                                   const std::function<void()> &stop_play) {
     if (m_world->isPlaying()) {
         return std::unexpected(EditorError{EditorErrorCode::ReloadFailed, "Reload requires the editor world"});
     }
-    auto candidate = ModuleImage::copy(source);
-    if (!candidate) {
-        return std::unexpected(std::move(candidate.error()));
+    if (sources.empty()) {
+        return std::unexpected(EditorError{EditorErrorCode::ReloadFailed, "No game modules to reload"});
     }
-    if (const auto probe = probeGameModule((*candidate)->path); !probe) {
-        return std::unexpected(moduleError(source, probe.error()));
+    std::vector<std::filesystem::path> next_sources(sources.begin(), sources.end());
+    std::vector<std::unique_ptr<ModuleImage>> candidates;
+    candidates.reserve(next_sources.size());
+    std::set<reflect::ModuleId> module_ids;
+    for (const auto &source : next_sources) {
+        auto candidate = ModuleImage::copy(source);
+        if (!candidate) {
+            return std::unexpected(std::move(candidate.error()));
+        }
+        const auto probe = probeGameModule((*candidate)->path);
+        if (!probe) {
+            return std::unexpected(moduleError(source, probe.error()));
+        }
+        if (!module_ids.insert(*probe).second) {
+            return std::unexpected(moduleError(source, GameModuleError::AlreadyLoaded));
+        }
+        candidates.push_back(std::move(*candidate));
     }
+    const auto next_images = ModuleImage::paths(candidates);
+    const auto previous_images = ModuleImage::paths(m_module_images);
     if (stop_play) {
         stop_play();
     }
@@ -241,23 +307,23 @@ std::expected<void, EditorError> EditorDocument::reloadGameModule(const std::fil
     m_scene = nullptr;
     m_world.reset();
 
-    auto restored = restoreSnapshot(*snapshot, (*candidate)->path);
+    auto restored = restoreSnapshot(*snapshot, next_images);
     if (restored) {
         m_world = std::move(restored->world);
         m_scene = restored->scene;
-        m_game_module = source;
-        m_module_image = std::move(*candidate);
+        m_game_modules = std::move(next_sources);
+        m_module_images = std::move(candidates);
         m_recovery_snapshot.clear();
         return {};
     }
     std::string diagnostic = restored.error().message;
     if (!was_recovering) {
-        auto rollback = restoreSnapshot(*snapshot, m_module_image ? m_module_image->path : std::filesystem::path{});
+        auto rollback = restoreSnapshot(*snapshot, previous_images);
         if (rollback) {
             m_world = std::move(rollback->world);
             m_scene = rollback->scene;
             return std::unexpected(
-                EditorError{EditorErrorCode::ReloadFailed, diagnostic + ". Previous module restored."});
+                EditorError{EditorErrorCode::ReloadFailed, diagnostic + ". Previous game modules restored."});
         }
         diagnostic += ". Rollback failed: " + rollback.error().message;
     }

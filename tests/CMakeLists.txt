@@ -164,6 +164,9 @@ if(NOT STAR_MONOLITHIC)
     set(game_fixture_file "${game_fixture_build}/star-m3-game-module${CMAKE_SHARED_MODULE_SUFFIX}")
     set(reload_fixture_file "${game_fixture_build}/star-m5-game-module${CMAKE_SHARED_MODULE_SUFFIX}")
     set(failing_fixture_file "${game_fixture_build}/star-m5-game-module-failing${CMAKE_SHARED_MODULE_SUFFIX}")
+    set(auxiliary_fixture_file "${game_fixture_build}/star-m5-auxiliary-module${CMAKE_SHARED_MODULE_SUFFIX}")
+    set(failing_auxiliary_fixture_file
+        "${game_fixture_build}/star-m5-auxiliary-module-failing${CMAKE_SHARED_MODULE_SUFFIX}")
     set(game_fixture_sdk)
     foreach(module IN ITEMS Scene Core Reflection Serialization)
         string(TOLOWER "${module}" module_slug)
@@ -176,6 +179,7 @@ if(NOT STAR_MONOLITHIC)
     endforeach()
     add_custom_command(
         OUTPUT "${game_fixture_file}" "${reload_fixture_file}" "${failing_fixture_file}"
+            "${auxiliary_fixture_file}" "${failing_auxiliary_fixture_file}"
         COMMAND "${CMAKE_COMMAND}" -S "${game_fixture_source}" -B "${game_fixture_build}" -G Ninja
             "-DCMAKE_MAKE_PROGRAM=${star_test_ninja}"
             "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
@@ -189,7 +193,8 @@ if(NOT STAR_MONOLITHIC)
             "${game_fixture_source}/game_module_fixture.hpp"
         VERBATIM)
     add_custom_target(StarIndependentGameModuleFixture
-        DEPENDS "${game_fixture_file}" "${reload_fixture_file}" "${failing_fixture_file}")
+        DEPENDS "${game_fixture_file}" "${reload_fixture_file}" "${failing_fixture_file}"
+            "${auxiliary_fixture_file}" "${failing_auxiliary_fixture_file}")
     add_executable(StarGameModuleTests game_module_tests.cpp test_main.cpp)
     target_link_libraries(StarGameModuleTests PRIVATE Star::Scene ${CMAKE_DL_LIBS})
     target_compile_definitions(StarGameModuleTests PRIVATE "STAR_GAME_MODULE_PATH=\"${game_fixture_file}\"")
@@ -199,7 +204,9 @@ if(NOT STAR_MONOLITHIC)
     target_compile_definitions(StarEditorCoreTests PRIVATE
         "STAR_GAME_MODULE_PATH=\"${game_fixture_file}\""
         "STAR_RELOAD_MODULE_PATH=\"${reload_fixture_file}\""
-        "STAR_FAILING_MODULE_PATH=\"${failing_fixture_file}\"")
+        "STAR_FAILING_MODULE_PATH=\"${failing_fixture_file}\""
+        "STAR_AUXILIARY_MODULE_PATH=\"${auxiliary_fixture_file}\""
+        "STAR_FAILING_AUXILIARY_MODULE_PATH=\"${failing_auxiliary_fixture_file}\"")
     target_link_libraries(StarEditorCoreTests PRIVATE ${CMAKE_DL_LIBS})
     add_test(NAME game-module-tests COMMAND StarGameModuleTests)
 endif()

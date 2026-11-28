@@ -7,6 +7,8 @@
 #include "scene/scene_archive.hpp"
 #include "scene/world.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -315,6 +317,55 @@ STAR_TEST(reloadsGameModuleAndPreservesDocumentAcrossFailure) {
     STAR_CHECK(text.find("Name: Actor") != std::string::npos);
     source.close();
     std::filesystem::remove(path);
+}
+
+STAR_TEST(reloadsModuleSetTogetherAndRollsBackAfterSecondModuleFails) {
+    using namespace star;
+    using namespace star::editor;
+    using game_fixture::AuxiliaryScore;
+    using game_fixture::Score;
+    const std::array<std::filesystem::path, 2> original{STAR_GAME_MODULE_PATH, STAR_AUXILIARY_MODULE_PATH};
+    auto document = EditorDocument::createEmptyWithModules("Module Set", original).value();
+    auto &scene = document->getScene();
+    const auto object = *scene.createObject("Editable");
+    const auto guid = scene.findObject(object)->getGuid();
+    document->select(guid, false);
+    const Score score{17};
+    const AuxiliaryScore auxiliary{29};
+    STAR_CHECK(scene.queueAddComponent(object, componentTypeId<Score>(), &score));
+    STAR_CHECK(scene.queueAddComponent(object, componentTypeId<AuxiliaryScore>(), &auxiliary));
+    STAR_CHECK(scene.commitCommands());
+    document->execute(std::make_unique<RenameObjectCommand>(guid, "Unsaved"));
+    const auto recovery = temp_scene_path(Guid::generate().toString()).replace_extension();
+    auto play = document->createPlayCopy().value();
+    const auto stop = [&] { play.reset(); };
+    const std::array<std::filesystem::path, 2> duplicate{STAR_GAME_MODULE_PATH, STAR_RELOAD_MODULE_PATH};
+    STAR_CHECK(!document->reloadGameModules(duplicate, recovery, stop) && play);
+
+    const std::array<std::filesystem::path, 2> fails{STAR_RELOAD_MODULE_PATH, STAR_FAILING_AUXILIARY_MODULE_PATH};
+    const auto rollback = document->reloadGameModules(fails, recovery, stop);
+    STAR_CHECK(!rollback && rollback.error().code == EditorErrorCode::ReloadFailed);
+    STAR_CHECK(!play && !document->isRecovering() && document->isDirty());
+    STAR_CHECK(std::ranges::equal(document->getGameModulePaths(), original));
+    STAR_CHECK(document->findSelected()->tryGetComponent<Score>()->value == 17);
+    STAR_CHECK(document->findSelected()->tryGetComponent<AuxiliaryScore>()->value == 29);
+    STAR_CHECK(document->findSelected()->getName() == "Unsaved");
+    STAR_CHECK(!std::filesystem::exists(recovery));
+    const auto next = document->newScene("Second");
+    STAR_CHECK(next && std::ranges::equal((*next)->getGameModulePaths(), original));
+    STAR_CHECK((*next)->getScene().findComponentType(componentTypeId<Score>()));
+    STAR_CHECK((*next)->getScene().findComponentType(componentTypeId<AuxiliaryScore>()));
+
+    const std::array<std::filesystem::path, 2> updated{STAR_RELOAD_MODULE_PATH, STAR_AUXILIARY_MODULE_PATH};
+    STAR_CHECK(document->reloadGameModules(updated, recovery));
+    STAR_CHECK(std::ranges::equal(document->getGameModulePaths(), updated));
+    STAR_CHECK(document->findSelected()->tryGetComponent<Score>()->value == 17);
+    STAR_CHECK(document->findSelected()->tryGetComponent<AuxiliaryScore>()->value == 29);
+    STAR_CHECK(document->undo() && document->findSelected()->getName() == "Editable");
+    auto replay = document->createPlayCopy().value();
+    STAR_CHECK(replay->getScene().getWorld().tick(0));
+    STAR_CHECK(replay->findSelected()->tryGetComponent<Score>()->value == 117);
+    STAR_CHECK(replay->findSelected()->tryGetComponent<AuxiliaryScore>()->value == 29);
 }
 
 #if defined(__linux__)

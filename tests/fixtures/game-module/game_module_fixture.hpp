@@ -12,8 +12,16 @@ struct Score {
     int bonus = 7;
 };
 
+struct AuxiliaryScore {
+    int value = 0;
+};
+
 } // namespace game_fixture
 
 template <> struct star::ComponentTraits<game_fixture::Score> {
     static constexpr auto name = "game_fixture::Score";
+};
+
+template <> struct star::ComponentTraits<game_fixture::AuxiliaryScore> {
+    static constexpr auto name = "game_fixture::AuxiliaryScore";
 };
