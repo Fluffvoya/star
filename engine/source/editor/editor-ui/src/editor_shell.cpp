@@ -2,6 +2,7 @@
 
 #include "core/log.hpp"
 #include "editor/command.hpp"
+#include "scene/world.hpp"
 #include "scene_viewport.hpp"
 
 #include <imgui.h>
@@ -72,6 +73,10 @@ struct EditorShell::Impl {
     std::deque<ConsoleEntry> entries;
 
     std::shared_ptr<EditorDocument> document;
+    std::shared_ptr<EditorDocument> play_document;
+    bool play_paused = false;
+    bool simulate = false;
+    bool step_requested = false;
     std::unique_ptr<SceneViewport> scene_viewport;
     std::filesystem::path project_root;
     std::vector<std::filesystem::path> scenes;
@@ -127,7 +132,58 @@ struct EditorShell::Impl {
         return true;
     }
 
+    [[nodiscard]] EditorDocument *activeDocument() const {
+        return play_document ? play_document.get() : document.get();
+    }
+
+    [[nodiscard]] std::filesystem::path gameModulePath() const {
+        return document ? document->getGameModulePath() : std::filesystem::path{};
+    }
+
+    void stopPlay() {
+        play_document.reset();
+        play_paused = false;
+        step_requested = false;
+        rename_target = {};
+    }
+
+    void drawPlayControls() {
+        if (ImGui::MenuItem("Play", nullptr, false, document && !play_document)) {
+            if (auto play = document->createPlayCopy(); play) {
+                play_document = std::move(*play);
+                rename_target = {};
+            } else {
+                log::error(k_log_category, "Play failed: {}", play.error().message);
+            }
+        }
+        if (ImGui::MenuItem(play_paused ? "Resume" : "Pause", nullptr, false, static_cast<bool>(play_document))) {
+            play_paused = !play_paused;
+        }
+        if (ImGui::MenuItem("Step", nullptr, false, play_document && play_paused)) {
+            step_requested = true;
+        }
+        if (ImGui::MenuItem("Stop", nullptr, false, static_cast<bool>(play_document))) {
+            stopPlay();
+        }
+        ImGui::Separator();
+        ImGui::MenuItem("Simulation Camera", nullptr, &simulate);
+    }
+
+    void tickPlay(float delta) {
+        if (!play_document || (play_paused && !step_requested)) {
+            return;
+        }
+        auto &world = play_document->getScene().getWorld();
+        const float elapsed = step_requested ? 1.0F / 60.0F : std::clamp(delta, 0.0F, 0.1F);
+        step_requested = false;
+        if (const auto ticked = world.tick(elapsed); !ticked) {
+            log::error(k_log_category, "PIE stopped after a simulation error ({})", static_cast<int>(ticked.error()));
+            stopPlay();
+        }
+    }
+
     void finishTransition() {
+        stopPlay();
         if (quit_requested) {
             quit = true;
         } else {
@@ -212,8 +268,7 @@ struct EditorShell::Impl {
         std::sort(scenes.begin(), scenes.end());
     }
 
-    void sync_name_buffer() {
-        const GameObject *selected = document ? document->findSelected() : nullptr;
+    void sync_name_buffer(const GameObject *selected) {
         if (selected == nullptr) {
             rename_target = {};
             rename_buffer[0] = '\0';
@@ -234,13 +289,13 @@ struct EditorShell::Impl {
         }
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Scene")) {
-                if (auto created = EditorDocument::createEmpty("Untitled"); created) {
+                if (auto created = EditorDocument::createEmpty("Untitled", gameModulePath()); created) {
                     requestTransition(*created);
                 } else {
                     log::error(k_log_category, "New scene failed: {}", created.error().message);
                 }
             }
-            if (ImGui::MenuItem("Save", "Ctrl+S", false, static_cast<bool>(document))) {
+            if (ImGui::MenuItem("Save", "Ctrl+S", false, document && !play_document)) {
                 saveDocument();
             }
             ImGui::Separator();
@@ -250,20 +305,25 @@ struct EditorShell::Impl {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Edit")) {
+            auto *active = activeDocument();
             const std::string undo_label =
-                document && document->canUndo() ? std::format("Undo {}", document->getUndoName()) : "Undo";
+                active && active->canUndo() ? std::format("Undo {}", active->getUndoName()) : "Undo";
             const std::string redo_label =
-                document && document->canRedo() ? std::format("Redo {}", document->getRedoName()) : "Redo";
-            if (ImGui::MenuItem(undo_label.c_str(), "Ctrl+Z", false, document && document->canUndo())) {
-                if (document->undo()) {
+                active && active->canRedo() ? std::format("Redo {}", active->getRedoName()) : "Redo";
+            if (ImGui::MenuItem(undo_label.c_str(), "Ctrl+Z", false, active && active->canUndo())) {
+                if (active->undo()) {
                     rename_target = {};
                 }
             }
-            if (ImGui::MenuItem(redo_label.c_str(), "Ctrl+Y", false, document && document->canRedo())) {
-                if (document->redo()) {
+            if (ImGui::MenuItem(redo_label.c_str(), "Ctrl+Y", false, active && active->canRedo())) {
+                if (active->redo()) {
                     rename_target = {};
                 }
             }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Play")) {
+            drawPlayControls();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
@@ -285,6 +345,9 @@ struct EditorShell::Impl {
             const char *dirty = document->isDirty() ? " *" : "";
             ImGui::Separator();
             ImGui::TextDisabled("%s%s", document->getName().c_str(), dirty);
+            if (play_document) {
+                ImGui::TextColored(ImVec4(0.95F, 0.74F, 0.32F, 1.0F), "%s", play_paused ? "Paused" : "Playing");
+            }
         }
         ImGui::EndMainMenuBar();
     }
@@ -316,19 +379,19 @@ struct EditorShell::Impl {
             ImGui::End();
             return;
         }
-        if (document) {
+        if (auto *active = activeDocument()) {
             if (ImGui::Button("Create Object")) {
-                document->execute(std::make_unique<CreateObjectCommand>("Object"));
+                active->execute(std::make_unique<CreateObjectCommand>("Object"));
             }
             ImGui::SameLine();
-            const bool has_selection = document->findSelected() != nullptr;
+            const bool has_selection = active->findSelected() != nullptr;
             if (ImGui::Button("Delete") && has_selection) {
-                const Guid target = document->getSelection().front();
-                document->execute(std::make_unique<DeleteObjectCommand>(target));
+                const Guid target = active->getSelection().front();
+                active->execute(std::make_unique<DeleteObjectCommand>(target));
                 rename_target = {};
             }
             ImGui::Separator();
-            Scene &scene = document->getScene();
+            Scene &scene = active->getScene();
             std::map<Guid, std::vector<const GameObject *>> children;
             for (const ObjectHandle handle : scene.getObjects()) {
                 if (const auto *object = scene.findObject(handle)) {
@@ -336,21 +399,22 @@ struct EditorShell::Impl {
                     children[parent ? parent->getGuid() : Guid{}].push_back(object);
                 }
             }
-            drawHierarchyChildren(children, {});
+            drawHierarchyChildren(*active, children, {});
         } else {
             ImGui::TextDisabled("No scene open");
         }
         ImGui::End();
     }
 
-    void drawHierarchyChildren(const std::map<Guid, std::vector<const GameObject *>> &children, const Guid &parent) {
+    void drawHierarchyChildren(EditorDocument &active, const std::map<Guid, std::vector<const GameObject *>> &children,
+                               const Guid &parent) {
         const auto siblings = children.find(parent);
         if (siblings == children.end()) {
             return;
         }
         for (const GameObject *object : siblings->second) {
             const Guid guid = object->getGuid();
-            const auto &selection = document->getSelection();
+            const auto &selection = active.getSelection();
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
             if (!children.contains(guid)) {
                 flags |= ImGuiTreeNodeFlags_Leaf;
@@ -362,11 +426,11 @@ struct EditorShell::Impl {
             ImGui::PushID(id.c_str());
             const bool expanded = ImGui::TreeNodeEx("object", flags, "%s", object->getName().c_str());
             if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-                document->select(guid, ImGui::GetIO().KeyCtrl);
+                active.select(guid, ImGui::GetIO().KeyCtrl);
                 rename_target = {};
             }
             if (expanded) {
-                drawHierarchyChildren(children, guid);
+                drawHierarchyChildren(active, children, guid);
                 ImGui::TreePop();
             }
             ImGui::PopID();
@@ -466,22 +530,29 @@ struct EditorShell::Impl {
             ImGui::End();
             return;
         }
-        GameObject *selected = document ? document->findSelected() : nullptr;
-        if (document == nullptr || selected == nullptr) {
+        auto *active = activeDocument();
+        if (play_document) {
+            ImGui::TextWrapped("Runtime changes are discarded when play stops.");
+        }
+        GameObject *selected = active ? active->findSelected() : nullptr;
+        if (selected == nullptr) {
             ImGui::TextDisabled("Select an object in the hierarchy");
             ImGui::End();
             return;
         }
         const auto selection_id = selected->getGuid().toString();
         ImGui::PushID(selection_id.c_str());
-        sync_name_buffer();
+        sync_name_buffer(selected);
         ImGui::SetNextItemWidth(-1.0F);
         if (ImGui::InputText("##name", rename_buffer, sizeof(rename_buffer), ImGuiInputTextFlags_EnterReturnsTrue)) {
-            document->execute(std::make_unique<RenameObjectCommand>(selected->getGuid(), rename_buffer));
+            active->execute(std::make_unique<RenameObjectCommand>(selected->getGuid(), rename_buffer));
         }
         ImGui::TextDisabled("Guid %s", selected->getGuid().toString().c_str());
+        if (play_document && document->getScene().findObject(selected->getGuid()) && ImGui::Button("Keep Transform")) {
+            document->execute(std::make_unique<SetTransformCommand>(selected->getGuid(), selected->getTransform()));
+        }
 
-        Scene &scene = document->getScene();
+        Scene &scene = active->getScene();
         const ObjectHandle handle = selected->getHandle();
         for (const reflect::TypeId component : scene.getComponentTypes(handle)) {
             const reflect::TypeInfo *type = scene.findComponentType(component);
@@ -492,7 +563,7 @@ struct EditorShell::Impl {
             ImGui::Separator();
             if (ImGui::CollapsingHeader(std::string(type->name).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
                 std::vector<std::string> path;
-                draw_properties(*document, selected->getGuid(), component, *type, value, path);
+                draw_properties(*active, selected->getGuid(), component, *type, value, path);
             }
         }
         ImGui::PopID();
@@ -522,7 +593,7 @@ struct EditorShell::Impl {
             ImGui::PushID(scene.string().c_str());
             if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                    if (auto opened = EditorDocument::open(scene); opened) {
+                    if (auto opened = EditorDocument::open(scene, gameModulePath()); opened) {
                         pending = *opened;
                     } else {
                         log::error(k_log_category, "Open failed: {}", opened.error().message);
@@ -601,8 +672,8 @@ struct EditorShell::Impl {
         ImGui::Separator();
         ImGui::Text("Window %u x %u", status.width, status.height);
         ImGui::Text("ImGui draw calls %u", status.draw_calls);
-        if (document) {
-            ImGui::Text("Objects %zu", document->getScene().getObjectCount());
+        if (const auto *active = activeDocument()) {
+            ImGui::Text("Objects %zu", active->getScene().getObjectCount());
         }
         if (!status.device_name.empty()) {
             ImGui::Separator();
@@ -618,13 +689,14 @@ struct EditorShell::Impl {
         if (!ImGui::GetIO().KeyCtrl || ImGui::GetIO().WantTextInput || confirm_transition || !document) {
             return;
         }
-        if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+        auto *active = activeDocument();
+        if (!play_document && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
             saveDocument();
         }
-        if (ImGui::IsKeyPressed(ImGuiKey_Z, false) && document->undo()) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Z, false) && active->undo()) {
             rename_target = {};
         }
-        if (ImGui::IsKeyPressed(ImGuiKey_Y, false) && document->redo()) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Y, false) && active->redo()) {
             rename_target = {};
         }
     }
@@ -645,6 +717,7 @@ struct EditorShell::Impl {
         }
         handleShortcuts();
         draw_menu_bar();
+        tickPlay(status.frame_time_ms * 0.001F);
         draw_hierarchy();
         draw_inspector();
         if (scene_viewport && show_viewport) {
@@ -653,8 +726,8 @@ struct EditorShell::Impl {
             }
             if (ImGui::Begin("Scene", &show_viewport,
                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse) &&
-                document) {
-                scene_viewport->draw(*document, status.frame_time_ms * 0.001F);
+                activeDocument()) {
+                scene_viewport->draw(*activeDocument(), status.frame_time_ms * 0.001F, play_document && !simulate);
             }
             ImGui::End();
         }

@@ -2,6 +2,7 @@
 
 #include "editor/document.hpp"
 #include "editor/export.hpp"
+#include "scene/components.hpp"
 
 #include <optional>
 #include <span>
@@ -92,6 +93,19 @@ class STAR_EDITORCORE_API SetPropertyCommand final : public EditorCommand {
     std::string m_text;
     std::string m_before;
     bool m_has_before = false;
+};
+
+class STAR_EDITORCORE_API SetTransformCommand final : public EditorCommand {
+  public:
+    SetTransformCommand(Guid object, Transform transform);
+    [[nodiscard]] std::string_view getName() const noexcept override;
+    [[nodiscard]] bool execute(EditorDocument &document) override;
+    void undo(EditorDocument &document) override;
+
+  private:
+    Guid m_object;
+    Transform m_transform;
+    std::optional<Transform> m_before;
 };
 
 } // namespace star::editor

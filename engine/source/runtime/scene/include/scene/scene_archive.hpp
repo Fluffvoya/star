@@ -27,6 +27,12 @@ loadSceneYaml(World &world, std::string_view source,
               serialization::LoadPolicy policy = serialization::LoadPolicy::Preserve,
               std::span<const reflect::TypeInfo *const> component_types = {});
 
+[[nodiscard]] STAR_SCENE_API std::expected<std::vector<std::byte>, serialization::ArchiveError>
+saveSceneBinary(const Scene &scene);
+[[nodiscard]] STAR_SCENE_API std::expected<LoadedScene, serialization::ArchiveError>
+loadSceneBinary(World &world, std::span<const std::byte> source,
+                serialization::LoadPolicy policy = serialization::LoadPolicy::Preserve);
+
 [[nodiscard]] STAR_SCENE_API std::expected<std::string, serialization::ArchiveError> savePrefabYaml(const Scene &scene,
                                                                                                     ObjectHandle root);
 

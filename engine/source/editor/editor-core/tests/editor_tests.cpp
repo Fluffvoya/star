@@ -3,10 +3,17 @@
 #include "editor/command.hpp"
 #include "editor/document.hpp"
 #include "scene/components.hpp"
+#include "scene/scene_archive.hpp"
+#include "scene/world.hpp"
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <memory>
+
+#ifdef STAR_GAME_MODULE_PATH
+#include "fixtures/game-module/game_module_fixture.hpp"
+#endif
 
 namespace {
 
@@ -126,3 +133,52 @@ STAR_TEST(documentSavesAndReopensSceneFiles) {
     std::filesystem::remove(blocked_path);
     std::filesystem::remove(path);
 }
+
+#ifdef STAR_GAME_MODULE_PATH
+STAR_TEST(playCopyRunsIndependentGameObjectsAndKeepsEditorState) {
+    using namespace star;
+    using namespace star::editor;
+    const auto path = temp_scene_path(Guid::generate().toString());
+    {
+        std::ofstream file(path);
+        file << R"yaml(StarFile: Scene
+Version: 1
+GameObjects:
+  - Guid: "00000000000000000000000000000001"
+    Name: Actor
+    Type: "game_fixture::Actor"
+    Components:
+      - {Type: "game_fixture::Score", value: 5, future_field: retained}
+      - {Type: "future::Unknown", future_value: 99}
+)yaml";
+        STAR_CHECK(file.good());
+    }
+    auto opened = EditorDocument::open(path, STAR_GAME_MODULE_PATH);
+    STAR_CHECK(opened);
+    auto &document = **opened;
+    const auto guid = *Guid::parse("00000000000000000000000000000001");
+    document.select(guid, false);
+    document.execute(std::make_unique<RenameObjectCommand>(guid, "Unsaved"));
+    STAR_CHECK(document.findSelected()->tryGetComponent<game_fixture::Score>()->value == 6);
+    auto created = document.createPlayCopy();
+    STAR_CHECK(created);
+    auto &play = **created;
+    World &world = play.getScene().getWorld();
+    STAR_CHECK(world.isPlaying() && !document.getScene().getWorld().isPlaying());
+    STAR_CHECK(play.findSelected() != document.findSelected());
+    STAR_CHECK(play.findSelected()->getGuid() == guid && play.findSelected()->getName() == "Unsaved");
+    const int starting_score = play.findSelected()->tryGetComponent<game_fixture::Score>()->value;
+    STAR_CHECK(world.tick(1.0F / 60.0F));
+    STAR_CHECK(play.findSelected()->tryGetComponent<game_fixture::Score>()->value == starting_score + 110);
+    STAR_CHECK(document.findSelected()->tryGetComponent<game_fixture::Score>()->value == 6);
+    const auto yaml = saveSceneYaml(play.getScene());
+    STAR_CHECK(yaml && yaml->find("future_field") != std::string::npos &&
+               yaml->find("future::Unknown") != std::string::npos);
+    play.execute(std::make_unique<RenameObjectCommand>(guid, "Runtime"));
+    created->reset();
+    STAR_CHECK(document.isDirty() && document.findSelected()->getName() == "Unsaved");
+    STAR_CHECK(document.undo() && document.findSelected()->getName() == "Actor");
+    STAR_CHECK(document.redo() && document.findSelected()->getName() == "Unsaved");
+    std::filesystem::remove(path);
+}
+#endif

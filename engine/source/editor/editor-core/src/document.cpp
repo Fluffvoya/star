@@ -6,6 +6,7 @@
 #include "scene/world.hpp"
 
 #include <algorithm>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -31,15 +32,35 @@ constexpr std::size_t k_max_undo = 256;
 EditorDocument::EditorDocument() = default;
 
 EditorDocument::~EditorDocument() {
+    if (m_world && m_world->isPlaying()) {
+        static_cast<void>(m_world->endPlay());
+    }
     m_undo.clear();
     m_selection.clear();
     m_scene = nullptr;
     m_world.reset();
 }
 
-std::expected<std::shared_ptr<EditorDocument>, EditorError> EditorDocument::createEmpty(std::string name) {
+std::expected<void, EditorError> EditorDocument::loadGameModule(const std::filesystem::path &path) {
+    if (!path.empty()) {
+        const auto loaded = m_world->loadGameModule(path);
+        if (!loaded) {
+            return std::unexpected(
+                EditorError{EditorErrorCode::GameModuleFailed,
+                            std::format("Cannot load {} ({})", path.string(), static_cast<int>(loaded.error()))});
+        }
+        m_game_module = path;
+    }
+    return {};
+}
+
+std::expected<std::shared_ptr<EditorDocument>, EditorError>
+EditorDocument::createEmpty(std::string name, const std::filesystem::path &game_module) {
     auto document = std::shared_ptr<EditorDocument>(new EditorDocument());
     document->m_world = std::make_unique<World>();
+    if (auto loaded = document->loadGameModule(game_module); !loaded) {
+        return std::unexpected(std::move(loaded.error()));
+    }
     auto scene = document->m_world->createScene();
     if (!scene) {
         return std::unexpected(EditorError{EditorErrorCode::SceneCreationFailed, "Failed to create a scene"});
@@ -50,13 +71,16 @@ std::expected<std::shared_ptr<EditorDocument>, EditorError> EditorDocument::crea
 }
 
 std::expected<std::shared_ptr<EditorDocument>, EditorError>
-EditorDocument::open(const std::filesystem::path &scene_path) {
+EditorDocument::open(const std::filesystem::path &scene_path, const std::filesystem::path &game_module) {
     const std::string source = read_text_file(scene_path);
     if (source.empty()) {
         return std::unexpected(EditorError{EditorErrorCode::FileReadFailed, "Cannot read " + scene_path.string()});
     }
     auto document = std::shared_ptr<EditorDocument>(new EditorDocument());
     document->m_world = std::make_unique<World>();
+    if (auto loaded = document->loadGameModule(game_module); !loaded) {
+        return std::unexpected(std::move(loaded.error()));
+    }
     auto loaded = loadSceneYaml(*document->m_world, source);
     if (!loaded) {
         return std::unexpected(
@@ -68,6 +92,38 @@ EditorDocument::open(const std::filesystem::path &scene_path) {
     log::info(k_log_category, "Opened {} with {} objects and {} diagnostics", scene_path.string(),
               document->m_scene->getObjectCount(), loaded->diagnostics.size());
     return document;
+}
+
+std::expected<std::shared_ptr<EditorDocument>, EditorError> EditorDocument::createPlayCopy() {
+    if (m_world->isPlaying() || !m_scene->commitCommands()) {
+        return std::unexpected(EditorError{EditorErrorCode::PlayFailed, "The editor scene is not at a safe point"});
+    }
+    const auto snapshot = saveSceneBinary(*m_scene);
+    if (!snapshot) {
+        return std::unexpected(
+            EditorError{EditorErrorCode::PlayFailed, "Cannot capture scene at " + snapshot.error().path});
+    }
+    auto play = std::shared_ptr<EditorDocument>(new EditorDocument());
+    play->m_world = std::make_unique<World>();
+    if (auto loaded = play->loadGameModule(m_game_module); !loaded) {
+        return std::unexpected(std::move(loaded.error()));
+    }
+    auto restored = loadSceneBinary(*play->m_world, *snapshot);
+    if (!restored) {
+        return std::unexpected(
+            EditorError{EditorErrorCode::PlayFailed, "Cannot restore scene at " + restored.error().path});
+    }
+    play->m_scene = restored->scene;
+    play->m_name = m_name;
+    for (const auto &guid : m_selection) {
+        if (play->m_scene->findObject(guid)) {
+            play->m_selection.push_back(guid);
+        }
+    }
+    if (!play->m_world->beginPlay()) {
+        return std::unexpected(EditorError{EditorErrorCode::PlayFailed, "Cannot begin play"});
+    }
+    return play;
 }
 
 std::expected<void, EditorError> EditorDocument::save(const std::filesystem::path &scene_path) {

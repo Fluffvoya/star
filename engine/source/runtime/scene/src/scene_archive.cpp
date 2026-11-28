@@ -68,12 +68,8 @@ void normalizeVector(Mapping &fields, std::string_view name, std::string_view ax
     found->second = ArchiveValue{std::move(map)};
 }
 
-std::expected<SceneDocument, ArchiveError> readDocument(std::string_view source, std::string_view kind) {
-    auto parsed = readYamlValue(source);
-    if (!parsed) {
-        return std::unexpected(std::move(parsed.error()));
-    }
-    auto *root = std::get_if<Mapping>(&parsed->value);
+std::expected<SceneDocument, ArchiveError> decodeDocument(ArchiveValue source, std::string_view kind) {
+    auto *root = std::get_if<Mapping>(&source.value);
     if (root == nullptr) {
         return invalid("/");
     }
@@ -194,7 +190,12 @@ std::expected<SceneDocument, ArchiveError> readDocument(std::string_view source,
     return result;
 }
 
-std::expected<std::string, ArchiveError> writeDocument(SceneDocument document, std::string_view kind) {
+std::expected<SceneDocument, ArchiveError> readDocument(std::string_view source, std::string_view kind) {
+    return readYamlValue(source).and_then(
+        [kind](ArchiveValue value) { return decodeDocument(std::move(value), kind); });
+}
+
+Mapping encodeDocument(SceneDocument document, std::string_view kind) {
     std::ranges::sort(document.objects, {}, &ArchivedObject::order);
     for (std::size_t index = 0; index < document.objects.size(); ++index) {
         document.objects[index].order = index;
@@ -234,7 +235,11 @@ std::expected<std::string, ArchiveError> writeDocument(SceneDocument document, s
     document.fields.insert_or_assign("StarFile", ArchiveValue{std::string(kind)});
     document.fields.insert_or_assign("Version", ArchiveValue{PlainScalar{"1"}});
     document.fields.insert_or_assign("GameObjects", ArchiveValue{std::move(objects)});
-    return writeYamlValue(ArchiveValue{std::move(document.fields)});
+    return std::move(document.fields);
+}
+
+std::expected<std::string, ArchiveError> writeDocument(SceneDocument document, std::string_view kind) {
+    return writeYamlValue(ArchiveValue{encodeDocument(std::move(document), kind)});
 }
 
 bool applyOverride(ArchivedObject &object, const PrefabOverride &change) {
@@ -276,6 +281,38 @@ bool applyOverride(ArchivedObject &object, const PrefabOverride &change) {
     return true;
 }
 
+std::expected<LoadedScene, ArchiveError> restoreScene(World &world, SceneDocument document, LoadPolicy policy,
+                                                      std::span<const reflect::TypeInfo *const> component_types) {
+    const auto created = world.createScene();
+    if (!created) {
+        return failed();
+    }
+    auto &scene = **created;
+    struct Rollback {
+        World &world;
+        Scene &scene;
+        bool completed = false;
+        ~Rollback() {
+            if (!completed) {
+                world.unloadScene(scene);
+            }
+        }
+    } rollback{world, scene};
+
+    for (const auto *type : component_types) {
+        if (type == nullptr || !scene.registerComponent(*type)) {
+            return failed();
+        }
+    }
+    SceneArchiveAccess::sceneFields(scene) = std::move(document.fields);
+    LoadedScene result{&scene, {}};
+    if (auto restored = SceneArchiveAccess::restore(scene, document.objects, policy, result.diagnostics); !restored) {
+        return std::unexpected(std::move(restored.error()));
+    }
+    rollback.completed = true;
+    return result;
+}
+
 } // namespace
 
 std::expected<std::string, ArchiveError> saveSceneYaml(const Scene &scene) {
@@ -297,35 +334,40 @@ std::expected<LoadedScene, ArchiveError> loadSceneYaml(World &world, std::string
         if (!document) {
             return std::unexpected(std::move(document.error()));
         }
-        const auto created = world.createScene();
-        if (!created) {
-            return failed();
-        }
-        auto &scene = **created;
-        struct Rollback {
-            World &world;
-            Scene &scene;
-            bool completed = false;
-            ~Rollback() {
-                if (!completed) {
-                    world.unloadScene(scene);
-                }
-            }
-        } rollback{world, scene};
+        return restoreScene(world, std::move(*document), policy, component_types);
+    } catch (...) {
+        return failed();
+    }
+}
 
-        for (const auto *type : component_types) {
-            if (type == nullptr || !scene.registerComponent(*type)) {
-                return failed();
-            }
+std::expected<std::vector<std::byte>, ArchiveError> saveSceneBinary(const Scene &scene) {
+    try {
+        auto records = SceneArchiveAccess::capture(scene, {});
+        if (!records) {
+            return std::unexpected(std::move(records.error()));
         }
-        SceneArchiveAccess::sceneFields(scene) = std::move(document->fields);
-        LoadedScene result{&scene, {}};
-        if (auto restored = SceneArchiveAccess::restore(scene, document->objects, policy, result.diagnostics);
-            !restored) {
-            return std::unexpected(std::move(restored.error()));
+        return writeBinary(
+            {"Scene", 1, encodeDocument({SceneArchiveAccess::sceneFields(scene), std::move(*records)}, "Scene")});
+    } catch (...) {
+        return failed();
+    }
+}
+
+std::expected<LoadedScene, ArchiveError> loadSceneBinary(World &world, std::span<const std::byte> source,
+                                                         LoadPolicy policy) {
+    try {
+        auto archive = readBinary(source);
+        if (!archive) {
+            return std::unexpected(std::move(archive.error()));
         }
-        rollback.completed = true;
-        return result;
+        if (archive->type_name != "Scene" || archive->version != 1) {
+            return invalid("/StarFile");
+        }
+        auto document = decodeDocument(ArchiveValue{std::move(archive->fields)}, "Scene");
+        if (!document) {
+            return std::unexpected(std::move(document.error()));
+        }
+        return restoreScene(world, std::move(*document), policy, {});
     } catch (...) {
         return failed();
     }
