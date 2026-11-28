@@ -203,3 +203,58 @@ STAR_TEST(typed_asset_requests_report_decode_failures) {
     STAR_CHECK(handle.getError() == AssetLoadError::DecodeFailed);
     STAR_CHECK(handle.get() == nullptr);
 }
+
+STAR_TEST(material_assets_decode_and_resolve_parameters) {
+    const auto shader = Guid::generate();
+    const auto text = "Type: star::Material\n"
+                      "Version: 1\n"
+                      "Properties:\n"
+                      "  Shader: " +
+                      shader.toString() +
+                      "\n"
+                      "  Parameters:\n"
+                      "    BaseColor: [0.1, 0.2, 0.3, 0.5]\n"
+                      "    Metallic: 0.9\n"
+                      "    Roughness: 0.25\n"
+                      "    Custom: 4\n"
+                      "  RenderState:\n"
+                      "    Blend: Masked\n"
+                      "    Shading: Lit\n"
+                      "    DoubleSided: true\n"
+                      "    DepthTest: true\n";
+    AssetFile file;
+    file.write(text);
+
+    const auto guid = Guid::generate();
+    AssetManager manager;
+    STAR_CHECK(manager.registerAsset<MaterialAsset>(guid, file.path).has_value());
+    const auto handle = manager.load<MaterialAsset>(guid);
+    STAR_CHECK(handle.has_value());
+    STAR_CHECK(handle->get() != nullptr);
+    STAR_CHECK(handle->get()->shader == shader);
+    STAR_CHECK(handle->get()->state.blend == MaterialBlendMode::Masked);
+
+    const auto resolved = resolveMaterial(*handle->get());
+    STAR_CHECK(resolved.has_value());
+    STAR_CHECK((resolved->base_color == std::array<float, 4>{0.1F, 0.2F, 0.3F, 0.5F}));
+    STAR_CHECK(resolved->metallic == 0.9F);
+    STAR_CHECK(resolved->roughness == 0.25F);
+    STAR_CHECK(resolved->state.blend == MaterialBlendMode::Masked);
+}
+
+STAR_TEST(resolve_material_rejects_malformed_known_parameters) {
+    MaterialAsset material;
+    material.shader = Guid::generate();
+    material.parameters["BaseColor"] = serialization::ArchiveValue{serialization::ArchiveValue::Sequence{
+        serialization::ArchiveValue{serialization::PlainScalar{"1"}},
+        serialization::ArchiveValue{serialization::PlainScalar{"0"}},
+        serialization::ArchiveValue{serialization::PlainScalar{"0"}},
+    }};
+    const auto short_color = resolveMaterial(material);
+    STAR_CHECK(!short_color && short_color.error().code == serialization::ArchiveErrorCode::InvalidInput);
+
+    material.parameters.erase("BaseColor");
+    material.parameters["Roughness"] = serialization::ArchiveValue{serialization::PlainScalar{"2.0"}};
+    const auto out_of_range = resolveMaterial(material);
+    STAR_CHECK(!out_of_range && out_of_range.error().code == serialization::ArchiveErrorCode::InvalidInput);
+}

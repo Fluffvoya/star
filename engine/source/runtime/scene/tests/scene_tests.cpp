@@ -847,3 +847,65 @@ STAR_TEST(staticRenderSnapshotRejectsInvalidCameraAndLight) {
     const auto invalid_lighting = extractStaticRenderSnapshot(scene, assets);
     STAR_CHECK(!invalid_lighting && invalid_lighting.error().code == StaticRenderErrorCode::InvalidLight);
 }
+
+STAR_TEST(staticRenderSnapshotAppliesInstanceMaterials) {
+    using namespace star;
+    SnapshotFixture fixture;
+    const auto mesh_id = fixture.write();
+    const auto material_id = Guid::generate();
+    const auto material_path =
+        std::filesystem::temp_directory_path() / ("star-scene-" + Guid::generate().toString() + ".mat");
+    {
+        std::ofstream material(material_path, std::ios::binary);
+        material << "Type: star::Material\n"
+                    "Version: 1\n"
+                    "Properties:\n"
+                    "  Shader: "
+                 << Guid::generate().toString()
+                 << "\n"
+                    "  Parameters:\n"
+                    "    BaseColor: [0.2, 0.4, 0.6, 0.5]\n"
+                    "    Metallic: 0.75\n"
+                    "    Roughness: 0.15\n"
+                    "  RenderState:\n"
+                    "    Blend: Transparent\n"
+                    "    Shading: Lit\n"
+                    "    DoubleSided: false\n"
+                    "    DepthTest: true\n";
+        STAR_CHECK(material.good());
+    }
+
+    World world;
+    auto &scene = *world.createScene().value();
+    const auto mesh = scene.createObject("Mesh").value();
+    const MeshRenderer renderer{mesh_id, {material_id}, true, 1};
+    STAR_CHECK(scene.queueAddComponent(mesh, componentTypeId<MeshRenderer>(), &renderer));
+    STAR_CHECK(scene.commitCommands());
+
+    AssetManager assets;
+    STAR_CHECK(assets.registerAsset<StaticModelAsset>(mesh_id, fixture.path));
+    STAR_CHECK(assets.registerAsset<MaterialAsset>(material_id, material_path));
+
+    const auto snapshot = extractStaticRenderSnapshot(scene, assets).value();
+    STAR_CHECK(snapshot.model.parts.size() == 1);
+    const auto &material = snapshot.model.parts.front().material;
+    STAR_CHECK(material.has_value());
+    STAR_CHECK((material->base_color == std::array<float, 4>{0.2F, 0.4F, 0.6F, 0.5F}));
+    STAR_CHECK(material->metallic == 0.75F);
+    STAR_CHECK(material->roughness == 0.15F);
+    STAR_CHECK(material->blend == MaterialBlendMode::Transparent);
+
+    const auto mismatch = scene.findComponent<MeshRenderer>(mesh);
+    STAR_CHECK(mismatch != nullptr);
+    star::World second_world;
+    auto &second_scene = *second_world.createScene().value();
+    const auto second_mesh = second_scene.createObject("Mesh").value();
+    const MeshRenderer conflicting{mesh_id, {material_id, material_id}, true, 1};
+    STAR_CHECK(second_scene.queueAddComponent(second_mesh, componentTypeId<MeshRenderer>(), &conflicting));
+    STAR_CHECK(second_scene.commitCommands());
+    const auto invalid = extractStaticRenderSnapshot(second_scene, assets);
+    STAR_CHECK(!invalid && invalid.error().code == StaticRenderErrorCode::InvalidMaterial);
+
+    std::error_code error;
+    std::filesystem::remove(material_path, error);
+}

@@ -16,6 +16,7 @@ struct MeshInstance {
     Guid mesh;
     math::Mat4 transform;
     bool cast_shadows;
+    std::vector<Guid> materials;
 };
 
 struct LoadedModel {
@@ -152,7 +153,7 @@ std::expected<StaticRenderSnapshot, StaticRenderError> extractStaticRenderSnapsh
             const auto *transform = scene.findWorldTransform(object);
             if ((mesh.layer_mask & layer_mask) != 0 && mesh.mesh.isValid() && transform &&
                 !scene.findObject(object)->isPendingDestroy()) {
-                instances.push_back({object, mesh.mesh, transform->matrix, mesh.cast_shadows});
+                instances.push_back({object, mesh.mesh, transform->matrix, mesh.cast_shadows, mesh.materials});
             }
         });
         if (!meshes) {
@@ -176,9 +177,42 @@ std::expected<StaticRenderSnapshot, StaticRenderError> extractStaticRenderSnapsh
                          .first;
                 snapshot.model.textures.insert(snapshot.model.textures.end(), textures.begin(), textures.end());
             }
+            std::vector<ResolvedMaterial> overrides;
+            overrides.reserve(instance.materials.size());
+            for (const auto guid : instance.materials) {
+                auto material = AssetRef<MaterialAsset>{guid}.load(assets);
+                if (!material) {
+                    return std::unexpected(
+                        StaticRenderError{StaticRenderErrorCode::AssetLoadFailed, instance.object, guid});
+                }
+                const auto resolved = resolveMaterial(*material->get());
+                if (!resolved) {
+                    return std::unexpected(
+                        StaticRenderError{StaticRenderErrorCode::InvalidMaterial, instance.object, guid});
+                }
+                overrides.push_back(*resolved);
+            }
+            const auto first_part = snapshot.model.parts.size();
             if (!appendInstance(snapshot, instance, it->second, bounds)) {
                 return std::unexpected(
                     StaticRenderError{StaticRenderErrorCode::InvalidTransform, instance.object, instance.mesh});
+            }
+            const auto part_count = snapshot.model.parts.size() - first_part;
+            if (!overrides.empty() && overrides.size() != 1 && overrides.size() != part_count) {
+                return std::unexpected(
+                    StaticRenderError{StaticRenderErrorCode::InvalidMaterial, instance.object, instance.mesh});
+            }
+            if (!overrides.empty()) {
+                for (std::size_t index = 0; index < part_count; ++index) {
+                    const auto &resolved = overrides[overrides.size() == 1 ? 0 : index];
+                    auto &material = snapshot.model.parts[first_part + index].material;
+                    auto pbr = material.value_or(StaticPbrMaterial{});
+                    pbr.base_color = resolved.base_color;
+                    pbr.metallic = resolved.metallic;
+                    pbr.roughness = resolved.roughness;
+                    pbr.blend = resolved.state.blend;
+                    material = pbr;
+                }
             }
         }
         snapshot.bounds = bounds.result();
