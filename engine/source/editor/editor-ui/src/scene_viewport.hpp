@@ -2,6 +2,7 @@
 
 #include "core/math.hpp"
 #include "editor-ui/imgui_layer.hpp"
+#include "scene/components.hpp"
 
 #include <imgui.h>
 
@@ -36,11 +37,20 @@ class SceneViewport final {
         float near_plane;
         float far_plane;
     };
+    struct TransformDrag {
+        ObjectHandle object;
+        math::Mat4 original;
+        math::Mat4 preview;
+        std::optional<Transform> local;
+    };
 
     [[nodiscard]] bool resize(std::uint32_t width, std::uint32_t height);
     void releaseTarget();
     [[nodiscard]] math::Vec3 forward() const;
+    [[nodiscard]] CameraView cameraView() const;
     [[nodiscard]] math::Mat4::Vector4 project(math::Vec3 point, float aspect) const;
+    [[nodiscard]] bool drawGizmo(EditorDocument &document, ImVec2 origin, ImVec2 size, bool hovered);
+    void cancelGizmo();
 
     rhi::Device &m_device;
     ImGuiLayer &m_layer;
@@ -57,6 +67,10 @@ class SceneViewport final {
     bool m_draw_requested = false;
     bool m_looking = false;
     bool m_orthographic = false;
+    bool m_local_gizmo = false;
+    bool m_snap_gizmo = false;
+    int m_gizmo_operation = 0;
+    std::optional<TransformDrag> m_drag;
     std::optional<CameraView> m_game_camera;
     float m_ortho_height = 12.0F;
     float m_yaw = 0.6F;

@@ -5,6 +5,7 @@
 #include "scene/world.hpp"
 #include "scene_viewport.hpp"
 
+#include <ImGuizmo.h>
 #include <imgui.h>
 #include <imgui_internal.h>
 
@@ -791,7 +792,10 @@ const std::filesystem::path &EditorShell::getProjectRoot() const noexcept {
     return m_impl ? m_impl->project_root : empty;
 }
 
-void EditorShell::draw(const EditorShellStatus &status) { m_impl->draw_frame(status, ImGui::GetTime()); }
+void EditorShell::draw(const EditorShellStatus &status) {
+    ImGuizmo::BeginFrame();
+    m_impl->draw_frame(status, ImGui::GetTime());
+}
 
 std::expected<void, UiError> EditorShell::initializeViewport(rhi::Device &device, ImGuiLayer &layer,
                                                              const std::filesystem::path &shader_directory) {

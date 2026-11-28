@@ -99,6 +99,9 @@ class STAR_SCENE_API Scene final {
 
     [[nodiscard]] const Hierarchy *findHierarchy(ObjectHandle handle) const noexcept;
     [[nodiscard]] const WorldTransform *findWorldTransform(ObjectHandle handle) const noexcept;
+    // Converts a desired world pose to local TRS, rejecting singular parents or shear.
+    [[nodiscard]] std::expected<Transform, SceneError> localTransformForWorld(ObjectHandle handle,
+                                                                              const math::Mat4 &world) const noexcept;
     [[nodiscard]] std::expected<void, SceneError> queueSetParent(ObjectHandle child, ObjectHandle parent = {},
                                                                  bool keep_world_transform = true) noexcept;
 

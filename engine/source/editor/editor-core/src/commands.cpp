@@ -115,9 +115,8 @@ bool DeleteObjectCommand::execute(EditorDocument &document) {
     if (object == nullptr) {
         return false;
     }
-    if (GameObject *parent = object->getParent(); parent != nullptr) {
-        m_parent = parent->getGuid();
-    }
+    const auto *parent = object->getParent();
+    m_parent = parent ? parent->getGuid() : Guid{};
     auto snapshot = savePrefabYaml(scene, object->getHandle());
     if (!snapshot) {
         log::warning(k_log_category, "Cannot snapshot the object before deleting it");
@@ -146,7 +145,7 @@ bool DeleteObjectCommand::undo(EditorDocument &document) {
     }
     if (m_parent.isValid()) {
         if (GameObject *parent = scene.findObject(m_parent); parent != nullptr) {
-            static_cast<void>(scene.queueSetParent(restored->root, parent->getHandle(), true));
+            static_cast<void>(scene.queueSetParent(restored->root, parent->getHandle(), false));
         }
     }
     static_cast<void>(scene.commitCommands());
