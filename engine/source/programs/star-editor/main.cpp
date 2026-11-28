@@ -156,6 +156,7 @@ int main(int argc, char **argv) {
         star::log::error(k_log_category, "ImGui initialization failed: {}", layer_result.error().message);
         return 1;
     }
+    const auto game_module = parse_path_option(argc, argv, "--game-module=");
     const std::filesystem::path scene_path = parse_path_option(argc, argv, "--scene=");
     std::filesystem::path project_root = parse_path_option(argc, argv, "--project=");
     if (project_root.empty()) {
@@ -178,7 +179,7 @@ int main(int argc, char **argv) {
 
     std::shared_ptr<star::editor::EditorDocument> document;
     if (!scene_path.empty()) {
-        auto opened = star::editor::EditorDocument::open(scene_path);
+        auto opened = star::editor::EditorDocument::open(scene_path, game_module);
         if (!opened) {
             star::log::error(k_log_category, "Open failed: {}", opened.error().message);
         } else {
@@ -186,7 +187,7 @@ int main(int argc, char **argv) {
         }
     }
     if (!document) {
-        auto created = star::editor::EditorDocument::createEmpty("Untitled");
+        auto created = star::editor::EditorDocument::createEmpty("Untitled", game_module);
         if (!created) {
             star::log::error(k_log_category, "Scene creation failed: {}", created.error().message);
             return 1;

@@ -1,6 +1,8 @@
 #include "scene_viewport.hpp"
 
 #include "editor/document.hpp"
+#include "scene/components.hpp"
+#include "scene/world.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +10,7 @@
 #include <cstddef>
 #include <fstream>
 #include <limits>
+#include <vector>
 
 namespace star::editor {
 namespace {
@@ -145,25 +148,61 @@ math::Vec3 SceneViewport::forward() const {
 math::Mat4::Vector4 SceneViewport::project(math::Vec3 point, float aspect) const {
     const auto direction = forward();
     const auto right = math::normalize(math::cross(direction, {0, 1, 0}));
-    const auto up = math::cross(right, direction);
-    const auto relative = point - m_eye;
-    const float distance = math::dot(relative, direction);
-    constexpr float near_plane = 0.05F;
-    constexpr float far_plane = 250.0F;
-    if (m_orthographic) {
+    const CameraView camera = m_game_camera.value_or(
+        CameraView{m_eye, direction, right, math::cross(right, direction), math::pi / 3.0F, 0.05F, 250.0F});
+    const auto relative = point - camera.eye;
+    const float distance = math::dot(relative, camera.forward);
+    if (m_orthographic && !m_game_camera) {
         const float scale = 2.0F / m_ortho_height;
-        return {math::dot(relative, right) * scale / aspect, -math::dot(relative, up) * scale,
-                (distance - near_plane) / (far_plane - near_plane), 1.0F};
+        return {math::dot(relative, camera.right) * scale / aspect, -math::dot(relative, camera.up) * scale,
+                (distance - camera.near_plane) / (camera.far_plane - camera.near_plane), 1.0F};
     }
-    const float scale = 1.0F / std::tan(math::pi / 6.0F);
-    return {math::dot(relative, right) * scale / aspect, -math::dot(relative, up) * scale,
-            (distance - near_plane) * far_plane / (far_plane - near_plane), distance};
+    const float scale = 1.0F / std::tan(camera.fov * 0.5F);
+    return {math::dot(relative, camera.right) * scale / aspect, -math::dot(relative, camera.up) * scale,
+            (distance - camera.near_plane) * camera.far_plane / (camera.far_plane - camera.near_plane), distance};
 }
 
-void SceneViewport::draw(EditorDocument &document, float delta_seconds) {
-    ImGui::Checkbox("Orthographic", &m_orthographic);
-    ImGui::SameLine();
-    ImGui::TextDisabled("RMB + WASD to fly  |  F to focus");
+void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool game_view) {
+    Scene &scene = document.getScene();
+    if (!scene.getWorld().isPlaying() && !scene.commitCommands()) {
+        return;
+    }
+    const auto objects = scene.getObjects();
+    m_game_camera.reset();
+    if (game_view) {
+        m_looking = false;
+        for (const auto handle : objects) {
+            const auto *object = scene.findObject(handle);
+            const auto *camera = scene.findComponent<Camera>(handle);
+            if (!object || !object->isActiveInHierarchy() || !camera || !std::isfinite(camera->vertical_fov) ||
+                camera->vertical_fov <= 0.0F || camera->vertical_fov >= math::pi ||
+                !std::isfinite(camera->near_plane) || !std::isfinite(camera->far_plane) || camera->near_plane <= 0.0F ||
+                camera->far_plane <= camera->near_plane) {
+                continue;
+            }
+            const auto &matrix = object->getWorldTransform().matrix;
+            const auto &z = matrix.columns[2];
+            const auto &y = matrix.columns[1];
+            const auto direction = math::normalize(math::Vec3{-z.x, -z.y, -z.z});
+            const auto right = math::normalize(math::cross(direction, {y.x, y.y, y.z}));
+            if (!(math::lengthSquared(right) > 0.0F)) {
+                continue;
+            }
+            m_game_camera = CameraView{
+                matrix.transformPoint({}), direction,        right, math::cross(right, direction), camera->vertical_fov,
+                camera->near_plane,        camera->far_plane};
+            break;
+        }
+        if (!m_game_camera) {
+            ImGui::TextDisabled("No active game camera. Use Play > Simulation Camera to inspect the scene.");
+            return;
+        }
+        ImGui::TextDisabled("Game Camera");
+    } else {
+        ImGui::Checkbox("Orthographic", &m_orthographic);
+        ImGui::SameLine();
+        ImGui::TextDisabled("RMB + WASD to fly  |  F to focus");
+    }
     const ImVec2 size = ImGui::GetContentRegionAvail();
     if (size.x < 2.0F || size.y < 2.0F ||
         !resize(static_cast<std::uint32_t>(size.x), static_cast<std::uint32_t>(size.y))) {
@@ -175,7 +214,7 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds) {
     m_draw_requested = true;
     const bool hovered = ImGui::IsItemHovered();
     const ImGuiIO &io = ImGui::GetIO();
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    if (!game_view && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         m_looking = true;
     }
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right) || !ImGui::IsWindowFocused()) {
@@ -193,18 +232,14 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds) {
                               math::Vec3{0, 1, 0} * axis(ImGuiKey_E, ImGuiKey_Q);
         m_eye = m_eye + math::normalize(movement) * (std::min(delta_seconds, 0.1F) * (io.KeyShift ? 15.0F : 5.0F));
     }
-    if (hovered && io.MouseWheel != 0.0F) {
+    if (!game_view && hovered && io.MouseWheel != 0.0F) {
         if (m_orthographic) {
             m_ortho_height = std::clamp(m_ortho_height * std::pow(0.8F, io.MouseWheel), 0.25F, 150.0F);
         } else {
             m_eye = m_eye + forward() * io.MouseWheel;
         }
     }
-    Scene &scene = document.getScene();
-    if (!scene.commitCommands()) {
-        return;
-    }
-    if (hovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+    if (!game_view && hovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
         if (const auto *selected = document.findSelected()) {
             m_eye = selected->getWorldTransform().matrix.transformPoint({}) - forward() * 6.0F;
         }
@@ -216,7 +251,7 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds) {
     Guid picked;
     float closest = 100.0F;
     float picked_depth = std::numeric_limits<float>::infinity();
-    for (const auto handle : scene.getObjects()) {
+    for (const auto handle : objects) {
         const auto *object = scene.findObject(handle);
         if (object == nullptr) {
             continue;

@@ -222,4 +222,29 @@ void SetPropertyCommand::undo(EditorDocument &document) {
     }
 }
 
+SetTransformCommand::SetTransformCommand(Guid object, Transform transform) : m_object(object), m_transform(transform) {}
+
+std::string_view SetTransformCommand::getName() const noexcept { return "Edit Transform"; }
+
+bool SetTransformCommand::execute(EditorDocument &document) {
+    auto *object = document.getScene().findObject(m_object);
+    if (!object) {
+        return false;
+    }
+    if (!m_before) {
+        m_before = object->getTransform();
+    }
+    object->setTransform(m_transform);
+    document.markDirty();
+    return true;
+}
+
+void SetTransformCommand::undo(EditorDocument &document) {
+    auto *object = document.getScene().findObject(m_object);
+    if (object && m_before) {
+        object->setTransform(*m_before);
+        document.markDirty();
+    }
+}
+
 } // namespace star::editor

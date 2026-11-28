@@ -20,6 +20,8 @@ enum class EditorErrorCode : std::uint8_t {
     SceneSaveFailed,
     FileReadFailed,
     FileWriteFailed,
+    GameModuleFailed,
+    PlayFailed,
 };
 
 struct EditorError {
@@ -34,9 +36,11 @@ class EditorCommand;
 // All methods run on the thread that owns the document.
 class STAR_EDITORCORE_API EditorDocument final {
   public:
-    [[nodiscard]] static std::expected<std::shared_ptr<EditorDocument>, EditorError> createEmpty(std::string name);
     [[nodiscard]] static std::expected<std::shared_ptr<EditorDocument>, EditorError>
-    open(const std::filesystem::path &scene_path);
+    createEmpty(std::string name, const std::filesystem::path &game_module = {});
+    [[nodiscard]] static std::expected<std::shared_ptr<EditorDocument>, EditorError>
+    open(const std::filesystem::path &scene_path, const std::filesystem::path &game_module = {});
+    [[nodiscard]] std::expected<std::shared_ptr<EditorDocument>, EditorError> createPlayCopy();
 
     ~EditorDocument();
     EditorDocument(const EditorDocument &) = delete;
@@ -44,6 +48,7 @@ class STAR_EDITORCORE_API EditorDocument final {
 
     [[nodiscard]] Scene &getScene() const noexcept { return *m_scene; }
     [[nodiscard]] const std::filesystem::path &getPath() const noexcept { return m_path; }
+    [[nodiscard]] const std::filesystem::path &getGameModulePath() const noexcept { return m_game_module; }
     [[nodiscard]] const std::string &getName() const noexcept { return m_name; }
     [[nodiscard]] bool isDirty() const noexcept { return m_dirty; }
     void markDirty() noexcept { m_dirty = true; }
@@ -67,11 +72,13 @@ class STAR_EDITORCORE_API EditorDocument final {
 
   private:
     EditorDocument();
+    [[nodiscard]] std::expected<void, EditorError> loadGameModule(const std::filesystem::path &path);
     [[nodiscard]] bool hasSelection(const Guid &guid) const noexcept;
 
     std::unique_ptr<World> m_world;
     Scene *m_scene = nullptr;
     std::filesystem::path m_path;
+    std::filesystem::path m_game_module;
     std::string m_name;
     bool m_dirty = false;
     std::vector<Guid> m_selection;
