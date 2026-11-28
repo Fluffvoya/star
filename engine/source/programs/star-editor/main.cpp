@@ -106,6 +106,7 @@ int main(int argc, char **argv) {
         .title = "Star Editor",
         .width = 1600,
         .height = 900,
+        .vulkan = true,
     });
     if (!window) {
         star::log::error(k_log_category, "Window creation failed: {}", window.error().message);
@@ -125,8 +126,9 @@ int main(int argc, char **argv) {
     }
     std::unique_ptr<star::rhi::Device> device = std::move(*device_result);
 
-    const auto width = static_cast<std::uint32_t>((*window)->getWidth() > 0 ? (*window)->getWidth() : 1600);
-    const auto height = static_cast<std::uint32_t>((*window)->getHeight() > 0 ? (*window)->getHeight() : 900);
+    const auto [pixel_width, pixel_height] = (*window)->getPixelSize();
+    const auto width = static_cast<std::uint32_t>(pixel_width > 0 ? pixel_width : 1600);
+    const auto height = static_cast<std::uint32_t>(pixel_height > 0 ? pixel_height : 900);
     auto swapchain_result = device->createSwapchain(star::rhi::SwapchainDesc{
         .width = width,
         .height = height,
@@ -152,6 +154,8 @@ int main(int argc, char **argv) {
         .shader_directory = executable_dir,
         .enable_docking = true,
         .font_size = 16.0F,
+        .native_window = (*window)->getNativeHandle(),
+        .enable_platform_viewports = !has_flag(argc, argv, "--single-window"),
     });
     if (!layer_result) {
         star::log::error(k_log_category, "ImGui initialization failed: {}", layer_result.error().message);
@@ -226,9 +230,7 @@ int main(int argc, char **argv) {
     }
     shell.setDocument(document);
 
-    const auto recreate_swapchain = [&]() {
-        const auto next_width = static_cast<std::uint32_t>((*window)->getWidth() > 0 ? (*window)->getWidth() : 1600);
-        const auto next_height = static_cast<std::uint32_t>((*window)->getHeight() > 0 ? (*window)->getHeight() : 900);
+    const auto recreate_swapchain = [&](std::uint32_t next_width, std::uint32_t next_height) {
         const auto resized = device->resizeSwapchain(swapchain, next_width, next_height);
         if (!resized) {
             star::log::error(k_log_category, "Swapchain resize failed ({})", static_cast<int>(resized.error()));
@@ -249,7 +251,10 @@ int main(int argc, char **argv) {
         const float delta_seconds = std::chrono::duration<float>(frame_start - previous).count();
         previous = frame_start;
 
-        for (const star::WindowEvent &event : (*window)->pollEvents()) {
+        const auto forward_event = [](const void *event, void *context) {
+            static_cast<star::editor::ImGuiLayer *>(context)->processNativeEvent(event);
+        };
+        for (const star::WindowEvent &event : (*window)->pollEvents(forward_event, layer.get())) {
             layer->processEvent(event);
             if (event.type == star::WindowEventType::CloseRequested) {
                 shell.requestQuit();
@@ -259,26 +264,31 @@ int main(int argc, char **argv) {
             break;
         }
 
-        const auto drawable_width = static_cast<std::uint32_t>(std::max((*window)->getWidth(), 0));
-        const auto drawable_height = static_cast<std::uint32_t>(std::max((*window)->getHeight(), 0));
-        if (drawable_width == 0 || drawable_height == 0) {
+        const auto [native_width, native_height] = (*window)->getPixelSize();
+        const auto drawable_width = static_cast<std::uint32_t>(std::max(native_width, 0));
+        const auto drawable_height = static_cast<std::uint32_t>(std::max(native_height, 0));
+        const bool draw_main = drawable_width > 0 && drawable_height > 0;
+        if (!draw_main) {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            previous = std::chrono::steady_clock::now();
-            continue;
+            if (!layer->usesPlatformViewports()) {
+                previous = std::chrono::steady_clock::now();
+                continue;
+            }
         }
 
         device->beginFrame();
-        auto image_result = device->acquireNextImage(swapchain);
-        if (!image_result) {
-            if (image_result.error() == star::rhi::DeviceError::Outdated) {
-                recreate_swapchain();
+        star::rhi::TextureHandle image;
+        if (draw_main) {
+            const auto acquired = device->acquireNextImage(swapchain);
+            if (acquired) {
+                image = *acquired;
+            } else if (acquired.error() != star::rhi::DeviceError::Outdated ||
+                       !recreate_swapchain(drawable_width, drawable_height)) {
+                star::log::error(k_log_category, "Image acquire failed ({})", static_cast<int>(acquired.error()));
+                running = false;
                 device->endFrame();
-                continue;
+                break;
             }
-            star::log::error(k_log_category, "Image acquire failed ({})", static_cast<int>(image_result.error()));
-            running = false;
-            device->endFrame();
-            break;
         }
 
         layer->beginFrame(drawable_width, drawable_height, delta_seconds);
@@ -307,7 +317,7 @@ int main(int argc, char **argv) {
         star::rhi::TextureHandle capture_texture;
         star::rhi::BufferHandle capture_readback;
         const std::uint64_t capture_bytes = static_cast<std::uint64_t>(drawable_width) * drawable_height * 4U;
-        if (capture_pending && rendered >= 2) {
+        if (image.isValid() && capture_pending && rendered >= 2) {
             auto texture = device->createTexture(star::rhi::TextureDesc{
                 .width = drawable_width,
                 .height = drawable_height,
@@ -330,7 +340,9 @@ int main(int argc, char **argv) {
             }
         }
 
-        layer->render(*commands, *image_result, true, clear_color);
+        if (image.isValid()) {
+            layer->render(*commands, image, true, clear_color);
+        }
         commands->endDebugMarker();
 
         const std::array lists{commands};
@@ -340,14 +352,15 @@ int main(int argc, char **argv) {
             device->endFrame();
             break;
         }
-        if (auto presented = device->present(swapchain); !presented) {
-            if (presented.error() == star::rhi::DeviceError::Outdated) {
-                recreate_swapchain();
-            } else {
+        if (image.isValid()) {
+            if (const auto presented = device->present(swapchain);
+                !presented && (presented.error() != star::rhi::DeviceError::Outdated ||
+                               !recreate_swapchain(drawable_width, drawable_height))) {
                 star::log::error(k_log_category, "Present failed ({})", static_cast<int>(presented.error()));
                 running = false;
             }
         }
+        layer->renderPlatformWindows();
         device->endFrame();
         ++rendered;
 

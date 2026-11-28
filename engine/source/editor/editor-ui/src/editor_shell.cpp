@@ -870,6 +870,7 @@ const std::filesystem::path &EditorShell::getProjectRoot() const noexcept {
 }
 
 void EditorShell::draw(const EditorShellStatus &status) {
+    ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
     ImGuizmo::BeginFrame();
     m_impl->draw_frame(status, ImGui::GetTime());
 }

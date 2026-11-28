@@ -33,7 +33,9 @@ Window::Window(Window &&) noexcept = default;
 
 Window &Window::operator=(Window &&) noexcept = default;
 
-std::span<const WindowEvent> Window::pollEvents() {
+std::span<const WindowEvent> Window::pollEvents() { return pollEvents(nullptr, nullptr); }
+
+std::span<const WindowEvent> Window::pollEvents(NativeEventObserver observer, void *context) {
     if (!m_implementation) {
         return {};
     }
@@ -42,6 +44,9 @@ std::span<const WindowEvent> Window::pollEvents() {
 
     SDL_Event event{};
     while (SDL_PollEvent(&event)) {
+        if (observer) {
+            observer(&event, context);
+        }
         if (event.type == SDL_EVENT_QUIT) {
             m_implementation->should_close = true;
             m_implementation->events.push_back(WindowEvent{WindowEventType::CloseRequested});
@@ -168,6 +173,15 @@ std::int32_t Window::getWidth() const { return m_implementation ? m_implementati
 
 std::int32_t Window::getHeight() const { return m_implementation ? m_implementation->height : 0; }
 
+std::pair<std::int32_t, std::int32_t> Window::getPixelSize() const noexcept {
+    int width = 0;
+    int height = 0;
+    if (m_implementation && (SDL_GetWindowFlags(m_implementation->handle) & SDL_WINDOW_MINIMIZED) == 0) {
+        SDL_GetWindowSizeInPixels(m_implementation->handle, &width, &height);
+    }
+    return {width, height};
+}
+
 std::string_view Window::getTitle() const {
     return m_implementation ? std::string_view(m_implementation->title) : std::string_view{};
 }
@@ -181,9 +195,12 @@ std::expected<std::unique_ptr<Window>, PlatformError> createWindow(const WindowD
     implementation->title = descriptor.title;
     implementation->width = descriptor.width;
     implementation->height = descriptor.height;
+    SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (descriptor.vulkan) {
+        flags |= SDL_WINDOW_VULKAN;
+    }
     implementation->handle =
-        SDL_CreateWindow(implementation->title.c_str(), implementation->width, implementation->height,
-                         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        SDL_CreateWindow(implementation->title.c_str(), implementation->width, implementation->height, flags);
 
     if (implementation->handle == nullptr) {
         return std::unexpected(PlatformError{SDL_GetError()});

@@ -43,6 +43,7 @@ star_add_module(EditorUI editor-ui
     src/scene_viewport.hpp
     src/scene_models.cpp
     src/scene_models.hpp
+    "${star_imgui_dir}/backends/imgui_impl_sdl3.cpp"
 )
 
 target_link_libraries(StarEditorUI PUBLIC Star::Core Star::Platform Star::RHI Star::EditorCore

@@ -281,6 +281,8 @@ struct SwapchainDesc {
     std::uint32_t height = 0;
     bool vsync = true;
     std::string_view debugName;
+    // SDL_Window* for an additional window. Empty uses the device's original surface.
+    void *native_window = nullptr;
 };
 
 struct SwapchainInfo {

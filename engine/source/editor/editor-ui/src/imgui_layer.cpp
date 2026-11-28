@@ -2,6 +2,7 @@
 
 #include "core/log.hpp"
 
+#include <backends/imgui_impl_sdl3.h>
 #include <imgui.h>
 
 #include <SDL3/SDL.h>
@@ -188,7 +189,15 @@ static_assert(sizeof(UiUniforms) == 16, "Uniform size must match the shader cons
 } // namespace
 
 struct ImGuiLayer::Impl {
+    struct PlatformSwapchain {
+        rhi::SwapchainHandle handle;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+    };
+
     rhi::Device *device = nullptr;
+    rhi::TextureFormat color_format = rhi::TextureFormat::Bgra8Unorm;
+    bool sdl_backend = false;
     rhi::SamplerHandle sampler;
     rhi::ShaderModuleHandle vertex_shader;
     rhi::ShaderModuleHandle fragment_shader;
@@ -208,6 +217,12 @@ struct ImGuiLayer::Impl {
     std::string ini_path;
     std::uint32_t draw_list_count = 0;
     std::uint32_t draw_call_count = 0;
+
+    void recordDrawData(rhi::CommandList &commands, ImDrawData *draw_data, rhi::TextureHandle target,
+                        bool present_after, const std::array<float, 4> &clear_color);
+    static void createPlatformWindow(ImGuiViewport *viewport);
+    static void destroyPlatformWindow(ImGuiViewport *viewport);
+    static void renderPlatformWindow(ImGuiViewport *viewport, void *);
 
     [[nodiscard]] bool ensure_buffer(rhi::BufferHandle &buffer, std::uint64_t &capacity, std::uint64_t needed,
                                      rhi::BufferUsage usage, const char *name) {
@@ -240,6 +255,7 @@ std::expected<std::unique_ptr<ImGuiLayer>, UiError> ImGuiLayer::create(const ImG
     }
     auto implementation = std::make_unique<Impl>();
     implementation->device = options.device;
+    implementation->color_format = options.color_format;
 
     const std::vector<std::uint32_t> vertex_spirv = load_spirv(options.shader_directory / "imgui-ui-vertex.spv");
     const std::vector<std::uint32_t> fragment_spirv = load_spirv(options.shader_directory / "imgui-ui-fragment.spv");
@@ -424,6 +440,21 @@ std::expected<std::unique_ptr<ImGuiLayer>, UiError> ImGuiLayer::create(const ImG
     }
     implementation->bind_group = *bind_group;
     io.Fonts->SetTexID((ImTextureID)(std::uintptr_t)1);
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+    if (options.native_window) {
+        implementation->sdl_backend = ImGui_ImplSDL3_InitForVulkan(static_cast<SDL_Window *>(options.native_window));
+        if (implementation->sdl_backend && options.enable_platform_viewports &&
+            (io.BackendFlags & ImGuiBackendFlags_PlatformHasViewports) != 0) {
+            io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+            io.ConfigViewportsNoAutoMerge = true;
+            io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
+            io.BackendRendererUserData = implementation.get();
+            auto &platform = ImGui::GetPlatformIO();
+            platform.Renderer_CreateWindow = &Impl::createPlatformWindow;
+            platform.Renderer_DestroyWindow = &Impl::destroyPlatformWindow;
+            platform.Renderer_RenderWindow = &Impl::renderPlatformWindow;
+        }
+    }
 
     log::info(k_log_category, "ImGui {} ready (atlas {}x{})", IMGUI_VERSION, atlas_width, atlas_height);
     return std::unique_ptr<ImGuiLayer>(new ImGuiLayer(std::move(implementation)));
@@ -435,6 +466,14 @@ ImGuiLayer::~ImGuiLayer() {
     if (!m_impl) {
         return;
     }
+    if (ImGui::GetIO().IniFilename) {
+        ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
+        ImGui::GetIO().IniFilename = nullptr;
+    }
+    if (m_impl->sdl_backend) {
+        ImGui_ImplSDL3_Shutdown();
+    }
+    ImGui::GetIO().BackendRendererUserData = nullptr;
     ImGui::DestroyContext();
     rhi::Device *device = m_impl->device;
     if (device == nullptr) {
@@ -459,6 +498,9 @@ ImGuiLayer::~ImGuiLayer() {
 }
 
 void ImGuiLayer::processEvent(const WindowEvent &event) {
+    if (m_impl->sdl_backend) {
+        return;
+    }
     ImGuiIO &io = ImGui::GetIO();
     switch (event.type) {
     case WindowEventType::MouseMotion:
@@ -499,15 +541,40 @@ void ImGuiLayer::processEvent(const WindowEvent &event) {
     }
 }
 
+void ImGuiLayer::processNativeEvent(const void *event) {
+    if (m_impl->sdl_backend && event) {
+        ImGui_ImplSDL3_ProcessEvent(static_cast<const SDL_Event *>(event));
+    }
+}
+
 void ImGuiLayer::beginFrame(std::uint32_t width, std::uint32_t height, float delta_seconds) {
     ImGuiIO &io = ImGui::GetIO();
-    io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
-    io.DisplayFramebufferScale = ImVec2(1.0F, 1.0F);
+    if (m_impl->sdl_backend) {
+        ImGui_ImplSDL3_NewFrame();
+    } else {
+        io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
+        io.DisplayFramebufferScale = ImVec2(1.0F, 1.0F);
+    }
     io.DeltaTime = std::max(delta_seconds, 1.0F / 1000.0F);
     ImGui::NewFrame();
 }
 
 void ImGuiLayer::endFrame() { ImGui::Render(); }
+
+bool ImGuiLayer::usesPlatformViewports() const noexcept {
+    return (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+}
+
+void ImGuiLayer::renderPlatformWindows() {
+    if (usesPlatformViewports()) {
+        const auto primary_lists = m_impl->draw_list_count;
+        const auto primary_calls = m_impl->draw_call_count;
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+        m_impl->draw_list_count = primary_lists;
+        m_impl->draw_call_count = primary_calls;
+    }
+}
 
 std::expected<std::uint64_t, UiError> ImGuiLayer::registerTexture(rhi::TextureViewHandle view) {
     const std::array entries{
@@ -534,9 +601,13 @@ void ImGuiLayer::unregisterTexture(std::uint64_t id) {
 
 void ImGuiLayer::render(rhi::CommandList &commands, rhi::TextureHandle target, bool present_after,
                         const std::array<float, 4> &clear_color) {
-    ImDrawData *draw_data = ImGui::GetDrawData();
-    m_impl->draw_list_count = 0;
-    m_impl->draw_call_count = 0;
+    m_impl->recordDrawData(commands, ImGui::GetDrawData(), target, present_after, clear_color);
+}
+
+void ImGuiLayer::Impl::recordDrawData(rhi::CommandList &commands, ImDrawData *draw_data, rhi::TextureHandle target,
+                                      bool present_after, const std::array<float, 4> &clear_color) {
+    draw_list_count = 0;
+    draw_call_count = 0;
 
     commands.beginRenderPass(rhi::RenderPassBeginInfo{
         .color_target = target,
@@ -549,10 +620,9 @@ void ImGuiLayer::render(rhi::CommandList &commands, rhi::TextureHandle target, b
     if (draw_data != nullptr && draw_data->TotalVtxCount > 0) {
         const std::uint64_t vertex_bytes = static_cast<std::uint64_t>(draw_data->TotalVtxCount) * sizeof(UiVertex);
         const std::uint64_t index_bytes = static_cast<std::uint64_t>(draw_data->TotalIdxCount) * sizeof(std::uint32_t);
-        const bool buffers_ready = m_impl->ensure_buffer(m_impl->vertex_buffer, m_impl->vertex_capacity, vertex_bytes,
-                                                         rhi::BufferUsage::Vertex, "ImGui Vertices") &&
-                                   m_impl->ensure_buffer(m_impl->index_buffer, m_impl->index_capacity, index_bytes,
-                                                         rhi::BufferUsage::Index, "ImGui Indices");
+        const bool buffers_ready =
+            ensure_buffer(vertex_buffer, vertex_capacity, vertex_bytes, rhi::BufferUsage::Vertex, "ImGui Vertices") &&
+            ensure_buffer(index_buffer, index_capacity, index_bytes, rhi::BufferUsage::Index, "ImGui Indices");
 
         std::uint64_t vertex_offset = 0;
         std::uint64_t index_offset = 0;
@@ -565,8 +635,8 @@ void ImGuiLayer::render(rhi::CommandList &commands, rhi::TextureHandle target, b
             const auto indices =
                 std::span<const std::byte>(reinterpret_cast<const std::byte *>(list->IdxBuffer.Data),
                                            static_cast<std::size_t>(list->IdxBuffer.Size) * sizeof(ImDrawIdx));
-            uploaded = m_impl->device->writeBuffer(m_impl->vertex_buffer, vertices, vertex_offset) &&
-                       m_impl->device->writeBuffer(m_impl->index_buffer, indices, index_offset);
+            uploaded = device->writeBuffer(vertex_buffer, vertices, vertex_offset) &&
+                       device->writeBuffer(index_buffer, indices, index_offset);
             vertex_offset += vertices.size();
             index_offset += indices.size();
         }
@@ -581,58 +651,59 @@ void ImGuiLayer::render(rhi::CommandList &commands, rhi::TextureHandle target, b
             uniforms.translate[1] = -1.0F - position.y * uniforms.scale[1];
             const auto uniform_bytes =
                 std::span<const std::byte>(reinterpret_cast<const std::byte *>(&uniforms), sizeof(uniforms));
-            uploaded = static_cast<bool>(m_impl->device->writeBuffer(m_impl->uniform_buffer, uniform_bytes));
+            uploaded = static_cast<bool>(device->writeBuffer(uniform_buffer, uniform_bytes));
         }
 
         if (uploaded) {
-            commands.bindVertexBuffer(m_impl->vertex_buffer);
-            commands.bindIndexBuffer(m_impl->index_buffer, 0, sizeof(ImDrawIdx) == 4);
+            commands.bindVertexBuffer(vertex_buffer);
+            commands.bindIndexBuffer(index_buffer, 0, sizeof(ImDrawIdx) == 4);
 
             rhi::BindGroupHandle bound_group;
             const ImVec2 position = draw_data->DisplayPos;
+            const ImVec2 framebuffer = draw_data->FramebufferScale;
             std::uint32_t global_vertex_offset = 0;
             std::uint32_t global_index_offset = 0;
-            m_impl->draw_list_count = static_cast<std::uint32_t>(draw_data->CmdListsCount);
+            draw_list_count = static_cast<std::uint32_t>(draw_data->CmdListsCount);
             for (int list_index = 0; list_index < draw_data->CmdListsCount; ++list_index) {
                 const ImDrawList *list = draw_data->CmdLists[list_index];
                 for (const ImDrawCmd &command : list->CmdBuffer) {
                     if (command.UserCallback != nullptr) {
                         continue;
                     }
-                    const float clip_left = command.ClipRect.x - position.x;
-                    const float clip_top = command.ClipRect.y - position.y;
-                    const float clip_right = command.ClipRect.z - position.x;
-                    const float clip_bottom = command.ClipRect.w - position.y;
+                    const float clip_left = (command.ClipRect.x - position.x) * framebuffer.x;
+                    const float clip_top = (command.ClipRect.y - position.y) * framebuffer.y;
+                    const float clip_right = (command.ClipRect.z - position.x) * framebuffer.x;
+                    const float clip_bottom = (command.ClipRect.w - position.y) * framebuffer.y;
                     if (clip_right <= clip_left || clip_bottom <= clip_top) {
                         continue;
                     }
                     const auto x = static_cast<std::int32_t>(std::max(clip_left, 0.0F));
                     const auto y = static_cast<std::int32_t>(std::max(clip_top, 0.0F));
                     const auto right =
-                        static_cast<std::int32_t>(std::min(clip_right, static_cast<float>(draw_data->DisplaySize.x)));
+                        static_cast<std::int32_t>(std::min(clip_right, draw_data->DisplaySize.x * framebuffer.x));
                     const auto bottom =
-                        static_cast<std::int32_t>(std::min(clip_bottom, static_cast<float>(draw_data->DisplaySize.y)));
+                        static_cast<std::int32_t>(std::min(clip_bottom, draw_data->DisplaySize.y * framebuffer.y));
                     if (right <= x || bottom <= y) {
                         continue;
                     }
-                    rhi::BindGroupHandle group = m_impl->bind_group;
+                    rhi::BindGroupHandle group = bind_group;
                     if (command.GetTexID() != ImTextureID{1}) {
-                        const auto texture = m_impl->images.find(command.GetTexID());
-                        if (texture == m_impl->images.end()) {
+                        const auto texture = images.find(command.GetTexID());
+                        if (texture == images.end()) {
                             continue;
                         }
                         group = texture->second;
                     }
                     if (bound_group != group) {
                         const std::array groups{group};
-                        commands.bindGraphicsPipeline(m_impl->pipeline, groups);
+                        commands.bindGraphicsPipeline(pipeline, groups);
                         bound_group = group;
                     }
                     commands.setScissor(x, y, static_cast<std::uint32_t>(right - x),
                                         static_cast<std::uint32_t>(bottom - y));
                     commands.drawIndexed(command.ElemCount, 1, global_index_offset + command.IdxOffset,
                                          static_cast<std::int32_t>(global_vertex_offset + command.VtxOffset));
-                    ++m_impl->draw_call_count;
+                    ++draw_call_count;
                 }
                 global_vertex_offset += static_cast<std::uint32_t>(list->VtxBuffer.Size);
                 global_index_offset += static_cast<std::uint32_t>(list->IdxBuffer.Size);
@@ -641,6 +712,101 @@ void ImGuiLayer::render(rhi::CommandList &commands, rhi::TextureHandle target, b
     }
 
     commands.endRenderPass();
+}
+
+void ImGuiLayer::Impl::createPlatformWindow(ImGuiViewport *viewport) {
+    viewport->RendererUserData = new PlatformSwapchain{};
+}
+
+void ImGuiLayer::Impl::destroyPlatformWindow(ImGuiViewport *viewport) {
+    auto state = std::unique_ptr<PlatformSwapchain>(static_cast<PlatformSwapchain *>(viewport->RendererUserData));
+    viewport->RendererUserData = nullptr;
+    if (state && state->handle.isValid()) {
+        auto *self = static_cast<Impl *>(ImGui::GetIO().BackendRendererUserData);
+        static_cast<void>(self->device->destroy(state->handle));
+    }
+}
+
+void ImGuiLayer::Impl::renderPlatformWindow(ImGuiViewport *viewport, void *) {
+    auto *self = static_cast<Impl *>(ImGui::GetIO().BackendRendererUserData);
+    auto *data = static_cast<PlatformSwapchain *>(viewport->RendererUserData);
+    auto *window =
+        SDL_GetWindowFromID(static_cast<SDL_WindowID>(reinterpret_cast<std::uintptr_t>(viewport->PlatformHandle)));
+    if (!data || !window || (SDL_GetWindowFlags(window) & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) != 0) {
+        return;
+    }
+    int width = 0;
+    int height = 0;
+    if (!SDL_GetWindowSizeInPixels(window, &width, &height) || width <= 0 || height <= 0) {
+        return;
+    }
+    const auto pixel_width = static_cast<std::uint32_t>(width);
+    const auto pixel_height = static_cast<std::uint32_t>(height);
+    auto &device = *self->device;
+    if (!data->handle.isValid()) {
+        const auto created = device.createSwapchain({.width = pixel_width,
+                                                     .height = pixel_height,
+                                                     .vsync = false,
+                                                     .debugName = "Editor Platform Viewport",
+                                                     .native_window = window});
+        if (!created) {
+            log::warning(k_log_category, "Could not open a platform viewport ({})", static_cast<int>(created.error()));
+            viewport->PlatformRequestClose = true;
+            return;
+        }
+        data->handle = *created;
+        const auto info = device.getSwapchainInfo(*created);
+        if (!info || info->format != self->color_format) {
+            log::warning(k_log_category, "Platform viewport does not support the editor swapchain format");
+            viewport->PlatformRequestClose = true;
+            return;
+        }
+        data->width = pixel_width;
+        data->height = pixel_height;
+        log::info(k_log_category, "Platform viewport ready ({} x {})", pixel_width, pixel_height);
+    } else if (data->width != pixel_width || data->height != pixel_height) {
+        if (!device.resizeSwapchain(data->handle, pixel_width, pixel_height)) {
+            log::warning(k_log_category, "Could not resize a platform viewport");
+            viewport->PlatformRequestClose = true;
+            return;
+        }
+        data->width = pixel_width;
+        data->height = pixel_height;
+        log::debug(k_log_category, "Platform viewport resized ({} x {})", pixel_width, pixel_height);
+    }
+    const auto target = device.acquireNextImage(data->handle);
+    if (!target) {
+        if (target.error() == rhi::DeviceError::Outdated) {
+            data->width = 0;
+        } else {
+            viewport->PlatformRequestClose = true;
+        }
+        return;
+    }
+    const auto commands = device.beginCommandList(rhi::QueueType::Graphics);
+    if (!commands) {
+        viewport->PlatformRequestClose = true;
+        return;
+    }
+    if (viewport->DrawData && viewport->DrawData->DisplaySize.x > 0 && viewport->DrawData->DisplaySize.y > 0) {
+        viewport->DrawData->FramebufferScale = {
+            static_cast<float>(width) / viewport->DrawData->DisplaySize.x,
+            static_cast<float>(height) / viewport->DrawData->DisplaySize.y,
+        };
+    }
+    self->recordDrawData(**commands, viewport->DrawData, *target, true, {0.10F, 0.11F, 0.13F, 1.0F});
+    const std::array lists{*commands};
+    if (!device.submit(rhi::QueueType::Graphics, lists, {})) {
+        viewport->PlatformRequestClose = true;
+        return;
+    }
+    if (const auto presented = device.present(data->handle); !presented) {
+        if (presented.error() == rhi::DeviceError::Outdated) {
+            data->width = 0;
+        } else {
+            viewport->PlatformRequestClose = true;
+        }
+    }
 }
 
 std::uint32_t ImGuiLayer::getDrawListCount() const noexcept { return m_impl ? m_impl->draw_list_count : 0; }

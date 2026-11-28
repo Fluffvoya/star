@@ -55,6 +55,14 @@ template <typename T, typename HandleType> class ResourcePool final {
         return slot != nullptr && slot->value.has_value();
     }
 
+    template <typename Visitor> void visit(Visitor &&visitor) {
+        for (auto &slot : m_slots) {
+            if (slot.value) {
+                visitor(*slot.value);
+            }
+        }
+    }
+
     [[nodiscard]] bool markForDestroy(HandleType handle) noexcept {
         Slot *slot = getSlot(handle);
         if (slot == nullptr || !slot->value.has_value() || slot->pendingDestroy) {

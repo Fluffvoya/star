@@ -12,5 +12,6 @@
 | 08 变换操纵器 | [Linux x64 软件 Vulkan 验证记录](08-transform-gizmo.md) |
 | 09 视口模型预览 | [Linux x64 软件 Vulkan 验证记录](09-viewport-models.md) |
 | 10 项目描述与设置 | [Linux x64 验证记录](10-project-settings.md) |
+| 11 分离窗口与多视口 | [Linux X11 和 Wayland Vulkan 验证记录](11-platform-viewports.md) |
 
 M5 按实现方案 §20 的验收目标推进：ImGui 集成与主框架、面板、选择与操纵器、撤销/重做、PIE、热重载。每个阶段独立合并，阶段边界与未验证项写在对应报告中。
