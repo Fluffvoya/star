@@ -107,6 +107,21 @@ std::optional<float> number(const ArchiveValue &value) {
     return result;
 }
 
+std::optional<Guid> takeGuid(const Mapping &fields, std::string_view key, std::string_view path,
+                             std::expected<void, ArchiveError> &status) {
+    const auto *field = find(fields, key);
+    if (field == nullptr) {
+        return std::nullopt;
+    }
+    const auto text = scalar(field);
+    const auto guid = Guid::parse(text);
+    if (!guid || !guid->isValid()) {
+        status = error(ArchiveErrorCode::InvalidInput, std::string(path) + "." + std::string(key));
+        return std::nullopt;
+    }
+    return *guid;
+}
+
 std::optional<float> takeNumber(const Mapping &fields, std::string_view key, std::string_view path,
                                 std::expected<void, ArchiveError> &status) {
     const auto *field = find(fields, key);
@@ -259,6 +274,17 @@ std::expected<ResolvedMaterial, ArchiveError> resolveMaterial(const MaterialAsse
     }
     if (roughness) {
         resolved.roughness = *roughness;
+    }
+    resolved.base_color_texture = takeGuid(parameters, "BaseColorTexture", "Parameters", status);
+    if (!status) {
+        return std::unexpected(status.error());
+    }
+    resolved.metallic_roughness_texture = takeGuid(parameters, "MetallicRoughnessTexture", "Parameters", status);
+    if (!status) {
+        return std::unexpected(status.error());
+    }
+    if (!material.state.depth_test) {
+        return error(ArchiveErrorCode::UnsupportedProperty, "RenderState.DepthTest");
     }
     return resolved;
 }

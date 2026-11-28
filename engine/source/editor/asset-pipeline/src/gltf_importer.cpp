@@ -191,6 +191,8 @@ importPrimitive(const fastgltf::Asset &asset, const fastgltf::Mesh &mesh, const 
         } else if (material.alphaMode == fastgltf::AlphaMode::Blend) {
             parameters.blend = MaterialBlendMode::Transparent;
         }
+        parameters.shading = material.unlit ? MaterialShadingModel::Unlit : MaterialShadingModel::Lit;
+        parameters.double_sided = material.doubleSided;
         if (textures) {
             if ((pbr.baseColorTexture || pbr.metallicRoughnessTexture) && !uvs) {
                 return invalid("Textured glTF primitive is missing TEXCOORD_0");

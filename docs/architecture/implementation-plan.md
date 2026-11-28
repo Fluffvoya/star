@@ -2326,3 +2326,4 @@ M7 可从 M4 后期开始推进，并且必须在 M9 三平台发包验收前完
 | [ADR-0016](../adr/0016-default-render-pipeline.md) | 3D 默认渲染管线 | Clustered Forward+ | 支持 MSAA 与透明、材质灵活、适合 D3D11 和 TBDR GPU |
 | [ADR-0017](../adr/0017-build-artifacts.md) | 构建产物形态 | 独立构建目录：开发版动态库，发布版静态单体 | 热重载需要动态库；发布版需要性能和可移植性 |
 | [ADR-0018](../adr/0018-implementation-baseline.md) | 实施基线补充 | 三平台本地验收、Ninja、工程风格、私有 ECS、无损编辑及热重载回滚 | 单人维护，保证兼容性与编辑数据安全 |
+| [ADR-0019](../adr/0019-renderer-vulkan-boundary.md) | 渲染器与 RHI 的边界（提议） | M4 允许 Renderer 实现单元直接调用 Vulkan；M5 的 ImGui 后端前补齐 RHI 或另立后端化决定 | 先验证渲染与贴图管线，同时记录偏差与退出条件 |

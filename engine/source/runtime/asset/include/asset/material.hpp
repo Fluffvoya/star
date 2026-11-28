@@ -48,6 +48,8 @@ struct ResolvedMaterial {
     std::array<float, 4> base_color{1.0F, 1.0F, 1.0F, 1.0F};
     float metallic = 1.0F;
     float roughness = 1.0F;
+    std::optional<Guid> base_color_texture;
+    std::optional<Guid> metallic_roughness_texture;
 
     friend bool operator==(const ResolvedMaterial &, const ResolvedMaterial &) = default;
 };

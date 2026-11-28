@@ -41,7 +41,7 @@ void addBox(StaticModelAsset &model, std::string name, math::Vec3 center, math::
             MaterialBlendMode blend = MaterialBlendMode::Opaque) {
     auto &part = model.parts.emplace_back();
     part.name = std::move(name);
-    part.material = StaticPbrMaterial{color, 0.0F, 0.35F, blend, 0.5F, {}, {}};
+    part.material = StaticPbrMaterial{color, 0.0F, 0.35F, blend, MaterialShadingModel::Lit, false, 0.5F, {}, {}};
     for (const auto &face : kFaces) {
         const auto base = static_cast<std::uint32_t>(part.vertices.size());
         for (const auto &corner : face.corners) {
@@ -124,6 +124,8 @@ int main(int argc, char **argv) {
         // A second object takes its surface from a material asset through MeshRenderer.materials.
         StaticModelAsset accent;
         addBox(accent, "Accent", {0.0F, 0.0F, 0.0F}, {0.55F, 0.55F, 0.55F}, {1.0F, 1.0F, 1.0F, 1.0F});
+        StaticModelAsset sign;
+        addBox(sign, "Sign", {0.0F, 0.0F, 0.0F}, {0.7F, 0.45F, 0.03F}, {1.0F, 1.0F, 1.0F, 1.0F});
 
         TemporaryModel file;
         const auto bytes = writeModelAsset(model).value();
@@ -144,6 +146,17 @@ int main(int argc, char **argv) {
             output.close();
             if (!output) {
                 throw std::runtime_error("Cannot write " + accent_file.path.string());
+            }
+        }
+        TemporaryModel sign_file;
+        {
+            const auto sign_bytes = writeModelAsset(sign).value();
+            std::ofstream output(sign_file.path, std::ios::binary);
+            output.write(reinterpret_cast<const char *>(sign_bytes.data()),
+                         static_cast<std::streamsize>(sign_bytes.size()));
+            output.close();
+            if (!output) {
+                throw std::runtime_error("Cannot write " + sign_file.path.string());
             }
         }
         TemporaryModel material_file;
@@ -169,6 +182,27 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("Cannot write " + material_file.path.string());
             }
         }
+        TemporaryModel unlit_file;
+        {
+            std::ofstream output(unlit_file.path, std::ios::binary);
+            output << "Type: star::Material\n"
+                      "Version: 1\n"
+                      "Properties:\n"
+                      "  Shader: "
+                   << renderer::defaultForwardMaterial().variant.shader.toString()
+                   << "\n"
+                      "  Parameters:\n"
+                      "    BaseColor: [0.25, 1.0, 0.45, 1.0]\n"
+                      "  RenderState:\n"
+                      "    Blend: Opaque\n"
+                      "    Shading: Unlit\n"
+                      "    DoubleSided: true\n"
+                      "    DepthTest: true\n";
+            output.close();
+            if (!output) {
+                throw std::runtime_error("Cannot write " + unlit_file.path.string());
+            }
+        }
 
         World world;
         auto &scene = *world.createScene().value();
@@ -182,12 +216,23 @@ int main(int argc, char **argv) {
 
         const auto accent_id = Guid::generate();
         const auto material_id = Guid::generate();
+        const auto sign_id = Guid::generate();
+        const auto unlit_id = Guid::generate();
         const auto accent_object = scene.createObject("Accent").value();
         const MeshRenderer accent_renderer{accent_id, {material_id}, true, 1};
         if (!scene.queueAddComponent(accent_object, componentTypeId<MeshRenderer>(), &accent_renderer)) {
             throw std::runtime_error("Cannot attach the accent renderer");
         }
         scene.findComponent<Transform>(accent_object)->position = {3.7F, 0.55F, 2.3F};
+
+        const auto sign_object = scene.createObject("Sign").value();
+        const MeshRenderer sign_renderer{sign_id, {unlit_id}, true, 1};
+        if (!scene.queueAddComponent(sign_object, componentTypeId<MeshRenderer>(), &sign_renderer)) {
+            throw std::runtime_error("Cannot attach the sign renderer");
+        }
+        scene.findComponent<Transform>(sign_object)->position = {-3.8F, 1.5F, 2.4F};
+        scene.findComponent<Transform>(sign_object)->rotation =
+            math::Quaternion::fromAxisAngle({0.0F, 1.0F, 0.0F}, 0.45F);
 
         const auto camera_object = scene.createObject("Camera").value();
         const Camera camera{math::pi / 3.0F, 0.1F, 100.0F};
@@ -224,7 +269,9 @@ int main(int argc, char **argv) {
         AssetManager asset_manager;
         if (!asset_manager.registerAsset<StaticModelAsset>(mesh_id, file.path) ||
             !asset_manager.registerAsset<StaticModelAsset>(accent_id, accent_file.path) ||
-            !asset_manager.registerAsset<MaterialAsset>(material_id, material_file.path)) {
+            !asset_manager.registerAsset<StaticModelAsset>(sign_id, sign_file.path) ||
+            !asset_manager.registerAsset<MaterialAsset>(material_id, material_file.path) ||
+            !asset_manager.registerAsset<MaterialAsset>(unlit_id, unlit_file.path)) {
             throw std::runtime_error("Cannot register the sample assets");
         }
         const auto snapshot = extractStaticRenderSnapshot(scene, asset_manager);

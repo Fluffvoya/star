@@ -165,6 +165,8 @@ struct DrawPart {
     VkDescriptorSet textures = VK_NULL_HANDLE;
     bool cast_shadows = true;
     MaterialBlendMode blend = MaterialBlendMode::Opaque;
+    MaterialShadingModel shading = MaterialShadingModel::Lit;
+    bool double_sided = true;
     math::Vec3 center{};
 };
 
@@ -333,11 +335,19 @@ class VulkanForwardPasses {
         const auto &vk = m_gpu.vk;
         const auto device = m_gpu.device;
         vk.vkDeviceWaitIdle(device);
-        vk.vkDestroyPipeline(device, m_prepass, nullptr);
-        vk.vkDestroyPipeline(device, m_forward, nullptr);
-        vk.vkDestroyPipeline(device, m_forward_masked, nullptr);
-        vk.vkDestroyPipeline(device, m_forward_transparent, nullptr);
-        vk.vkDestroyPipeline(device, m_shadow_pipeline, nullptr);
+        for (const auto pipeline : m_depth_pipelines) {
+            vk.vkDestroyPipeline(device, pipeline, nullptr);
+        }
+        for (const auto pipeline : m_shadow_pipelines) {
+            vk.vkDestroyPipeline(device, pipeline, nullptr);
+        }
+        for (const auto &shading : m_color_pipelines) {
+            for (const auto &sided : shading) {
+                for (const auto pipeline : sided) {
+                    vk.vkDestroyPipeline(device, pipeline, nullptr);
+                }
+            }
+        }
         for (const auto layer : m_shadow_layers) {
             vk.vkDestroyImageView(device, layer, nullptr);
         }
@@ -380,7 +390,7 @@ class VulkanForwardPasses {
     void uploadImage(const Image &image, std::span<const std::byte> bytes, std::span<const VkBufferImageCopy> regions);
     void submitCommands() const;
     void renderShadows() const;
-    void drawParts(const DrawConstants &frame, DrawPass pass, VkPipeline pipeline) const;
+    void drawParts(const DrawConstants &frame, DrawPass pass) const;
     void dispatchClusters() const;
 
     const VulkanRuntime &m_gpu;
@@ -414,11 +424,11 @@ class VulkanForwardPasses {
     VkDescriptorSetLayout m_descriptor_layout = VK_NULL_HANDLE;
     VkDescriptorSet m_descriptors = VK_NULL_HANDLE;
     VkPipeline m_cluster_pipeline = VK_NULL_HANDLE;
-    VkPipeline m_shadow_pipeline = VK_NULL_HANDLE;
-    VkPipeline m_prepass = VK_NULL_HANDLE;
-    VkPipeline m_forward = VK_NULL_HANDLE;
-    VkPipeline m_forward_masked = VK_NULL_HANDLE;
-    VkPipeline m_forward_transparent = VK_NULL_HANDLE;
+    // Indexed by single/double sided.
+    std::array<VkPipeline, 2> m_depth_pipelines{};
+    std::array<VkPipeline, 2> m_shadow_pipelines{};
+    // Indexed by shading model, single/double sided and opaque/masked/transparent.
+    std::array<std::array<std::array<VkPipeline, 3>, 2>, 2> m_color_pipelines{};
     VkCommandPool m_pool = VK_NULL_HANDLE;
     VkCommandBuffer m_commands = VK_NULL_HANDLE;
     VkCommandBuffer m_upload_commands = VK_NULL_HANDLE;
@@ -445,17 +455,24 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const Forwar
                       static_cast<std::int32_t>(vertices.size()),
                       {0.48F, 0.55F, 0.62F, 1},
                       {0.7F, 0.0F, 0, 0}};
+        draw.shading = material.variant.state.shading;
+        draw.double_sided = material.variant.state.double_sided;
         if (part.material) {
             draw.albedo = part.material->base_color;
             draw.factors = {part.material->roughness, part.material->metallic, 0, 0};
             draw.blend = part.material->blend;
+            draw.shading = part.material->shading;
+            draw.double_sided = part.material->double_sided;
             if (draw.blend == MaterialBlendMode::Masked) {
                 draw.factors[2] = part.material->alpha_cutoff;
             }
         }
-        // A variant-wide blend mode overrides the per-part value.
+        // Variant-wide overrides win over per-part state.
         if (material.variant.state.blend != MaterialBlendMode::Opaque) {
             draw.blend = material.variant.state.blend;
+        }
+        if (material.variant.state.shading != MaterialShadingModel::Lit) {
+            draw.shading = material.variant.state.shading;
         }
         if (!part.vertices.empty()) {
             Vector3 center{};
@@ -536,17 +553,24 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const Forwar
     using Shader = std::unique_ptr<std::remove_pointer_t<VkShaderModule>, decltype(destroy_shader)>;
     const Shader vertex(loadShader(options.shader_directory / "forward-vertex.spv"), destroy_shader);
     const auto &state = material.variant.state;
-    const auto fragment_file =
-        state.shading == star::MaterialShadingModel::Unlit ? "forward-unlit.spv" : "forward-fragment.spv";
-    const Shader fragment(loadShader(options.shader_directory / fragment_file), destroy_shader);
-    m_prepass = createPipeline(vertex.get(), VK_NULL_HANDLE, resolution, state.double_sided, DrawPass::Depth);
-    m_forward = createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided, DrawPass::ColorOpaque);
-    m_forward_masked =
-        createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided, DrawPass::ColorMasked);
-    m_forward_transparent =
-        createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided, DrawPass::ColorTransparent);
-    m_shadow_pipeline =
-        createPipeline(vertex.get(), VK_NULL_HANDLE, shadow_resolution, state.double_sided, DrawPass::Shadow);
+    const Shader lit_fragment(loadShader(options.shader_directory / "forward-fragment.spv"), destroy_shader);
+    const Shader unlit_fragment(loadShader(options.shader_directory / "forward-unlit.spv"), destroy_shader);
+    const std::array<VkShaderModule, 2> fragments{lit_fragment.get(), unlit_fragment.get()};
+    constexpr std::array color_passes{DrawPass::ColorOpaque, DrawPass::ColorMasked, DrawPass::ColorTransparent};
+    for (std::size_t shading = 0; shading < fragments.size(); ++shading) {
+        for (std::size_t sided = 0; sided < m_depth_pipelines.size(); ++sided) {
+            for (std::size_t pass = 0; pass < color_passes.size(); ++pass) {
+                m_color_pipelines[shading][sided][pass] =
+                    createPipeline(vertex.get(), fragments[shading], resolution, sided != 0, color_passes[pass]);
+            }
+        }
+    }
+    for (std::size_t sided = 0; sided < m_depth_pipelines.size(); ++sided) {
+        m_depth_pipelines[sided] =
+            createPipeline(vertex.get(), VK_NULL_HANDLE, resolution, sided != 0, DrawPass::Depth);
+        m_shadow_pipelines[sided] =
+            createPipeline(vertex.get(), VK_NULL_HANDLE, shadow_resolution, sided != 0, DrawPass::Shadow);
+    }
     const Shader cluster(loadShader(options.shader_directory / "forward-cluster.spv"), destroy_shader);
     auto compute = vkInfo<VkComputePipelineCreateInfo>(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
     compute.stage = vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
@@ -1071,7 +1095,7 @@ void VulkanForwardPasses::renderDepthPass() const {
     rendering.layerCount = 1;
     rendering.pDepthAttachment = &depth;
     vk.vkCmdBeginRendering(m_commands, &rendering);
-    drawParts(m_camera, DrawPass::Depth, m_prepass);
+    drawParts(m_camera, DrawPass::Depth);
     vk.vkCmdEndRendering(m_commands);
 }
 
@@ -1098,9 +1122,9 @@ void VulkanForwardPasses::renderColorPass() const {
     vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 0, 1, &m_descriptors, 0, nullptr);
     // Opaque fragments already carry depth from the prepass; masked parts skip the prepass and write
     // depth here because their cut-out shape is only known in the fragment shader.
-    drawParts(m_camera, DrawPass::ColorOpaque, m_forward);
-    drawParts(m_camera, DrawPass::ColorMasked, m_forward_masked);
-    drawParts(m_camera, DrawPass::ColorTransparent, m_forward_transparent);
+    drawParts(m_camera, DrawPass::ColorOpaque);
+    drawParts(m_camera, DrawPass::ColorMasked);
+    drawParts(m_camera, DrawPass::ColorTransparent);
     vk.vkCmdEndRendering(m_commands);
 }
 
@@ -1123,15 +1147,14 @@ void VulkanForwardPasses::renderShadows() const {
         view.clip_y = m_shadow_frame.views[layer].clip_y;
         view.clip_z = m_shadow_frame.views[layer].clip_z;
         view.clip_w = {0, 0, 0, 1};
-        drawParts(view, DrawPass::Shadow, m_shadow_pipeline);
+        drawParts(view, DrawPass::Shadow);
         vk.vkCmdEndRendering(m_commands);
     }
 }
 
-void VulkanForwardPasses::drawParts(const DrawConstants &frame, DrawPass pass, VkPipeline pipeline) const {
+void VulkanForwardPasses::drawParts(const DrawConstants &frame, DrawPass pass) const {
     const auto &vk = m_gpu.vk;
     constexpr VkDeviceSize offset = 0;
-    vk.vkCmdBindPipeline(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vk.vkCmdBindVertexBuffers(m_commands, 0, 1, &m_vertices.handle, &offset);
     vk.vkCmdBindIndexBuffer(m_commands, m_indices.handle, 0, VK_INDEX_TYPE_UINT32);
 
@@ -1148,24 +1171,9 @@ void VulkanForwardPasses::drawParts(const DrawConstants &frame, DrawPass pass, V
             return part.blend == MaterialBlendMode::Opaque;
         }
     };
-    std::vector<std::size_t> visible;
-    visible.reserve(m_parts.size());
-    for (std::size_t index = 0; index < m_parts.size(); ++index) {
-        if (matches(m_parts[index])) {
-            visible.push_back(index);
-        }
-    }
-    if (pass == DrawPass::ColorTransparent) {
-        // Back to front keeps alpha blending stable for overlapping surfaces.
-        const Vector3 eye{frame.eye[0], frame.eye[1], frame.eye[2]};
-        std::ranges::sort(visible, [&](std::size_t left, std::size_t right) {
-            return lengthSquared(m_parts[left].center - eye) > lengthSquared(m_parts[right].center - eye);
-        });
-    }
-
+    const auto is_sided = [](bool double_sided) { return double_sided ? 1U : 0U; };
     const bool textured = pass != DrawPass::Depth && pass != DrawPass::Shadow;
-    for (const auto index : visible) {
-        const auto &part = m_parts[index];
+    const auto drawOne = [&](const DrawPart &part) {
         if (textured) {
             vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 1, 1, &part.textures, 0,
                                        nullptr);
@@ -1175,6 +1183,51 @@ void VulkanForwardPasses::drawParts(const DrawConstants &frame, DrawPass pass, V
         push.factors = part.factors;
         vk.vkCmdPushConstants(m_commands, m_layout, all_shader_stages, 0, sizeof(push), &push);
         vk.vkCmdDrawIndexed(m_commands, part.index_count, 1, part.index_offset, part.vertex_offset, 0);
+    };
+
+    if (pass == DrawPass::ColorTransparent) {
+        // Transparent surfaces are sorted back to front, so bind a pipeline only when it changes.
+        std::vector<std::size_t> visible;
+        visible.reserve(m_parts.size());
+        for (std::size_t index = 0; index < m_parts.size(); ++index) {
+            if (matches(m_parts[index])) {
+                visible.push_back(index);
+            }
+        }
+        const Vector3 eye{frame.eye[0], frame.eye[1], frame.eye[2]};
+        std::ranges::sort(visible, [&](std::size_t left, std::size_t right) {
+            return lengthSquared(m_parts[left].center - eye) > lengthSquared(m_parts[right].center - eye);
+        });
+        VkPipeline bound = VK_NULL_HANDLE;
+        for (const auto index : visible) {
+            const auto &part = m_parts[index];
+            const auto pipeline =
+                m_color_pipelines[static_cast<std::size_t>(part.shading)][is_sided(part.double_sided)][2];
+            if (pipeline != bound) {
+                vk.vkCmdBindPipeline(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                bound = pipeline;
+            }
+            drawOne(part);
+        }
+        return;
+    }
+
+    const auto pass_index = pass == DrawPass::ColorOpaque ? 0U : pass == DrawPass::ColorMasked ? 1U : 2U;
+    const std::size_t shading_count = pass == DrawPass::Depth || pass == DrawPass::Shadow ? 1 : 2;
+    for (std::size_t shading = 0; shading < shading_count; ++shading) {
+        for (std::size_t sided = 0; sided < 2; ++sided) {
+            const auto pipeline = pass == DrawPass::Depth    ? m_depth_pipelines[sided]
+                                  : pass == DrawPass::Shadow ? m_shadow_pipelines[sided]
+                                                             : m_color_pipelines[shading][sided][pass_index];
+            vk.vkCmdBindPipeline(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            for (const auto &part : m_parts) {
+                if (!matches(part) || is_sided(part.double_sided) != sided ||
+                    (shading_count > 1 && static_cast<std::size_t>(part.shading) != shading)) {
+                    continue;
+                }
+                drawOne(part);
+            }
+        }
     }
 }
 

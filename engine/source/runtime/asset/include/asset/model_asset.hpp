@@ -27,6 +27,8 @@ struct StaticPbrMaterial {
     float metallic = 1.0F;
     float roughness = 1.0F;
     MaterialBlendMode blend = MaterialBlendMode::Opaque;
+    MaterialShadingModel shading = MaterialShadingModel::Lit;
+    bool double_sided = false;
     // Fragments with a lower alpha are discarded for masked materials. Ignored for other blends.
     float alpha_cutoff = 0.5F;
     std::optional<std::size_t> base_color_texture;

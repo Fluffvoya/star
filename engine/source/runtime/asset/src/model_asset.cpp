@@ -15,7 +15,7 @@ using asset_binary::appendUInt32;
 using asset_binary::takeUInt32;
 
 constexpr std::array magic{std::byte{'S'}, std::byte{'M'}, std::byte{'D'}, std::byte{'L'}};
-constexpr std::uint32_t version = 2;
+constexpr std::uint32_t version = 3;
 constexpr std::uint32_t oldest_version = 1;
 constexpr std::uint32_t no_texture = std::numeric_limits<std::uint32_t>::max();
 constexpr std::size_t vertex_bytes = 8 * sizeof(float);
@@ -90,10 +90,12 @@ bool appendPart(std::vector<std::byte> &bytes, const StaticMeshPart &part, std::
             return false;
         }
         if (material.alpha_cutoff < 0.0F || material.alpha_cutoff > 1.0F ||
-            material.blend > MaterialBlendMode::Transparent) {
+            material.blend > MaterialBlendMode::Transparent || material.shading > MaterialShadingModel::Unlit) {
             return false;
         }
         appendUInt32(bytes, static_cast<std::uint32_t>(material.blend));
+        appendUInt32(bytes, static_cast<std::uint32_t>(material.shading));
+        appendUInt32(bytes, material.double_sided ? 1U : 0U);
         for (const auto index : {material.base_color_texture, material.metallic_roughness_texture}) {
             if (index && *index >= texture_count) {
                 return false;
@@ -148,6 +150,16 @@ bool readPart(std::span<const std::byte> &bytes, StaticMeshPart &part, std::size
             }
             material.blend = static_cast<MaterialBlendMode>(*blend);
             material.alpha_cutoff = cutoff[0];
+        }
+        if (file_version >= 3) {
+            const auto shading = takeUInt32(bytes);
+            const auto double_sided = takeUInt32(bytes);
+            if (!shading || !double_sided || *shading > static_cast<std::uint32_t>(MaterialShadingModel::Unlit) ||
+                *double_sided > 1) {
+                return false;
+            }
+            material.shading = static_cast<MaterialShadingModel>(*shading);
+            material.double_sided = *double_sided == 1;
         }
         for (auto *index : {&material.base_color_texture, &material.metallic_roughness_texture}) {
             const auto field = takeUInt32(bytes);

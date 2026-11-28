@@ -277,3 +277,21 @@ STAR_TEST(texture_asset_round_trips_block_compressed_mips) {
     empty.mips.front().data.clear();
     STAR_CHECK(!writeTextureAsset(empty).has_value());
 }
+
+STAR_TEST(model_asset_round_trips_material_state) {
+    StaticModelAsset model;
+    auto &part = model.parts.emplace_back();
+    part.vertices = {{{0, 0, 0}, {0, 0, 1}, {}}, {{1, 0, 0}, {0, 0, 1}, {}}, {{0, 1, 0}, {0, 0, 1}, {}}};
+    part.indices = {0, 1, 2};
+    auto &material = part.material.emplace();
+    material.blend = MaterialBlendMode::Transparent;
+    material.shading = MaterialShadingModel::Unlit;
+    material.double_sided = true;
+    const auto payload = writeModelAsset(model);
+    STAR_CHECK(payload.has_value());
+    const auto decoded = readModelAsset(std::span<const std::byte>(*payload));
+    STAR_CHECK(decoded.has_value());
+    STAR_CHECK(decoded->parts.at(0).material->blend == MaterialBlendMode::Transparent);
+    STAR_CHECK(decoded->parts.at(0).material->shading == MaterialShadingModel::Unlit);
+    STAR_CHECK(decoded->parts.at(0).material->double_sided);
+}
