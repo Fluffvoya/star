@@ -1,6 +1,7 @@
 #include "asset-pipeline/cached_model_import.hpp"
 #include "asset-pipeline/model_importer.hpp"
 #include "asset-pipeline/texture_importer.hpp"
+#include "bc_decode.hpp"
 #include "test_support.hpp"
 
 #include <algorithm>
@@ -225,9 +226,17 @@ STAR_TEST(model_importer_keeps_color_and_metallic_roughness_images_in_distinct_c
     const auto &metallic_roughness = model->textures.at(material.metallic_roughness_texture.value());
     STAR_CHECK(color.usage == TextureUsage::Color);
     STAR_CHECK(metallic_roughness.usage == TextureUsage::Linear);
-    const std::vector<std::uint8_t> expected{32, 64, 128, 255};
-    STAR_CHECK(color.mips.at(0).rgba == expected);
-    STAR_CHECK(metallic_roughness.mips.at(0).rgba == expected);
+    STAR_CHECK(color.format == star::TextureFormat::Bc1);
+    STAR_CHECK(metallic_roughness.format == star::TextureFormat::Bc1);
+    STAR_CHECK(color.mips.at(0).data.size() == 8);
+    const auto texels = star::test::decodeBc1(color.mips.at(0).data, 1, 1);
+    const auto close = [](std::uint8_t value, std::uint8_t expected) {
+        return (value > expected ? value - expected : expected - value) <= 4;
+    };
+    STAR_CHECK(close(texels[0], 32));
+    STAR_CHECK(close(texels[1], 64));
+    STAR_CHECK(close(texels[2], 128));
+    STAR_CHECK(texels[3] == 255);
 
     const auto payload = star::writeModelAsset(*model);
     STAR_CHECK(payload.has_value());

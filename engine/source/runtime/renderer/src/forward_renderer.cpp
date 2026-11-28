@@ -819,8 +819,18 @@ void VulkanForwardPasses::createMaterialDescriptors(const StaticModelAsset &mode
     for (const auto &texture : model.textures) {
         auto image = std::make_unique<Image>(m_gpu);
         const auto &base = texture.mips.front();
-        const auto format =
-            texture.usage == TextureColorSpace::Color ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        const auto srgb = texture.usage == TextureColorSpace::Color;
+        const auto format = [&] {
+            switch (texture.format) {
+            case star::TextureFormat::Rgba8:
+                return srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+            case star::TextureFormat::Bc1:
+                return srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+            case star::TextureFormat::Bc3:
+                return srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+            }
+            return VK_FORMAT_R8G8B8A8_UNORM;
+        }();
         image->create(format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                       {base.width, base.height}, 1, static_cast<std::uint32_t>(texture.mips.size()));
         std::vector<std::uint8_t> bytes;
@@ -832,7 +842,7 @@ void VulkanForwardPasses::createMaterialDescriptors(const StaticModelAsset &mode
             region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
             region.imageExtent = {mip.width, mip.height, 1};
             regions.push_back(region);
-            bytes.insert(bytes.end(), mip.rgba.begin(), mip.rgba.end());
+            bytes.insert(bytes.end(), mip.data.begin(), mip.data.end());
         }
         uploadImage(*image, std::as_bytes(std::span(bytes)), regions);
         m_material_images.push_back(std::move(image));
@@ -1291,8 +1301,8 @@ bool validTexture(const TextureAsset &texture) {
     }
     const TextureMip *previous = nullptr;
     for (const auto &mip : texture.mips) {
-        if (mip.width == 0 || mip.height == 0 || std::uint64_t(mip.width) * mip.height != mip.rgba.size() / 4 ||
-            mip.rgba.size() % 4 != 0) {
+        if (mip.width == 0 || mip.height == 0 ||
+            mip.data.size() != texturePayloadSize(texture.format, mip.width, mip.height)) {
             return false;
         }
         if (previous &&

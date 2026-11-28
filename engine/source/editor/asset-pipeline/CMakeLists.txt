@@ -2,12 +2,14 @@ star_add_module(AssetPipeline asset-pipeline
     include/asset-pipeline/asset_database.hpp
     include/asset-pipeline/derived_data_cache.hpp
     include/asset-pipeline/texture_importer.hpp
+    include/asset-pipeline/texture_compress.hpp
     include/asset-pipeline/cached_texture_import.hpp
     include/asset-pipeline/model_importer.hpp
     include/asset-pipeline/cached_model_import.hpp
     src/asset_database.cpp
     src/derived_data_cache.cpp
     src/texture_importer.cpp
+    src/texture_compress.cpp
     src/cached_texture_import.cpp
     src/model_importer.cpp
     src/cached_model_import.cpp
