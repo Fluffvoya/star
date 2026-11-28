@@ -7,6 +7,7 @@
 - 编写或格式化代码及代码示例：读取 @agent-rules/style.md。
 - 修改 `engine/` 下的源码、着色器、配置或内置资产：读取 @agent-rules/engine.md。
 - 修改项目文档：读取 @agent-rules/documentation.md；处理 ADR 时另外读取 @agent-rules/adr.md。
+- 查阅架构基线与技术决策：读取 @docs/architecture/implementation-plan.md 和 @docs/adr/README.md。
 
 ## 任务分支命名白名单
 

@@ -4,6 +4,9 @@ Star Engine is a C++23 game engine under development. Local validation covers Li
 (MinGW-w64) for the M0 infrastructure, M1 reflection and serialization, and M2 RHI and Vulkan milestones.
 See the [milestone reports](docs/progress/README.md) for stage-by-stage results and platform coverage.
 
+Architecture decisions are recorded under [docs/adr/](docs/adr/README.md), and the implementation baseline that
+they summarize lives in [docs/architecture/implementation-plan.md](docs/architecture/implementation-plan.md).
+
 The current runtime modules provide Core utilities, an SDL3-backed Platform layer, and a Jobs scheduler with
 asynchronous runs, priority queues, parallel-for helpers, and nested-safe job waiting. See the
 [M0 Jobs progress report](docs/progress/m0/02-jobs.md) for its API constraints and validation status.
