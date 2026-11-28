@@ -108,6 +108,7 @@ if(STAR_BUILD_ASSET_PIPELINE)
 endif()
 
 if(STAR_BUILD_EDITOR)
+    add_subdirectory(engine/source/editor/editor-core)
     add_subdirectory(engine/source/editor/editor-ui)
     add_subdirectory(engine/source/programs/star-editor)
 endif()

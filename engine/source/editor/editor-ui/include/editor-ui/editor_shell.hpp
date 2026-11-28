@@ -1,8 +1,10 @@
 #pragma once
 
 #include "editor-ui/export.hpp"
+#include "editor/document.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string_view>
 
@@ -17,13 +19,18 @@ struct EditorShellStatus {
     std::string_view device_name;
 };
 
-// Main frame of the editor: menu bar, docking layout, console and statistics panels.
+// Main frame of the editor: menu bar, docking layout and editor panels.
 class STAR_EDITORUI_API EditorShell final {
   public:
     EditorShell();
     ~EditorShell();
     EditorShell(const EditorShell &) = delete;
     EditorShell &operator=(const EditorShell &) = delete;
+
+    void setDocument(std::shared_ptr<EditorDocument> document);
+    [[nodiscard]] std::shared_ptr<EditorDocument> getDocument() const;
+    void setProjectRoot(std::filesystem::path root);
+    [[nodiscard]] const std::filesystem::path &getProjectRoot() const noexcept;
 
     void draw(const EditorShellStatus &status);
 

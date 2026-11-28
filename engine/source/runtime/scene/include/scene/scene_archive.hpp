@@ -30,9 +30,9 @@ loadSceneYaml(World &world, std::string_view source,
 [[nodiscard]] STAR_SCENE_API std::expected<std::string, serialization::ArchiveError> savePrefabYaml(const Scene &scene,
                                                                                                     ObjectHandle root);
 
-[[nodiscard]] STAR_SCENE_API std::expected<PrefabInstance, serialization::ArchiveError>
-instantiatePrefabYaml(Scene &scene, std::string_view source, Guid prefab_asset,
-                      std::span<const PrefabOverride> overrides = {},
-                      serialization::LoadPolicy policy = serialization::LoadPolicy::Preserve);
+// With preserve_guids the snapshot keeps its object identities and is not marked as a prefab instance.
+[[nodiscard]] STAR_SCENE_API std::expected<PrefabInstance, serialization::ArchiveError> instantiatePrefabYaml(
+    Scene &scene, std::string_view source, Guid prefab_asset, std::span<const PrefabOverride> overrides = {},
+    serialization::LoadPolicy policy = serialization::LoadPolicy::Preserve, bool preserve_guids = false);
 
 } // namespace star

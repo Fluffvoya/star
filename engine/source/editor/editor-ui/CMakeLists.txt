@@ -29,7 +29,7 @@ star_add_module(EditorUI editor-ui
     src/editor_shell.cpp
 )
 
-target_link_libraries(StarEditorUI PUBLIC Star::Core Star::Platform Star::RHI PRIVATE StarImGui SDL3::SDL3)
+target_link_libraries(StarEditorUI PUBLIC Star::Core Star::Platform Star::RHI Star::EditorCore PRIVATE StarImGui SDL3::SDL3)
 
 include("${PROJECT_SOURCE_DIR}/cmake/StarSlang.cmake")
 if(STAR_SLANGC)

@@ -48,6 +48,7 @@ class STAR_SCENE_API GameObject {
 
     [[nodiscard]] const Guid &getGuid() const noexcept { return m_guid; }
     [[nodiscard]] const std::string &getName() const noexcept { return m_name; }
+    void setName(std::string name) noexcept;
     // Valid after the object is attached to a scene.
     [[nodiscard]] Scene &getScene() const noexcept { return *m_scene; }
     [[nodiscard]] World &getWorld() const noexcept;

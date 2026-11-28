@@ -388,6 +388,13 @@ void Scene::Impl::propagateTransforms() noexcept {
 
 GameObject::~GameObject() = default;
 
+void GameObject::setName(std::string name) noexcept {
+    try {
+        m_name = std::move(name);
+    } catch (...) {
+    }
+}
+
 World &GameObject::getWorld() const noexcept { return m_scene->getWorld(); }
 
 const Transform &GameObject::getTransform() const noexcept {
@@ -435,6 +442,38 @@ Scene::~Scene() {
 bool Scene::isBusy() const noexcept { return m_impl->query_depth != 0 || m_impl->mutating || m_impl->committing; }
 
 std::size_t Scene::getObjectCount() const noexcept { return m_impl->objects.getSize(); }
+
+std::vector<ObjectHandle> Scene::getObjects() const {
+    std::vector<ObjectHandle> result;
+    const auto &impl = *m_impl;
+    try {
+        result.reserve(impl.objects.getSize());
+        for (std::size_t index = 0; index < impl.objects.getSize(); ++index) {
+            result.push_back(impl.objects.get(impl.objects.getHandleAt(index))->object->getHandle());
+        }
+    } catch (...) {
+        result.clear();
+    }
+    return result;
+}
+
+std::vector<reflect::TypeId> Scene::getComponentTypes(ObjectHandle handle) const {
+    std::vector<reflect::TypeId> result;
+    const ObjectEntry *object = m_impl->entry(handle);
+    if (object == nullptr) {
+        return result;
+    }
+    try {
+        for (const auto &[type, pool] : m_impl->components) {
+            if (pool.values.find(object->entity) != pool.values.end()) {
+                result.push_back(type);
+            }
+        }
+    } catch (...) {
+        result.clear();
+    }
+    return result;
+}
 
 std::expected<ObjectHandle, SceneError> Scene::createObject(std::string_view name) noexcept {
     try {
@@ -839,6 +878,11 @@ std::expected<void, SceneError> Scene::queueSetParent(ObjectHandle child, Object
         return std::unexpected(SceneError::ResourceExhausted);
     }
     return {};
+}
+
+const reflect::TypeInfo *Scene::findComponentType(reflect::TypeId type) const noexcept {
+    const auto pool = m_impl->components.find(type);
+    return pool == m_impl->components.end() ? nullptr : pool->second.type;
 }
 
 std::expected<void, SceneError> Scene::registerComponent(const reflect::TypeInfo &type) noexcept {
