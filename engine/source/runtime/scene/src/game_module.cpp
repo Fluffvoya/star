@@ -7,6 +7,54 @@
 
 namespace star {
 
+namespace {
+
+struct OpenGameModule {
+    DynamicLibrary library;
+    const GameModuleDescriptor *descriptor;
+};
+
+std::expected<OpenGameModule, GameModuleError> openGameModule(const std::filesystem::path &path) noexcept {
+    auto library = DynamicLibrary::open(path);
+    if (!library) {
+        return std::unexpected(GameModuleError::OpenFailed);
+    }
+    const auto symbol = library->findFunction(game_module_entry);
+    if (!symbol) {
+        return std::unexpected(GameModuleError::MissingEntry);
+    }
+    const auto entry = reinterpret_cast<GetGameModuleDescriptor>(*symbol);
+    const auto *descriptor = entry();
+    if (descriptor == nullptr) {
+        return std::unexpected(GameModuleError::InvalidDescriptor);
+    }
+    if (descriptor->abi_version != game_module_abi_version) {
+        return std::unexpected(GameModuleError::IncompatibleAbi);
+    }
+    if (descriptor->id == reflect::builtin_module || descriptor->name.empty()) {
+        return std::unexpected(GameModuleError::InvalidDescriptor);
+    }
+    for (auto object = descriptor->objects.begin(); object != descriptor->objects.end(); ++object) {
+        if (object->name.empty() || object->id != reflect::makeTypeId(object->name) || object->create == nullptr ||
+            std::find_if(descriptor->objects.begin(), object,
+                         [&](const auto &previous) { return previous.id == object->id; }) != object) {
+            return std::unexpected(GameModuleError::InvalidDescriptor);
+        }
+    }
+
+    return OpenGameModule{std::move(*library), descriptor};
+}
+
+} // namespace
+
+std::expected<reflect::ModuleId, GameModuleError> probeGameModule(const std::filesystem::path &path) noexcept {
+    const auto module = openGameModule(path);
+    if (!module) {
+        return std::unexpected(module.error());
+    }
+    return module->descriptor->id;
+}
+
 struct World::LoadedGameModule {
     DynamicLibrary library;
     const GameModuleDescriptor *descriptor;
@@ -62,25 +110,11 @@ std::expected<reflect::ModuleId, GameModuleError> World::loadGameModule(const st
         ~Reset() { flag = false; }
     } reset{m_loading_module};
 
-    auto library = DynamicLibrary::open(path);
-    if (!library) {
-        return std::unexpected(GameModuleError::OpenFailed);
+    auto image = openGameModule(path);
+    if (!image) {
+        return std::unexpected(image.error());
     }
-    const auto symbol = library->findFunction(game_module_entry);
-    if (!symbol) {
-        return std::unexpected(GameModuleError::MissingEntry);
-    }
-    const auto entry = reinterpret_cast<GetGameModuleDescriptor>(*symbol);
-    const auto *descriptor = entry();
-    if (descriptor == nullptr) {
-        return std::unexpected(GameModuleError::InvalidDescriptor);
-    }
-    if (descriptor->abi_version != game_module_abi_version) {
-        return std::unexpected(GameModuleError::IncompatibleAbi);
-    }
-    if (descriptor->id == reflect::builtin_module || descriptor->name.empty()) {
-        return std::unexpected(GameModuleError::InvalidDescriptor);
-    }
+    const auto *descriptor = image->descriptor;
     if (std::ranges::any_of(m_game_modules, [&](const auto &module) {
             return module->descriptor->id == descriptor->id || module->descriptor->name == descriptor->name;
         })) {
@@ -92,17 +126,13 @@ std::expected<reflect::ModuleId, GameModuleError> World::loadGameModule(const st
         return std::unexpected(GameModuleError::RegistrationFailed);
     }
 
-    for (auto object = descriptor->objects.begin(); object != descriptor->objects.end(); ++object) {
-        if (object->name.empty() || object->id != reflect::makeTypeId(object->name) || object->create == nullptr ||
-            findGameObjectType(object->id).type != nullptr ||
-            std::find_if(descriptor->objects.begin(), object,
-                         [&](const auto &previous) { return previous.id == object->id; }) != object) {
-            return std::unexpected(GameModuleError::InvalidDescriptor);
-        }
+    if (std::ranges::any_of(descriptor->objects,
+                            [this](const auto &object) { return findGameObjectType(object.id).type != nullptr; })) {
+        return std::unexpected(GameModuleError::InvalidDescriptor);
     }
 
     try {
-        auto module = std::make_unique<LoadedGameModule>(LoadedGameModule{std::move(*library), descriptor});
+        auto module = std::make_unique<LoadedGameModule>(LoadedGameModule{std::move(image->library), descriptor});
         m_game_modules.reserve(m_game_modules.size() + 1);
 
         // Validate scene registration even when there are no loaded scenes.

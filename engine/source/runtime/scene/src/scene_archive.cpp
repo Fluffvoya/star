@@ -282,7 +282,8 @@ bool applyOverride(ArchivedObject &object, const PrefabOverride &change) {
 }
 
 std::expected<LoadedScene, ArchiveError> restoreScene(World &world, SceneDocument document, LoadPolicy policy,
-                                                      std::span<const reflect::TypeInfo *const> component_types) {
+                                                      std::span<const reflect::TypeInfo *const> component_types,
+                                                      SceneSnapshotRestore mode = SceneSnapshotRestore::Play) {
     const auto created = world.createScene();
     if (!created) {
         return failed();
@@ -306,7 +307,8 @@ std::expected<LoadedScene, ArchiveError> restoreScene(World &world, SceneDocumen
     }
     SceneArchiveAccess::sceneFields(scene) = std::move(document.fields);
     LoadedScene result{&scene, {}};
-    if (auto restored = SceneArchiveAccess::restore(scene, document.objects, policy, result.diagnostics); !restored) {
+    if (auto restored = SceneArchiveAccess::restore(scene, document.objects, policy, result.diagnostics, mode);
+        !restored) {
         return std::unexpected(std::move(restored.error()));
     }
     rollback.completed = true;
@@ -342,7 +344,7 @@ std::expected<LoadedScene, ArchiveError> loadSceneYaml(World &world, std::string
 
 std::expected<std::vector<std::byte>, ArchiveError> saveSceneBinary(const Scene &scene) {
     try {
-        auto records = SceneArchiveAccess::capture(scene, {});
+        auto records = SceneArchiveAccess::capture(scene, {}, CapturePolicy::AllFields);
         if (!records) {
             return std::unexpected(std::move(records.error()));
         }
@@ -354,7 +356,7 @@ std::expected<std::vector<std::byte>, ArchiveError> saveSceneBinary(const Scene 
 }
 
 std::expected<LoadedScene, ArchiveError> loadSceneBinary(World &world, std::span<const std::byte> source,
-                                                         LoadPolicy policy) {
+                                                         LoadPolicy policy, SceneSnapshotRestore mode) {
     try {
         auto archive = readBinary(source);
         if (!archive) {
@@ -367,7 +369,7 @@ std::expected<LoadedScene, ArchiveError> loadSceneBinary(World &world, std::span
         if (!document) {
             return std::unexpected(std::move(document.error()));
         }
-        return restoreScene(world, std::move(*document), policy, {});
+        return restoreScene(world, std::move(*document), policy, {}, mode);
     } catch (...) {
         return failed();
     }

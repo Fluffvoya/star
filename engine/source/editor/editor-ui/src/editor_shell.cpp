@@ -77,6 +77,7 @@ struct EditorShell::Impl {
     bool play_paused = false;
     bool simulate = false;
     bool step_requested = false;
+    std::string reload_status;
     std::unique_ptr<SceneViewport> scene_viewport;
     std::filesystem::path project_root;
     std::vector<std::filesystem::path> scenes;
@@ -148,7 +149,7 @@ struct EditorShell::Impl {
     }
 
     void drawPlayControls() {
-        if (ImGui::MenuItem("Play", nullptr, false, document && !play_document)) {
+        if (ImGui::MenuItem("Play", nullptr, false, document && !document->isRecovering() && !play_document)) {
             if (auto play = document->createPlayCopy(); play) {
                 play_document = std::move(*play);
                 rename_target = {};
@@ -184,6 +185,7 @@ struct EditorShell::Impl {
 
     void finishTransition() {
         stopPlay();
+        reload_status.clear();
         if (quit_requested) {
             quit = true;
         } else {
@@ -295,7 +297,7 @@ struct EditorShell::Impl {
                     log::error(k_log_category, "New scene failed: {}", created.error().message);
                 }
             }
-            if (ImGui::MenuItem("Save", "Ctrl+S", false, document && !play_document)) {
+            if (ImGui::MenuItem("Save", "Ctrl+S", false, document && !document->isRecovering() && !play_document)) {
                 saveDocument();
             }
             ImGui::Separator();
@@ -324,6 +326,19 @@ struct EditorShell::Impl {
         }
         if (ImGui::BeginMenu("Play")) {
             drawPlayControls();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reload Game Module", nullptr, false, !gameModulePath().empty())) {
+                const auto result = document->reloadGameModule(gameModulePath(), project_root / "Saved" / "Recovery",
+                                                               [this] { stopPlay(); });
+                rename_target = {};
+                if (result) {
+                    reload_status.clear();
+                    log::info(k_log_category, "Game module reloaded");
+                } else {
+                    reload_status = result.error().message;
+                    log::error(k_log_category, "{}", reload_status);
+                }
+            }
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
@@ -345,6 +360,9 @@ struct EditorShell::Impl {
             const char *dirty = document->isDirty() ? " *" : "";
             ImGui::Separator();
             ImGui::TextDisabled("%s%s", document->getName().c_str(), dirty);
+            if (document->isRecovering()) {
+                ImGui::TextColored(ImVec4(0.95F, 0.47F, 0.38F, 1.0F), "Recovery");
+            }
             if (play_document) {
                 ImGui::TextColored(ImVec4(0.95F, 0.74F, 0.32F, 1.0F), "%s", play_paused ? "Paused" : "Playing");
             }
@@ -531,6 +549,10 @@ struct EditorShell::Impl {
             return;
         }
         auto *active = activeDocument();
+        if (!reload_status.empty()) {
+            ImGui::TextWrapped("%s", reload_status.c_str());
+            ImGui::Separator();
+        }
         if (play_document) {
             ImGui::TextWrapped("Runtime changes are discarded when play stops.");
         }

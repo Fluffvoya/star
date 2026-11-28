@@ -21,6 +21,8 @@ struct PrefabInstance {
     std::vector<serialization::ArchiveError> diagnostics;
 };
 
+enum class SceneSnapshotRestore : std::uint8_t { Play, Reload };
+
 [[nodiscard]] STAR_SCENE_API std::expected<std::string, serialization::ArchiveError> saveSceneYaml(const Scene &scene);
 [[nodiscard]] STAR_SCENE_API std::expected<LoadedScene, serialization::ArchiveError>
 loadSceneYaml(World &world, std::string_view source,
@@ -31,7 +33,8 @@ loadSceneYaml(World &world, std::string_view source,
 saveSceneBinary(const Scene &scene);
 [[nodiscard]] STAR_SCENE_API std::expected<LoadedScene, serialization::ArchiveError>
 loadSceneBinary(World &world, std::span<const std::byte> source,
-                serialization::LoadPolicy policy = serialization::LoadPolicy::Preserve);
+                serialization::LoadPolicy policy = serialization::LoadPolicy::Preserve,
+                SceneSnapshotRestore mode = SceneSnapshotRestore::Play);
 
 [[nodiscard]] STAR_SCENE_API std::expected<std::string, serialization::ArchiveError> savePrefabYaml(const Scene &scene,
                                                                                                     ObjectHandle root);
