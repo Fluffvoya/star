@@ -18,6 +18,7 @@ enum class StaticRenderErrorCode : std::uint8_t {
     InvalidTransform,
     InvalidCamera,
     InvalidLight,
+    InvalidMaterial,
     AllocationFailed,
 };
 

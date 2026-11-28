@@ -4,6 +4,7 @@
 #include "core/guid.hpp"
 #include "serialization/archive.hpp"
 
+#include <array>
 #include <compare>
 #include <cstdint>
 #include <expected>
@@ -40,6 +41,17 @@ struct MaterialAsset {
     friend bool operator==(const MaterialAsset &, const MaterialAsset &) = default;
 };
 
+// Material parameters resolved into the values the renderer consumes. Unknown parameters are ignored.
+struct ResolvedMaterial {
+    Guid shader;
+    MaterialRenderState state;
+    std::array<float, 4> base_color{1.0F, 1.0F, 1.0F, 1.0F};
+    float metallic = 1.0F;
+    float roughness = 1.0F;
+
+    friend bool operator==(const ResolvedMaterial &, const ResolvedMaterial &) = default;
+};
+
 struct MaterialInstanceAsset {
     Guid parent;
     serialization::ArchiveValue::Mapping overrides;
@@ -65,5 +77,9 @@ writeMaterialInstance(const MaterialInstanceAsset &instance);
 
 [[nodiscard]] STAR_ASSET_API std::expected<MaterialAsset, serialization::ArchiveError>
 resolveMaterialInstance(Guid parent_guid, const MaterialAsset &parent, const MaterialInstanceAsset &instance);
+
+// Reads BaseColor, Metallic and Roughness. Malformed known parameters fail; unknown ones are ignored.
+[[nodiscard]] STAR_ASSET_API std::expected<ResolvedMaterial, serialization::ArchiveError>
+resolveMaterial(const MaterialAsset &material);
 
 } // namespace star

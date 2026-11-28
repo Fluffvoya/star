@@ -1,6 +1,9 @@
 #include "asset/material.hpp"
 
 #include <array>
+#include <charconv>
+#include <cmath>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -89,6 +92,32 @@ bool takeState(Mapping &fields, std::string_view key, const std::array<std::stri
         }
     }
     return false;
+}
+
+std::optional<float> number(const ArchiveValue &value) {
+    const auto *plain = std::get_if<PlainScalar>(&value.value);
+    if (plain == nullptr) {
+        return std::nullopt;
+    }
+    float result = 0.0F;
+    const auto parsed = std::from_chars(plain->text.data(), plain->text.data() + plain->text.size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != plain->text.data() + plain->text.size() || !std::isfinite(result)) {
+        return std::nullopt;
+    }
+    return result;
+}
+
+std::optional<float> takeNumber(const Mapping &fields, std::string_view key, std::string_view path,
+                                std::expected<void, ArchiveError> &status) {
+    const auto *field = find(fields, key);
+    if (field == nullptr) {
+        return std::nullopt;
+    }
+    const auto value = number(*field);
+    if (!value) {
+        status = error(ArchiveErrorCode::InvalidInput, std::string(path) + "." + std::string(key));
+    }
+    return value;
 }
 
 } // namespace
@@ -192,6 +221,46 @@ std::expected<ArchiveDocument, ArchiveError> writeMaterialInstance(const Materia
     document.fields["Parent"] = ArchiveValue{instance.parent.toString()};
     document.fields["Overrides"] = ArchiveValue{instance.overrides};
     return document;
+}
+
+std::expected<ResolvedMaterial, ArchiveError> resolveMaterial(const MaterialAsset &material) {
+    ResolvedMaterial resolved{material.shader, material.state};
+    std::expected<void, ArchiveError> status;
+    const auto &parameters = material.parameters;
+    if (const auto *field = find(parameters, "BaseColor"); field != nullptr) {
+        const auto *channels = std::get_if<ArchiveValue::Sequence>(&field->value);
+        if (channels == nullptr || channels->size() != resolved.base_color.size()) {
+            return error(ArchiveErrorCode::InvalidInput, "Parameters.BaseColor");
+        }
+        for (std::size_t index = 0; index < resolved.base_color.size(); ++index) {
+            const auto value = number((*channels)[index]);
+            if (!value) {
+                return error(ArchiveErrorCode::InvalidInput, "Parameters.BaseColor");
+            }
+            resolved.base_color[index] = *value;
+        }
+    }
+    const auto metallic = takeNumber(parameters, "Metallic", "Parameters", status);
+    if (!status) {
+        return std::unexpected(status.error());
+    }
+    if (metallic && (*metallic < 0.0F || *metallic > 1.0F)) {
+        return error(ArchiveErrorCode::InvalidInput, "Parameters.Metallic");
+    }
+    if (metallic) {
+        resolved.metallic = *metallic;
+    }
+    const auto roughness = takeNumber(parameters, "Roughness", "Parameters", status);
+    if (!status) {
+        return std::unexpected(status.error());
+    }
+    if (roughness && (*roughness < 0.0F || *roughness > 1.0F)) {
+        return error(ArchiveErrorCode::InvalidInput, "Parameters.Roughness");
+    }
+    if (roughness) {
+        resolved.roughness = *roughness;
+    }
+    return resolved;
 }
 
 std::expected<MaterialAsset, ArchiveError> resolveMaterialInstance(Guid parent_guid, const MaterialAsset &parent,

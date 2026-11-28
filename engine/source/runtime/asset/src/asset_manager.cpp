@@ -1,6 +1,7 @@
 #include "asset/asset_manager.hpp"
 
 #include "jobs/jobs.hpp"
+#include "serialization/archive.hpp"
 
 #include <atomic>
 #include <fstream>
@@ -12,7 +13,7 @@
 namespace star {
 namespace detail {
 
-using AssetPayload = std::variant<std::vector<std::byte>, TextureAsset, StaticModelAsset>;
+using AssetPayload = std::variant<std::vector<std::byte>, TextureAsset, StaticModelAsset, MaterialAsset>;
 
 struct AssetLoadEntry {
     std::atomic<AssetState> state{AssetState::Loading};
@@ -70,6 +71,17 @@ std::expected<detail::AssetPayload, AssetLoadError> readAsset(const std::filesys
             return std::move(*model);
         }
         break;
+    case detail::AssetKind::Material: {
+        const std::string_view text{reinterpret_cast<const char *>(bytes->data()), bytes->size()};
+        const auto document = serialization::readYaml(text);
+        if (!document) {
+            break;
+        }
+        if (auto material = readMaterial(*document, serialization::LoadPolicy::Preserve)) {
+            return std::move(*material);
+        }
+        break;
+    }
     }
     return std::unexpected(AssetLoadError::DecodeFailed);
 }
@@ -104,6 +116,10 @@ const TextureAsset *AssetBlobHandle::getTexture() const noexcept {
 
 const StaticModelAsset *AssetBlobHandle::getModel() const noexcept {
     return getState() == AssetState::Ready ? std::get_if<StaticModelAsset>(&*m_entry->result) : nullptr;
+}
+
+const MaterialAsset *AssetBlobHandle::getMaterial() const noexcept {
+    return getState() == AssetState::Ready ? std::get_if<MaterialAsset>(&*m_entry->result) : nullptr;
 }
 
 AssetManager::AssetManager(std::uint32_t retention_frames) : m_retention_frames(retention_frames) {}

@@ -18,14 +18,17 @@
 namespace star {
 
 template <typename T>
-concept DecodedAsset = std::same_as<T, TextureAsset> || std::same_as<T, StaticModelAsset>;
+concept DecodedAsset =
+    std::same_as<T, TextureAsset> || std::same_as<T, StaticModelAsset> || std::same_as<T, MaterialAsset>;
 
 namespace detail {
 struct AssetLoadEntry;
-enum class AssetKind : std::uint8_t { Blob, Texture, Model };
+enum class AssetKind : std::uint8_t { Blob, Texture, Model, Material };
 
 template <DecodedAsset T>
-constexpr AssetKind asset_kind = std::same_as<T, TextureAsset> ? AssetKind::Texture : AssetKind::Model;
+constexpr AssetKind asset_kind = std::same_as<T, TextureAsset>       ? AssetKind::Texture
+                                 : std::same_as<T, StaticModelAsset> ? AssetKind::Model
+                                                                     : AssetKind::Material;
 } // namespace detail
 
 enum class AssetState : std::uint8_t { Unloaded, Loading, Ready, Failed };
@@ -53,6 +56,7 @@ class STAR_ASSET_API AssetBlobHandle final {
     template <DecodedAsset T> friend class AssetHandle;
     [[nodiscard]] const TextureAsset *getTexture() const noexcept;
     [[nodiscard]] const StaticModelAsset *getModel() const noexcept;
+    [[nodiscard]] const MaterialAsset *getMaterial() const noexcept;
     explicit AssetBlobHandle(std::shared_ptr<detail::AssetLoadEntry> entry) noexcept;
 
     std::shared_ptr<detail::AssetLoadEntry> m_entry;
@@ -70,8 +74,10 @@ template <DecodedAsset T> class AssetHandle final {
     [[nodiscard]] const T *get() const noexcept {
         if constexpr (std::same_as<T, TextureAsset>) {
             return m_storage.getTexture();
-        } else {
+        } else if constexpr (std::same_as<T, StaticModelAsset>) {
             return m_storage.getModel();
+        } else {
+            return m_storage.getMaterial();
         }
     }
 

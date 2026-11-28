@@ -121,6 +121,10 @@ int main(int argc, char **argv) {
         addBox(model, "Glass", {-1.15F, 1.35F, 1.8F}, {0.85F, 0.85F, 0.03F}, {0.62F, 0.82F, 1.0F, 0.35F},
                MaterialBlendMode::Transparent);
 
+        // A second object takes its surface from a material asset through MeshRenderer.materials.
+        StaticModelAsset accent;
+        addBox(accent, "Accent", {0.0F, 0.0F, 0.0F}, {0.55F, 0.55F, 0.55F}, {1.0F, 1.0F, 1.0F, 1.0F});
+
         TemporaryModel file;
         const auto bytes = writeModelAsset(model).value();
         {
@@ -129,6 +133,40 @@ int main(int argc, char **argv) {
             output.close();
             if (!output) {
                 throw std::runtime_error("Cannot write " + file.path.string());
+            }
+        }
+        TemporaryModel accent_file;
+        {
+            const auto accent_bytes = writeModelAsset(accent).value();
+            std::ofstream output(accent_file.path, std::ios::binary);
+            output.write(reinterpret_cast<const char *>(accent_bytes.data()),
+                         static_cast<std::streamsize>(accent_bytes.size()));
+            output.close();
+            if (!output) {
+                throw std::runtime_error("Cannot write " + accent_file.path.string());
+            }
+        }
+        TemporaryModel material_file;
+        {
+            std::ofstream output(material_file.path, std::ios::binary);
+            output << "Type: star::Material\n"
+                      "Version: 1\n"
+                      "Properties:\n"
+                      "  Shader: "
+                   << renderer::defaultForwardMaterial().variant.shader.toString()
+                   << "\n"
+                      "  Parameters:\n"
+                      "    BaseColor: [0.95, 0.72, 0.25, 1.0]\n"
+                      "    Metallic: 0.9\n"
+                      "    Roughness: 0.18\n"
+                      "  RenderState:\n"
+                      "    Blend: Opaque\n"
+                      "    Shading: Lit\n"
+                      "    DoubleSided: false\n"
+                      "    DepthTest: true\n";
+            output.close();
+            if (!output) {
+                throw std::runtime_error("Cannot write " + material_file.path.string());
             }
         }
 
@@ -141,6 +179,15 @@ int main(int argc, char **argv) {
         if (!scene.queueAddComponent(mesh_object, componentTypeId<MeshRenderer>(), &mesh)) {
             throw std::runtime_error("Cannot attach the mesh renderer");
         }
+
+        const auto accent_id = Guid::generate();
+        const auto material_id = Guid::generate();
+        const auto accent_object = scene.createObject("Accent").value();
+        const MeshRenderer accent_renderer{accent_id, {material_id}, true, 1};
+        if (!scene.queueAddComponent(accent_object, componentTypeId<MeshRenderer>(), &accent_renderer)) {
+            throw std::runtime_error("Cannot attach the accent renderer");
+        }
+        scene.findComponent<Transform>(accent_object)->position = {3.7F, 0.55F, 2.3F};
 
         const auto camera_object = scene.createObject("Camera").value();
         const Camera camera{math::pi / 3.0F, 0.1F, 100.0F};
@@ -175,8 +222,10 @@ int main(int argc, char **argv) {
         }
 
         AssetManager asset_manager;
-        if (!asset_manager.registerAsset<StaticModelAsset>(mesh_id, file.path)) {
-            throw std::runtime_error("Cannot register the sample model");
+        if (!asset_manager.registerAsset<StaticModelAsset>(mesh_id, file.path) ||
+            !asset_manager.registerAsset<StaticModelAsset>(accent_id, accent_file.path) ||
+            !asset_manager.registerAsset<MaterialAsset>(material_id, material_file.path)) {
+            throw std::runtime_error("Cannot register the sample assets");
         }
         const auto snapshot = extractStaticRenderSnapshot(scene, asset_manager);
         if (!snapshot) {
