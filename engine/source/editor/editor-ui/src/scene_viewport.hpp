@@ -3,10 +3,12 @@
 #include "core/math.hpp"
 #include "editor-ui/imgui_layer.hpp"
 #include "scene/components.hpp"
+#include "scene_models.hpp"
 
 #include <imgui.h>
 
 #include <optional>
+#include <vector>
 
 namespace star::editor {
 
@@ -20,6 +22,8 @@ class SceneViewport final {
     SceneViewport &operator=(const SceneViewport &) = delete;
 
     [[nodiscard]] std::expected<void, UiError> initialize(const std::filesystem::path &shader_directory);
+    void setProjectRoot(const std::filesystem::path &root);
+    void refreshAssets();
     void draw(EditorDocument &document, float delta_seconds, bool game_view);
     void render(rhi::CommandList &commands);
 
@@ -49,6 +53,7 @@ class SceneViewport final {
     [[nodiscard]] math::Vec3 forward() const;
     [[nodiscard]] CameraView cameraView() const;
     [[nodiscard]] math::Mat4::Vector4 project(math::Vec3 point, float aspect) const;
+    [[nodiscard]] math::Mat4 clipFromModel(const math::Mat4 &world, float aspect) const;
     [[nodiscard]] bool drawGizmo(EditorDocument &document, ImVec2 origin, ImVec2 size, bool hovered);
     void cancelGizmo();
 
@@ -60,11 +65,15 @@ class SceneViewport final {
     rhi::GraphicsPipelineHandle m_pipeline;
     rhi::BufferHandle m_vertices;
     rhi::TextureHandle m_target;
+    rhi::TextureHandle m_depth;
     rhi::TextureViewHandle m_view;
     std::uint64_t m_image_id = 0;
     std::uint32_t m_width = 0;
     std::uint32_t m_height = 0;
     bool m_draw_requested = false;
+    bool m_draw_grid = true;
+    std::unique_ptr<SceneModels> m_models;
+    std::vector<SceneModelInstance> m_model_instances;
     bool m_looking = false;
     bool m_orthographic = false;
     bool m_local_gizmo = false;

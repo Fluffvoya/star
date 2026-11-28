@@ -365,13 +365,20 @@ STAR_TEST(vulkanDeviceClearsTextureAndReadsBackPixels) {
         .usage = TextureUsage::RenderTarget | TextureUsage::Sampled | TextureUsage::CopySource,
         .debugName = "rhi-clear-target",
     });
+    const auto depth = (*device)->createTexture({
+        .width = 4,
+        .height = 4,
+        .format = TextureFormat::D24UnormS8Uint,
+        .usage = TextureUsage::DepthStencil,
+        .debugName = "rhi-clear-depth",
+    });
     const auto readback = (*device)->createBuffer({
         .size = 4 * 4 * 4,
         .usage = BufferUsage::CopyDestination,
         .memory = MemoryType::Readback,
         .debugName = "rhi-clear-readback",
     });
-    STAR_CHECK(texture && readback);
+    STAR_CHECK(texture && depth && readback);
     auto commands = (*device)->beginCommandList(QueueType::Graphics);
     STAR_CHECK(commands);
     (*commands)->beginRenderPass(RenderPassBeginInfo{
@@ -379,6 +386,7 @@ STAR_TEST(vulkanDeviceClearsTextureAndReadsBackPixels) {
         .clear_color = {0.25F, 0.5F, 0.75F, 1.0F},
         .clear = true,
         .debugName = "clear pass",
+        .depth_target = *depth,
     });
     (*commands)->endRenderPass();
     (*commands)->copyTextureToBuffer(*texture, *readback);
@@ -393,7 +401,7 @@ STAR_TEST(vulkanDeviceClearsTextureAndReadsBackPixels) {
     STAR_CHECK(std::abs(byte_at(2) - 191) <= 2);
     STAR_CHECK(byte_at(3) == 255);
 
-    STAR_CHECK((*device)->destroy(*texture) && (*device)->destroy(*readback));
+    STAR_CHECK((*device)->destroy(*texture) && (*device)->destroy(*depth) && (*device)->destroy(*readback));
     (*device)->beginFrame();
     STAR_CHECK(!(*device)->isAlive(*texture));
 }

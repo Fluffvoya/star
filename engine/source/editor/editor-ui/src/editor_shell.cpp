@@ -603,6 +603,9 @@ struct EditorShell::Impl {
         }
         if (ImGui::Button("Refresh")) {
             next_scan = 0.0;
+            if (scene_viewport) {
+                scene_viewport->refreshAssets();
+            }
         }
         ImGui::SameLine();
         ImGui::TextDisabled("%s", project_root.empty() ? "." : project_root.string().c_str());
@@ -784,6 +787,9 @@ std::shared_ptr<EditorDocument> EditorShell::getDocument() const { return m_impl
 
 void EditorShell::setProjectRoot(std::filesystem::path root) {
     m_impl->project_root = std::move(root);
+    if (m_impl->scene_viewport) {
+        m_impl->scene_viewport->setProjectRoot(m_impl->project_root);
+    }
     m_impl->next_scan = 0.0;
 }
 
@@ -803,6 +809,7 @@ std::expected<void, UiError> EditorShell::initializeViewport(rhi::Device &device
     if (auto initialized = viewport->initialize(shader_directory); !initialized) {
         return std::unexpected(std::move(initialized.error()));
     }
+    viewport->setProjectRoot(m_impl->project_root);
     m_impl->scene_viewport = std::move(viewport);
     return {};
 }
