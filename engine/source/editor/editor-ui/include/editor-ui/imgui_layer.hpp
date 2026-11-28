@@ -25,6 +25,8 @@ struct ImGuiLayerOptions {
     std::filesystem::path shader_directory;
     bool enable_docking = true;
     float font_size = 16.0F;
+    void *native_window = nullptr;
+    bool enable_platform_viewports = true;
 };
 
 // Owns the ImGui context and records its draw data through the engine RHI.
@@ -39,10 +41,13 @@ class STAR_EDITORUI_API ImGuiLayer final {
 
     // Forwards a platform event. Text input arrives as WindowEventType::TextInput.
     void processEvent(const WindowEvent &event);
+    void processNativeEvent(const void *event);
     // Sets display size, delta time and starts a new ImGui frame.
     void beginFrame(std::uint32_t width, std::uint32_t height, float delta_seconds);
     // Finishes the ImGui frame. Draw data stays valid until the next beginFrame.
     void endFrame();
+    void renderPlatformWindows();
+    [[nodiscard]] bool usesPlatformViewports() const noexcept;
     // The caller retains the view until unregisterTexture and completion of submitted draws.
     [[nodiscard]] std::expected<std::uint64_t, UiError> registerTexture(rhi::TextureViewHandle view);
     void unregisterTexture(std::uint64_t id);

@@ -4,6 +4,8 @@
 #include "resource_pool.hpp"
 #include "vulkan_runtime.hpp"
 
+#include <SDL3/SDL_vulkan.h>
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -12,8 +14,6 @@
 #include <mutex>
 #include <utility>
 #include <vector>
-
-struct SDL_Window;
 
 namespace star::rhi {
 namespace {
@@ -87,6 +87,7 @@ struct VulkanPipeline {
 };
 
 struct VulkanSwapchain {
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkFence acquire_fence = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -689,6 +690,10 @@ class VulkanCommandList final : public CommandList {
 class VulkanDevice final : public Device {
   public:
     ~VulkanDevice() override {
+        if (m_runtime.device != VK_NULL_HANDLE) {
+            m_runtime.vk.vkDeviceWaitIdle(m_runtime.device);
+            m_pools.swapchains.visit([this](VulkanSwapchain &swapchain) { releaseSwapchain(swapchain); });
+        }
         if (m_descriptor_pool != VK_NULL_HANDLE) {
             m_runtime.vk.vkDestroyDescriptorPool(m_runtime.device, m_descriptor_pool, nullptr);
             m_descriptor_pool = VK_NULL_HANDLE;
@@ -1352,7 +1357,7 @@ class VulkanDevice final : public Device {
             return std::unexpected(DeviceError::InvalidHandle);
         }
         m_runtime.vk.vkDeviceWaitIdle(m_runtime.device);
-        releaseSwapchainResources(*swapchain);
+        releaseSwapchain(*swapchain);
         m_pools.swapchains.erase(handle);
         return {};
     }
@@ -1365,12 +1370,35 @@ class VulkanDevice final : public Device {
             return std::unexpected(DeviceError::InvalidDescriptor);
         }
         std::scoped_lock lock(m_mutex);
-        VulkanSwapchain swapchain;
+        auto handle = m_pools.swapchains.emplace(VulkanSwapchain{});
+        if (!handle) {
+            return handle;
+        }
+        auto &swapchain = *m_pools.swapchains.get(*handle);
         swapchain.vsync = description.vsync;
-        if (auto created = createSwapchainResources(swapchain, description.width, description.height); !created) {
+        swapchain.surface = m_runtime.surface;
+        if (description.native_window) {
+            auto *window = static_cast<SDL_Window *>(description.native_window);
+            swapchain.surface = VK_NULL_HANDLE;
+            if (!SDL_Vulkan_CreateSurface(window, m_runtime.instance, nullptr, &swapchain.surface)) {
+                m_pools.swapchains.erase(*handle);
+                return std::unexpected(DeviceError::BackendUnavailable);
+            }
+            VkBool32 supported = VK_FALSE;
+            if (m_runtime.inst.vkGetPhysicalDeviceSurfaceSupportKHR(m_runtime.physicalDevice, m_runtime.queueFamily,
+                                                                    swapchain.surface, &supported) != VK_SUCCESS ||
+                supported != VK_TRUE) {
+                releaseSwapchain(swapchain);
+                m_pools.swapchains.erase(*handle);
+                return std::unexpected(DeviceError::Unsupported);
+            }
+        }
+        if (const auto created = createSwapchainResources(swapchain, description.width, description.height); !created) {
+            releaseSwapchain(swapchain);
+            m_pools.swapchains.erase(*handle);
             return std::unexpected(created.error());
         }
-        return m_pools.swapchains.emplace(std::move(swapchain));
+        return handle;
     }
 
     std::expected<SwapchainInfo, DeviceError> getSwapchainInfo(SwapchainHandle handle) const override {
@@ -1388,6 +1416,9 @@ class VulkanDevice final : public Device {
         VulkanSwapchain *swapchain = m_pools.swapchains.get(handle);
         if (swapchain == nullptr) {
             return std::unexpected(DeviceError::InvalidHandle);
+        }
+        if (swapchain->swapchain == VK_NULL_HANDLE || swapchain->acquire_fence == VK_NULL_HANDLE) {
+            return std::unexpected(DeviceError::InvalidState);
         }
         std::uint32_t index = 0;
         const VkResult result = m_runtime.vk.vkAcquireNextImageKHR(m_runtime.device, swapchain->swapchain, UINT64_MAX,
@@ -1594,12 +1625,20 @@ class VulkanDevice final : public Device {
         swapchain.acquired = std::numeric_limits<std::uint32_t>::max();
     }
 
+    void releaseSwapchain(VulkanSwapchain &swapchain) noexcept {
+        releaseSwapchainResources(swapchain);
+        if (swapchain.surface != VK_NULL_HANDLE && swapchain.surface != m_runtime.surface) {
+            m_runtime.inst.vkDestroySurfaceKHR(m_runtime.instance, swapchain.surface, nullptr);
+        }
+        swapchain.surface = VK_NULL_HANDLE;
+    }
+
     std::expected<void, DeviceError> createSwapchainResources(VulkanSwapchain &swapchain, std::uint32_t width,
-                                                              std::uint32_t height) {
+                                                              std::uint32_t height) try {
         const auto &inst = m_runtime.inst;
         const auto &vk = m_runtime.vk;
         VkSurfaceCapabilitiesKHR capabilities{};
-        if (inst.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_runtime.physicalDevice, m_runtime.surface,
+        if (inst.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_runtime.physicalDevice, swapchain.surface,
                                                            &capabilities) != VK_SUCCESS) {
             return std::unexpected(DeviceError::BackendUnavailable);
         }
@@ -1608,13 +1647,13 @@ class VulkanDevice final : public Device {
         }
 
         std::uint32_t format_count = 0;
-        if (inst.vkGetPhysicalDeviceSurfaceFormatsKHR(m_runtime.physicalDevice, m_runtime.surface, &format_count,
+        if (inst.vkGetPhysicalDeviceSurfaceFormatsKHR(m_runtime.physicalDevice, swapchain.surface, &format_count,
                                                       nullptr) != VK_SUCCESS ||
             format_count == 0) {
             return std::unexpected(DeviceError::BackendUnavailable);
         }
         std::vector<VkSurfaceFormatKHR> formats(format_count);
-        if (inst.vkGetPhysicalDeviceSurfaceFormatsKHR(m_runtime.physicalDevice, m_runtime.surface, &format_count,
+        if (inst.vkGetPhysicalDeviceSurfaceFormatsKHR(m_runtime.physicalDevice, swapchain.surface, &format_count,
                                                       formats.data()) != VK_SUCCESS) {
             return std::unexpected(DeviceError::BackendFailure);
         }
@@ -1629,11 +1668,11 @@ class VulkanDevice final : public Device {
         VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
         if (!swapchain.vsync) {
             std::uint32_t mode_count = 0;
-            if (inst.vkGetPhysicalDeviceSurfacePresentModesKHR(m_runtime.physicalDevice, m_runtime.surface, &mode_count,
+            if (inst.vkGetPhysicalDeviceSurfacePresentModesKHR(m_runtime.physicalDevice, swapchain.surface, &mode_count,
                                                                nullptr) == VK_SUCCESS &&
                 mode_count != 0) {
                 std::vector<VkPresentModeKHR> modes(mode_count);
-                if (inst.vkGetPhysicalDeviceSurfacePresentModesKHR(m_runtime.physicalDevice, m_runtime.surface,
+                if (inst.vkGetPhysicalDeviceSurfacePresentModesKHR(m_runtime.physicalDevice, swapchain.surface,
                                                                    &mode_count, modes.data()) == VK_SUCCESS) {
                     if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_MAILBOX_KHR) != modes.end()) {
                         present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
@@ -1669,7 +1708,7 @@ class VulkanDevice final : public Device {
 
         VkSwapchainCreateInfoKHR create{};
         create.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        create.surface = m_runtime.surface;
+        create.surface = swapchain.surface;
         create.minImageCount = image_count;
         create.imageFormat = surface_format.format;
         create.imageColorSpace = surface_format.colorSpace;
@@ -1724,6 +1763,7 @@ class VulkanDevice final : public Device {
             view_create.subresourceRange = texture->range;
             const VkResult view_result = vk.vkCreateImageView(m_runtime.device, &view_create, nullptr, &texture->view);
             if (view_result != VK_SUCCESS) {
+                textures.clear();
                 releaseSwapchainResources(swapchain);
                 return std::unexpected(vulkanError(view_result));
             }
@@ -1734,6 +1774,7 @@ class VulkanDevice final : public Device {
             VkFenceCreateInfo fence_create{};
             fence_create.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
             if (vk.vkCreateFence(m_runtime.device, &fence_create, nullptr, &swapchain.acquire_fence) != VK_SUCCESS) {
+                textures.clear();
                 releaseSwapchainResources(swapchain);
                 return std::unexpected(DeviceError::BackendFailure);
             }
@@ -1742,6 +1783,7 @@ class VulkanDevice final : public Device {
         for (auto &texture : textures) {
             auto handle = m_pools.textures.emplace(std::move(texture));
             if (!handle) {
+                textures.clear();
                 releaseSwapchainResources(swapchain);
                 return std::unexpected(handle.error());
             }
@@ -1755,6 +1797,9 @@ class VulkanDevice final : public Device {
         swapchain.height = extent.height;
         swapchain.acquired = std::numeric_limits<std::uint32_t>::max();
         return {};
+    } catch (const std::bad_alloc &) {
+        releaseSwapchainResources(swapchain);
+        return std::unexpected(DeviceError::OutOfMemory);
     }
 
     VulkanRuntime m_runtime;

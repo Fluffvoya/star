@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace star {
 
@@ -44,6 +45,7 @@ struct WindowDescriptor {
     std::string title = "Star Engine";
     std::int32_t width = 1280;
     std::int32_t height = 720;
+    bool vulkan = false;
 };
 
 class STAR_PLATFORM_API Window final {
@@ -56,6 +58,9 @@ class STAR_PLATFORM_API Window final {
     Window &operator=(Window &&) noexcept;
 
     [[nodiscard]] std::span<const WindowEvent> pollEvents();
+    // The native SDL_Event pointer is borrowed for the callback. Includes all polled windows.
+    using NativeEventObserver = void (*)(const void *event, void *context);
+    [[nodiscard]] std::span<const WindowEvent> pollEvents(NativeEventObserver observer, void *context);
     [[nodiscard]] std::expected<void, PlatformError> startTextInput();
     // Present an RGB frame using the window surface on the main thread.
     [[nodiscard]] std::expected<void, PlatformError> presentSolidColor(std::uint8_t red, std::uint8_t green,
@@ -65,6 +70,7 @@ class STAR_PLATFORM_API Window final {
     [[nodiscard]] bool shouldClose() const;
     [[nodiscard]] std::int32_t getWidth() const;
     [[nodiscard]] std::int32_t getHeight() const;
+    [[nodiscard]] std::pair<std::int32_t, std::int32_t> getPixelSize() const noexcept;
     [[nodiscard]] std::string_view getTitle() const;
 
   private:
