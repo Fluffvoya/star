@@ -115,6 +115,7 @@ if(STAR_BUILD_SAMPLES)
     add_subdirectory(samples/vulkan-mesh)
     add_subdirectory(samples/vulkan-forward)
     add_subdirectory(samples/scene-forward)
+    add_subdirectory(samples/present-triangle)
 endif()
 
 if(STAR_BUILD_TESTS AND BUILD_TESTING)

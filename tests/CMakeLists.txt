@@ -146,6 +146,16 @@ if(STAR_TEST_VULKAN)
         TIMEOUT 180
         ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1"
         FAIL_REGULAR_EXPRESSION "[[]error[]] Vulkan:;Validation Error:")
+
+    if(TARGET StarPresentTriangle)
+        add_test(NAME vulkan-present-triangle COMMAND StarPresentTriangle --frames=3)
+        set_tests_properties(vulkan-present-triangle PROPERTIES
+            LABELS "vulkan"
+            SKIP_RETURN_CODE 77
+            TIMEOUT 60
+            ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1"
+            FAIL_REGULAR_EXPRESSION "[[]error[]] Vulkan:;Validation Error:")
+    endif()
 endif()
 
 if(NOT STAR_MONOLITHIC)

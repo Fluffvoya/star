@@ -37,6 +37,11 @@ template <typename T, typename HandleType> class ResourcePool final {
         return slot != nullptr && slot->value ? &*slot->value : nullptr;
     }
 
+    [[nodiscard]] const T *get(HandleType handle) const noexcept {
+        const Slot *slot = getSlot(handle);
+        return slot != nullptr && slot->value ? &*slot->value : nullptr;
+    }
+
     void reclaimMarked() noexcept {
         for (std::uint32_t index = 0; index < m_slots.size(); ++index) {
             if (m_slots[index].pendingDestroy) {
@@ -71,6 +76,21 @@ template <typename T, typename HandleType> class ResourcePool final {
     bool reclaim(HandleType handle) noexcept {
         Slot *slot = getSlot(handle);
         if (slot == nullptr || !slot->value.has_value() || !slot->pendingDestroy) {
+            return false;
+        }
+        slot->value.reset();
+        slot->pendingDestroy = false;
+        ++slot->generation;
+        if (slot->generation == 0) {
+            slot->generation = 1;
+        }
+        return true;
+    }
+
+    // Drops a value immediately. Callers must keep no in-flight GPU work referencing it.
+    bool erase(HandleType handle) noexcept {
+        Slot *slot = getSlot(handle);
+        if (slot == nullptr || !slot->value.has_value()) {
             return false;
         }
         slot->value.reset();

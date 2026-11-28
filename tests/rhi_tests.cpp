@@ -7,6 +7,8 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <span>
@@ -287,6 +289,140 @@ STAR_TEST(renderGraphReusesCompatibleTexturesAfterTheirLastPass) {
     STAR_CHECK(graph_result->lifetimes[imported->id].transientSlot == UINT32_MAX);
     STAR_CHECK(graph_result->textureReuses.size() == 1 && graph_result->textureReuses[0].previous == *first &&
                graph_result->textureReuses[0].next == *later && graph_result->textureReuses[0].beforePass == *final);
+}
+
+STAR_TEST(nullDeviceValidatesDrawResourcesAndReportsInvalidBindings) {
+    using namespace star::rhi;
+    auto device_result = createNullDevice();
+    STAR_CHECK(device_result);
+    std::unique_ptr<Device> device = std::move(*device_result);
+
+    const auto texture = device->createTexture({.width = 4,
+                                                .height = 4,
+                                                .usage = TextureUsage::Sampled | TextureUsage::CopyDestination,
+                                                .debugName = "font-atlas"});
+    const auto upload = device->createBuffer(
+        {.size = 64, .usage = BufferUsage::Vertex, .memory = MemoryType::Upload, .debugName = "vertices"});
+    STAR_CHECK(texture && upload);
+    const auto view = device->createTextureView({.texture = *texture, .debugName = "font-atlas-view"});
+    const auto sampler = device->createSampler({.debugName = "linear-clamp"});
+    STAR_CHECK(view && sampler);
+    STAR_CHECK(!device->createTextureView({.texture = TextureHandle{}, .debugName = "bad"}));
+
+    const std::array binding{BindGroupLayoutEntry{0, BindingType::CombinedImageSampler, ShaderStage::Fragment}};
+    const auto layout = device->createBindGroupLayout({.entries = binding, .debugName = "ui-layout"});
+    STAR_CHECK(layout);
+    const std::array good_entry{BindGroupEntry{0, *view, *sampler, {}, 0, 0}};
+    STAR_CHECK(device->createBindGroup({.layout = *layout, .entries = good_entry, .debugName = "ui-group"}));
+    const std::array missing_sampler{BindGroupEntry{0, *view, SamplerHandle{}, {}, 0, 0}};
+    STAR_CHECK(!device->createBindGroup({.layout = *layout, .entries = missing_sampler, .debugName = "bad-group"}));
+
+    const std::array no_groups{*layout};
+    const auto pipeline_layout = device->createPipelineLayout(
+        {.bind_groups = no_groups, .push_constant_size = 16, .debugName = "ui-pipeline-layout"});
+    STAR_CHECK(pipeline_layout);
+    const auto vertex = device->createShaderModule(
+        {.stage = ShaderStage::Vertex, .spirv = std::array<std::uint32_t, 1>{0x07230203U}, .debugName = "vs"});
+    const auto fragment = device->createShaderModule(
+        {.stage = ShaderStage::Fragment, .spirv = std::array<std::uint32_t, 1>{0x07230203U}, .debugName = "fs"});
+    STAR_CHECK(vertex && fragment);
+    const std::array formats{TextureFormat::Bgra8Unorm};
+    STAR_CHECK(device->createGraphicsPipeline({.layout = *pipeline_layout,
+                                               .vertex_shader = *vertex,
+                                               .fragment_shader = *fragment,
+                                               .vertex_buffers = {},
+                                               .blend = BlendMode::Alpha,
+                                               .color_formats = formats,
+                                               .debugName = "ui-pipeline"}));
+    STAR_CHECK(!device->createGraphicsPipeline({.layout = *pipeline_layout,
+                                                .vertex_shader = *vertex,
+                                                .fragment_shader = ShaderModuleHandle{},
+                                                .vertex_buffers = {},
+                                                .color_formats = formats,
+                                                .debugName = "bad-pipeline"}));
+
+    STAR_CHECK(!device->createSwapchain({.width = 16, .height = 16, .vsync = true, .debugName = "null-swapchain"})
+                    .has_value());
+    STAR_CHECK(!device->acquireNextImage(SwapchainHandle{}).has_value());
+    const std::array<std::byte, 16> payload{};
+    STAR_CHECK(device->writeBuffer(*upload, payload));
+    STAR_CHECK(!device->readBuffer(*upload, std::span<std::byte>{}));
+    STAR_CHECK(device->waitIdle());
+}
+
+STAR_TEST(vulkanDeviceClearsTextureAndReadsBackPixels) {
+    using namespace star::rhi;
+    const bool validation = enableVulkanValidation();
+    auto device = createVulkanDevice({.enableValidation = validation});
+    if (!device) {
+        STAR_CHECK(device.error() == DeviceError::BackendUnavailable && !validation && !requireVulkan());
+        return;
+    }
+    const auto texture = (*device)->createTexture({
+        .width = 4,
+        .height = 4,
+        .format = TextureFormat::Rgba8Unorm,
+        .usage = TextureUsage::RenderTarget | TextureUsage::Sampled | TextureUsage::CopySource,
+        .debugName = "rhi-clear-target",
+    });
+    const auto readback = (*device)->createBuffer({
+        .size = 4 * 4 * 4,
+        .usage = BufferUsage::CopyDestination,
+        .memory = MemoryType::Readback,
+        .debugName = "rhi-clear-readback",
+    });
+    STAR_CHECK(texture && readback);
+    auto commands = (*device)->beginCommandList(QueueType::Graphics);
+    STAR_CHECK(commands);
+    (*commands)->beginRenderPass(RenderPassBeginInfo{
+        .color_target = *texture,
+        .clear_color = {0.25F, 0.5F, 0.75F, 1.0F},
+        .clear = true,
+        .debugName = "clear pass",
+    });
+    (*commands)->endRenderPass();
+    (*commands)->copyTextureToBuffer(*texture, *readback);
+    const std::array list{*commands};
+    STAR_CHECK((*device)->submit(QueueType::Graphics, list, {}));
+
+    std::array<std::byte, 64> pixels{};
+    STAR_CHECK((*device)->readBuffer(*readback, pixels));
+    const auto byte_at = [&pixels](std::size_t offset) { return std::to_integer<int>(pixels[offset]); };
+    STAR_CHECK(std::abs(byte_at(0) - 64) <= 2);
+    STAR_CHECK(std::abs(byte_at(1) - 128) <= 2);
+    STAR_CHECK(std::abs(byte_at(2) - 191) <= 2);
+    STAR_CHECK(byte_at(3) == 255);
+
+    STAR_CHECK((*device)->destroy(*texture) && (*device)->destroy(*readback));
+    (*device)->beginFrame();
+    STAR_CHECK(!(*device)->isAlive(*texture));
+}
+
+STAR_TEST(vulkanDeviceCreatesSampledTextureBindings) {
+    using namespace star::rhi;
+    auto device = createVulkanDevice({.enableValidation = enableVulkanValidation()});
+    if (!device) {
+        STAR_CHECK(device.error() == DeviceError::BackendUnavailable && !requireVulkan());
+        return;
+    }
+    const auto texture = (*device)->createTexture({.width = 2,
+                                                   .height = 2,
+                                                   .format = TextureFormat::Rgba8Unorm,
+                                                   .usage = TextureUsage::Sampled | TextureUsage::CopyDestination,
+                                                   .debugName = "rhi-bind-texture"});
+    STAR_CHECK(texture);
+    const auto view = (*device)->createTextureView({.texture = *texture, .debugName = "rhi-bind-view"});
+    const auto sampler = (*device)->createSampler(
+        {.min_filter = FilterMode::Nearest, .mag_filter = FilterMode::Nearest, .debugName = "rhi-bind-sampler"});
+    STAR_CHECK(view && sampler);
+    const std::array binding{BindGroupLayoutEntry{0, BindingType::CombinedImageSampler, ShaderStage::Fragment}};
+    const auto layout = (*device)->createBindGroupLayout({.entries = binding, .debugName = "rhi-bind-layout"});
+    STAR_CHECK(layout);
+    const std::array entry{BindGroupEntry{0, *view, *sampler, {}, 0, 0}};
+    const auto group = (*device)->createBindGroup({.layout = *layout, .entries = entry, .debugName = "rhi-bind-group"});
+    STAR_CHECK(group);
+    STAR_CHECK((*device)->destroy(*group) && (*device)->destroy(*layout) && (*device)->destroy(*view) &&
+               (*device)->destroy(*sampler) && (*device)->destroy(*texture));
 }
 
 } // namespace
