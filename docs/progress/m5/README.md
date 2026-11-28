@@ -4,5 +4,6 @@
 | --- | --- |
 | 01 RHI 呈现与绘制能力 | [Linux x64 软件 Vulkan 验证记录](01-rhi-presentation.md) |
 | 02 ImGui 与编辑器壳 | [Linux x64 软件 Vulkan 验证记录](02-editor-shell.md) |
+| 03 编辑器文档与面板 | [Linux x64 验证记录](03-editor-documents.md) |
 
 M5 按实现方案 §20 的验收目标推进：ImGui 集成与主框架、面板、选择与操纵器、撤销/重做、PIE、热重载。每个阶段独立合并，阶段边界与未验证项写在对应报告中。
