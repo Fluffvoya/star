@@ -40,10 +40,16 @@ star_add_module(EditorUI editor-ui
     src/editor_shell.cpp
     src/scene_viewport.cpp
     src/scene_viewport.hpp
+    src/scene_models.cpp
+    src/scene_models.hpp
 )
 
 target_link_libraries(StarEditorUI PUBLIC Star::Core Star::Platform Star::RHI Star::EditorCore
     PRIVATE StarImGui StarImGuizmo SDL3::SDL3)
+if(TARGET StarAssetPipeline)
+    target_link_libraries(StarEditorUI PRIVATE Star::AssetPipeline)
+    target_compile_definitions(StarEditorUI PRIVATE STAR_EDITOR_MODEL_IMPORT=1)
+endif()
 
 include("${PROJECT_SOURCE_DIR}/cmake/StarSlang.cmake")
 if(STAR_SLANGC)
@@ -58,6 +64,14 @@ if(STAR_SLANGC)
     star_compile_slang_spirv("${viewport_vertex}" "${viewport_shader}" vertexMain vertex)
     star_compile_slang_spirv("${viewport_fragment}" "${viewport_shader}" fragmentMain fragment)
     set(editor_shaders "${ui_vertex}" "${ui_fragment}" "${viewport_vertex}" "${viewport_fragment}")
+    if(TARGET StarAssetPipeline)
+        set(model_shader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene-model.slang")
+        set(model_vertex "${CMAKE_CURRENT_BINARY_DIR}/scene-model-vertex.spv")
+        set(model_fragment "${CMAKE_CURRENT_BINARY_DIR}/scene-model-fragment.spv")
+        star_compile_slang_spirv("${model_vertex}" "${model_shader}" vertexMain vertex)
+        star_compile_slang_spirv("${model_fragment}" "${model_shader}" fragmentMain fragment)
+        list(APPEND editor_shaders "${model_vertex}" "${model_fragment}")
+    endif()
     add_custom_target(StarEditorUIShaders DEPENDS ${editor_shaders})
     set_property(TARGET StarEditorUIShaders PROPERTY STAR_UI_SPIRV "${editor_shaders}")
     add_dependencies(StarEditorUI StarEditorUIShaders)

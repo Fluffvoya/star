@@ -54,6 +54,7 @@ SceneViewport::~SceneViewport() {
 }
 
 std::expected<void, UiError> SceneViewport::initialize(const std::filesystem::path &shader_directory) {
+    m_models = std::make_unique<SceneModels>(m_device, shader_directory);
     const auto vertex = readSpirv(shader_directory / "scene-viewport-vertex.spv");
     const auto fragment = readSpirv(shader_directory / "scene-viewport-fragment.spv");
     const auto vertex_shader = m_device.createShaderModule({rhi::ShaderStage::Vertex, vertex, "Viewport Vertex"});
@@ -84,7 +85,9 @@ std::expected<void, UiError> SceneViewport::initialize(const std::filesystem::pa
         .fragment_shader = m_fragment_shader,
         .vertex_buffers = vertex_layout,
         .topology = rhi::PrimitiveTopology::LineList,
+        .depth_test = m_models->isReady(),
         .color_formats = formats,
+        .has_depth = m_models->isReady(),
         .debugName = "Viewport Grid",
     });
     if (!pipeline) {
@@ -109,6 +112,10 @@ void SceneViewport::releaseTarget() {
         m_layer.unregisterTexture(m_image_id);
         static_cast<void>(m_device.destroy(m_view));
         static_cast<void>(m_device.destroy(m_target));
+        if (m_depth.isValid()) {
+            static_cast<void>(m_device.destroy(m_depth));
+            m_depth = {};
+        }
         m_image_id = 0;
     }
 }
@@ -138,15 +145,37 @@ bool SceneViewport::resize(std::uint32_t width, std::uint32_t height) {
         static_cast<void>(m_device.destroy(*target));
         return false;
     }
+    rhi::TextureHandle depth;
+    if (m_models->isReady()) {
+        const auto attachment = m_device.createTexture({
+            .width = width,
+            .height = height,
+            .format = rhi::TextureFormat::D24UnormS8Uint,
+            .usage = rhi::TextureUsage::DepthStencil,
+            .debugName = "Scene Viewport Depth",
+        });
+        if (!attachment) {
+            m_layer.unregisterTexture(*image);
+            static_cast<void>(m_device.destroy(*view));
+            static_cast<void>(m_device.destroy(*target));
+            return false;
+        }
+        depth = *attachment;
+    }
     static_cast<void>(m_device.waitIdle());
     releaseTarget();
     m_target = *target;
+    m_depth = depth;
     m_view = *view;
     m_image_id = *image;
     m_width = width;
     m_height = height;
     return true;
 }
+
+void SceneViewport::setProjectRoot(const std::filesystem::path &root) { m_models->setProjectRoot(root); }
+
+void SceneViewport::refreshAssets() { m_models->refresh(); }
 
 math::Vec3 SceneViewport::forward() const {
     return {-std::sin(m_yaw) * std::cos(m_pitch), std::sin(m_pitch), -std::cos(m_yaw) * std::cos(m_pitch)};
@@ -173,6 +202,24 @@ math::Mat4::Vector4 SceneViewport::project(math::Vec3 point, float aspect) const
     const float scale = 1.0F / std::tan(camera.fov * 0.5F);
     return {math::dot(relative, camera.right) * scale / aspect, -math::dot(relative, camera.up) * scale,
             (distance - camera.near_plane) * camera.far_plane / (camera.far_plane - camera.near_plane), distance};
+}
+
+math::Mat4 SceneViewport::clipFromModel(const math::Mat4 &world, float aspect) const {
+    const auto camera = cameraView();
+    const bool orthographic = m_orthographic && !m_game_camera;
+    const float aperture = orthographic ? 2.0F / m_ortho_height : 1.0F / std::tan(camera.fov * 0.5F);
+    const float depth_scale = (orthographic ? 1.0F : camera.far_plane) / (camera.far_plane - camera.near_plane);
+    math::Mat4 clip;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const auto &column = world.columns[axis];
+        const math::Vec3 direction{column.x, column.y, column.z};
+        const auto distance = math::dot(direction, camera.forward);
+        clip.columns[axis] = {math::dot(direction, camera.right) * aperture / aspect,
+                              -math::dot(direction, camera.up) * aperture, distance * depth_scale,
+                              orthographic ? 0.0F : distance};
+    }
+    clip.columns[3] = project(world.transformPoint({}), aspect);
+    return clip;
 }
 
 void SceneViewport::cancelGizmo() {
@@ -347,6 +394,8 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::Image(static_cast<ImTextureID>(m_image_id), size);
     m_draw_requested = true;
+    m_draw_grid = !game_view;
+    m_model_instances.clear();
     const bool hovered = ImGui::IsItemHovered();
     const ImGuiIO &io = ImGui::GetIO();
     if (!game_view && !m_drag && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
@@ -393,6 +442,15 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
             continue;
         }
         const auto &matrix = m_drag && m_drag->object == handle ? m_drag->preview : object->getWorldTransform().matrix;
+        if (m_models->isReady() && object->isActiveInHierarchy()) {
+            if (const auto *mesh = scene.findComponent<MeshRenderer>(handle);
+                mesh && mesh->mesh.isValid() && mesh->layer_mask != 0) {
+                m_model_instances.push_back({mesh->mesh, clipFromModel(matrix, aspect)});
+            }
+        }
+        if (game_view) {
+            continue;
+        }
         const auto clip = project(matrix.transformPoint({}), aspect);
         if (clip.w <= 0.0F || clip.z < 0.0F || clip.z > clip.w || std::abs(clip.x) > clip.w ||
             std::abs(clip.y) > clip.w) {
@@ -415,7 +473,7 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
         }
     }
     draw_list->PopClipRect();
-    if (!gizmo_captured && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (!game_view && !gizmo_captured && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (picked.isValid()) {
             document.select(picked, io.KeyCtrl);
         } else if (!io.KeyCtrl) {
@@ -443,12 +501,14 @@ void SceneViewport::render(rhi::CommandList &commands) {
         appendLine({-extent, 0, offset}, {extent, 0, offset}, line == 0 ? std::array{0.48F, 0.20F, 0.21F} : gray);
         appendLine({offset, 0, -extent}, {offset, 0, extent}, line == 0 ? std::array{0.20F, 0.35F, 0.53F} : gray);
     }
-    const auto uploaded = m_device.writeBuffer(m_vertices, std::as_bytes(std::span(vertices)));
+    const bool uploaded = m_draw_grid && m_device.writeBuffer(m_vertices, std::as_bytes(std::span(vertices)));
     commands.beginRenderPass({
         .color_target = m_target,
         .clear_color = {0.08F, 0.09F, 0.11F, 1.0F},
         .debugName = "Scene Viewport",
+        .depth_target = m_depth,
     });
+    m_models->draw(commands, m_model_instances);
     if (uploaded) {
         commands.bindGraphicsPipeline(m_pipeline, {});
         commands.bindVertexBuffer(m_vertices);

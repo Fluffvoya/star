@@ -272,6 +272,8 @@ struct RenderPassBeginInfo {
     std::array<float, 4> clear_color{0.0F, 0.0F, 0.0F, 1.0F};
     bool clear = true;
     std::string_view debugName;
+    // Optional depth attachment, cleared to 1 at the start of the pass.
+    TextureHandle depth_target{};
 };
 
 struct SwapchainDesc {

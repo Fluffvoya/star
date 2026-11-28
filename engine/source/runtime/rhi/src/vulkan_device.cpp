@@ -50,6 +50,7 @@ struct VulkanTexture {
     VkImageSubresourceRange range{};
     VkImageView view = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageUsageFlags usage = 0;
     VkExtent2D extent{};
     bool owns_image = true;
 };
@@ -391,6 +392,16 @@ class VulkanCommandList final : public CommandList {
             m_error = DeviceError::InvalidHandle;
             return;
         }
+        const auto *depth =
+            description.depth_target.isValid() ? m_pools.textures.get(description.depth_target) : nullptr;
+        if (description.depth_target.isValid() &&
+            (!depth || (*depth)->view == VK_NULL_HANDLE || (*depth)->format != VK_FORMAT_D24_UNORM_S8_UINT ||
+             ((*depth)->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) == 0 || (*depth)->range.levelCount != 1 ||
+             (*depth)->range.layerCount != 1 || (*depth)->extent.width != (*texture)->extent.width ||
+             (*depth)->extent.height != (*texture)->extent.height)) {
+            m_error = DeviceError::InvalidDescriptor;
+            return;
+        }
         const VulkanTextureSync initial{VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_IMAGE_LAYOUT_UNDEFINED};
         transitionVulkanImage(m_runtime, m_commands, (*texture)->image, (*texture)->range, initial,
                               vulkanTextureSync(TextureState::ColorAttachment));
@@ -410,6 +421,19 @@ class VulkanCommandList final : public CommandList {
         rendering.layerCount = 1;
         rendering.colorAttachmentCount = 1;
         rendering.pColorAttachments = &color;
+        VkRenderingAttachmentInfo depth_attachment{};
+        if (depth) {
+            transitionVulkanImage(m_runtime, m_commands, (*depth)->image, (*depth)->range, initial,
+                                  vulkanTextureSync(TextureState::DepthAttachment));
+            depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depth_attachment.imageView = (*depth)->view;
+            depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depth_attachment.clearValue.depthStencil = {1.0F, 0};
+            rendering.pDepthAttachment = &depth_attachment;
+            m_texture_references.push_back(description.depth_target);
+        }
         m_runtime.vk.vkCmdBeginRendering(m_commands, &rendering);
 
         VkViewport viewport{
@@ -766,6 +790,7 @@ class VulkanDevice final : public Device {
             texture->range.levelCount = description.mipLevels;
             texture->range.layerCount = description.arrayLayers;
             texture->format = format;
+            texture->usage = usage;
             texture->extent = {description.width, description.height};
             VkImageCreateInfo create{};
             create.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
