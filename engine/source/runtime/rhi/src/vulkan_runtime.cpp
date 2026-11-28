@@ -172,7 +172,8 @@ std::expected<void, DeviceError> VulkanRuntime::initialize(bool validation, SDL_
             inst.vkGetPhysicalDeviceProperties(candidate, &candidate_properties);
             inst.vkGetPhysicalDeviceFeatures2(candidate, &features);
             if (candidate_properties.apiVersion < VK_API_VERSION_1_3 || !features13.dynamicRendering ||
-                !features13.synchronization2 || !features12.timelineSemaphore || !features12.bufferDeviceAddress ||
+                !features13.synchronization2 || !features13.shaderDemoteToHelperInvocation ||
+                !features12.timelineSemaphore || !features12.bufferDeviceAddress ||
                 !features12.runtimeDescriptorArray || !features12.descriptorBindingPartiallyBound ||
                 !features12.descriptorBindingSampledImageUpdateAfterBind ||
                 !features12.descriptorBindingStorageBufferUpdateAfterBind ||
@@ -245,6 +246,8 @@ std::expected<void, DeviceError> VulkanRuntime::initialize(bool validation, SDL_
         enable13.pNext = &enable12;
         enable13.dynamicRendering = VK_TRUE;
         enable13.synchronization2 = VK_TRUE;
+        // Masked materials discard fragments through OpDemoteToHelperInvocation.
+        enable13.shaderDemoteToHelperInvocation = VK_TRUE;
         constexpr const char *swapchain_extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo device_create{};
         device_create.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

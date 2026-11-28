@@ -3,6 +3,7 @@
 #include "asset/asset_manager.hpp"
 #include "scene/scene.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <utility>
@@ -28,7 +29,32 @@ bool isFinite(math::Vec3 vector) {
     return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
 }
 
-bool appendInstance(StaticRenderSnapshot &snapshot, const MeshInstance &instance, const LoadedModel &loaded) {
+struct BoundsAccumulator {
+    math::Vec3 low{};
+    math::Vec3 high{};
+    bool started = false;
+
+    void add(math::Vec3 position) {
+        if (!started) {
+            low = position;
+            high = position;
+            started = true;
+            return;
+        }
+        low = {std::min(low.x, position.x), std::min(low.y, position.y), std::min(low.z, position.z)};
+        high = {std::max(high.x, position.x), std::max(high.y, position.y), std::max(high.z, position.z)};
+    }
+
+    [[nodiscard]] renderer::RenderBounds result() const {
+        if (!started) {
+            return {};
+        }
+        return {(low + high) * 0.5F, math::length(high - low) * 0.5F};
+    }
+};
+
+bool appendInstance(StaticRenderSnapshot &snapshot, const MeshInstance &instance, const LoadedModel &loaded,
+                    BoundsAccumulator &bounds) {
     const auto &matrix = instance.transform;
     const auto x = xyz(matrix.columns[0]);
     const auto y = xyz(matrix.columns[1]);
@@ -53,6 +79,7 @@ bool appendInstance(StaticRenderSnapshot &snapshot, const MeshInstance &instance
                 return false;
             }
             vertex.normal = magnitude == 0.0F ? math::Vec3{} : normal / magnitude;
+            bounds.add(vertex.position);
         }
         if (determinant < 0.0F) {
             for (std::size_t index = 0; index < part.indices.size(); index += 3) {
@@ -72,6 +99,48 @@ bool appendInstance(StaticRenderSnapshot &snapshot, const MeshInstance &instance
     return true;
 }
 
+bool readCamera(const Camera &camera, const WorldTransform &transform, renderer::RenderCamera &out) {
+    const auto right = xyz(transform.matrix.columns[0]);
+    const auto up = xyz(transform.matrix.columns[1]);
+    const auto forward = xyz(transform.matrix.columns[2]);
+    const auto eye = xyz(transform.matrix.columns[3]);
+    if (!isFinite(right) || !isFinite(up) || !isFinite(forward) || !isFinite(eye) ||
+        math::lengthSquared(right) <= 1e-12F || math::lengthSquared(up) <= 1e-12F ||
+        math::lengthSquared(forward) <= 1e-12F || !std::isfinite(camera.vertical_fov) || camera.vertical_fov <= 0.0F ||
+        camera.vertical_fov >= math::pi || !std::isfinite(camera.near_plane) || !std::isfinite(camera.far_plane) ||
+        camera.near_plane <= 0.0F || camera.far_plane <= camera.near_plane) {
+        return false;
+    }
+    out.world = transform.matrix;
+    out.vertical_fov = camera.vertical_fov;
+    out.near_plane = camera.near_plane;
+    out.far_plane = camera.far_plane;
+    return true;
+}
+
+bool readLight(const Light &light, const WorldTransform &transform, renderer::RenderDirectionalLight &directional,
+               renderer::RenderPointLight &point) {
+    if (!isFinite(light.color) || !std::isfinite(light.intensity) || light.intensity < 0.0F ||
+        !std::isfinite(light.range) || light.range <= 0.0F) {
+        return false;
+    }
+    if (light.directional) {
+        // The object looks down -Z, so the surface-to-light direction is its +Z axis.
+        const auto direction = math::normalize(xyz(transform.matrix.columns[2]));
+        if (!isFinite(direction) || math::lengthSquared(direction) <= 1e-12F) {
+            return false;
+        }
+        directional = {direction, light.color, light.intensity};
+        return true;
+    }
+    const auto position = xyz(transform.matrix.columns[3]);
+    if (!isFinite(position)) {
+        return false;
+    }
+    point = {position, light.color, light.intensity, light.range};
+    return true;
+}
+
 } // namespace
 
 std::expected<StaticRenderSnapshot, StaticRenderError> extractStaticRenderSnapshot(Scene &scene, AssetManager &assets,
@@ -79,19 +148,19 @@ std::expected<StaticRenderSnapshot, StaticRenderError> extractStaticRenderSnapsh
     try {
         std::vector<MeshInstance> instances;
         instances.reserve(scene.getObjectCount());
-        const auto queried =
-            scene.each<const MeshRenderer>([&](ObjectHandle object, const MeshRenderer &mesh) noexcept {
-                const auto *transform = scene.findWorldTransform(object);
-                if ((mesh.layer_mask & layer_mask) != 0 && mesh.mesh.isValid() && transform &&
-                    !scene.findObject(object)->isPendingDestroy()) {
-                    instances.push_back({object, mesh.mesh, transform->matrix, mesh.cast_shadows});
-                }
-            });
-        if (!queried) {
+        const auto meshes = scene.each<const MeshRenderer>([&](ObjectHandle object, const MeshRenderer &mesh) noexcept {
+            const auto *transform = scene.findWorldTransform(object);
+            if ((mesh.layer_mask & layer_mask) != 0 && mesh.mesh.isValid() && transform &&
+                !scene.findObject(object)->isPendingDestroy()) {
+                instances.push_back({object, mesh.mesh, transform->matrix, mesh.cast_shadows});
+            }
+        });
+        if (!meshes) {
             return std::unexpected(StaticRenderError{StaticRenderErrorCode::QueryFailed});
         }
 
         StaticRenderSnapshot snapshot;
+        BoundsAccumulator bounds;
         std::map<Guid, LoadedModel> loaded_models;
         for (const auto &instance : instances) {
             auto it = loaded_models.find(instance.mesh);
@@ -107,10 +176,58 @@ std::expected<StaticRenderSnapshot, StaticRenderError> extractStaticRenderSnapsh
                          .first;
                 snapshot.model.textures.insert(snapshot.model.textures.end(), textures.begin(), textures.end());
             }
-            if (!appendInstance(snapshot, instance, it->second)) {
+            if (!appendInstance(snapshot, instance, it->second, bounds)) {
                 return std::unexpected(
                     StaticRenderError{StaticRenderErrorCode::InvalidTransform, instance.object, instance.mesh});
             }
+        }
+        snapshot.bounds = bounds.result();
+
+        bool camera_failed = false;
+        const auto cameras = scene.each<const Camera>([&](ObjectHandle object, const Camera &camera) noexcept {
+            if (camera_failed || scene.findObject(object)->isPendingDestroy()) {
+                return;
+            }
+            const auto *transform = scene.findWorldTransform(object);
+            renderer::RenderCamera entry;
+            if (transform == nullptr || !readCamera(camera, *transform, entry)) {
+                camera_failed = true;
+                return;
+            }
+            snapshot.cameras.push_back(entry);
+        });
+        if (!cameras) {
+            return std::unexpected(StaticRenderError{StaticRenderErrorCode::QueryFailed});
+        }
+        if (camera_failed) {
+            return std::unexpected(StaticRenderError{StaticRenderErrorCode::InvalidCamera});
+        }
+
+        bool light_failed = false;
+        const auto lights = scene.each<const Light>([&](ObjectHandle object, const Light &light) noexcept {
+            if (light_failed || scene.findObject(object)->isPendingDestroy()) {
+                return;
+            }
+            const auto *transform = scene.findWorldTransform(object);
+            renderer::RenderDirectionalLight directional;
+            renderer::RenderPointLight point;
+            if (transform == nullptr || !readLight(light, *transform, directional, point)) {
+                light_failed = true;
+                return;
+            }
+            if (light.directional) {
+                if (!snapshot.directional_light) {
+                    snapshot.directional_light = directional;
+                }
+            } else if (snapshot.point_lights.size() < renderer::kMaxRenderPointLights) {
+                snapshot.point_lights.push_back(point);
+            }
+        });
+        if (!lights) {
+            return std::unexpected(StaticRenderError{StaticRenderErrorCode::QueryFailed});
+        }
+        if (light_failed) {
+            return std::unexpected(StaticRenderError{StaticRenderErrorCode::InvalidLight});
         }
         return snapshot;
     } catch (...) {

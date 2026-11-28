@@ -238,8 +238,14 @@ float3 evaluateBrdf(float3 n, float3 v, float3 l, PbrSurface surface)
 float4 fragmentMain(Varyings input, bool frontFacing : SV_IsFrontFace) : SV_Target
 {
     float4 channels = metallicRoughnessMap.Sample(materialSampler, input.uv);
+    float4 base = baseColorMap.Sample(materialSampler, input.uv);
+    float alpha = draw.albedo.a * base.a;
+    if (draw.factors.z > 0.0 && alpha < draw.factors.z)
+    {
+        discard;
+    }
     PbrSurface surface;
-    surface.albedo = draw.albedo.rgb * baseColorMap.Sample(materialSampler, input.uv).rgb;
+    surface.albedo = draw.albedo.rgb * base.rgb;
     surface.roughness = saturate(draw.factors.x * channels.g);
     surface.metallic = saturate(draw.factors.y * channels.b);
     float3 n = normalize(input.worldNormal) * (frontFacing ? 1.0 : -1.0);
@@ -247,7 +253,7 @@ float4 fragmentMain(Varyings input, bool frontFacing : SV_IsFrontFace) : SV_Targ
     float3 l = shadowFrame.lightDirection.xyz;
     float depth = dot(draw.clipW, float4(input.worldPosition, 1.0));
     float shadow = shadowVisibility(input.worldPosition, depth, dot(n, l));
-    float3 linear = evaluateBrdf(n, v, l, surface) * (3.5 * shadow) + evaluateEnvironment(n, v, surface);
+    float3 linear = evaluateBrdf(n, v, l, surface) * (shadowFrame.lightDirection.w * shadow) + evaluateEnvironment(n, v, surface);
 
     float z = saturate(log(depth / draw.clusterParams.x) / log(draw.clusterParams.y / draw.clusterParams.x));
     uint2 tile = min(uint2(input.position.xy / draw.clusterParams.zw * float2(STAR_CLUSTER_COLUMNS, STAR_CLUSTER_ROWS)),
@@ -266,11 +272,17 @@ float4 fragmentMain(Varyings input, bool frontFacing : SV_IsFrontFace) : SV_Targ
     }
 
     // Reinhard tone mapping. The sRGB render target performs the transfer function.
-    return float4(linear / (1.0 + linear), 1.0);
+    return float4(linear / (1.0 + linear), alpha);
 }
 
 [shader("fragment")]
 float4 unlitMain(Varyings input) : SV_Target
 {
-    return float4(draw.albedo.rgb * baseColorMap.Sample(materialSampler, input.uv).rgb, 1.0);
+    float4 base = baseColorMap.Sample(materialSampler, input.uv);
+    float alpha = draw.albedo.a * base.a;
+    if (draw.factors.z > 0.0 && alpha < draw.factors.z)
+    {
+        discard;
+    }
+    return float4(draw.albedo.rgb * base.rgb, alpha);
 }

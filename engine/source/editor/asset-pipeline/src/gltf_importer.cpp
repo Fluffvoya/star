@@ -185,6 +185,12 @@ importPrimitive(const fastgltf::Asset &asset, const fastgltf::Mesh &mesh, const 
         parameters.base_color = {base[0], base[1], base[2], base[3]};
         parameters.metallic = pbr.metallicFactor;
         parameters.roughness = pbr.roughnessFactor;
+        if (material.alphaMode == fastgltf::AlphaMode::Mask) {
+            parameters.blend = MaterialBlendMode::Masked;
+            parameters.alpha_cutoff = material.alphaCutoff;
+        } else if (material.alphaMode == fastgltf::AlphaMode::Blend) {
+            parameters.blend = MaterialBlendMode::Transparent;
+        }
         if (textures) {
             if ((pbr.baseColorTexture || pbr.metallicRoughnessTexture) && !uvs) {
                 return invalid("Textured glTF primitive is missing TEXCOORD_0");

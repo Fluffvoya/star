@@ -15,7 +15,8 @@ using asset_binary::appendUInt32;
 using asset_binary::takeUInt32;
 
 constexpr std::array magic{std::byte{'S'}, std::byte{'M'}, std::byte{'D'}, std::byte{'L'}};
-constexpr std::uint32_t version = 1;
+constexpr std::uint32_t version = 2;
+constexpr std::uint32_t oldest_version = 1;
 constexpr std::uint32_t no_texture = std::numeric_limits<std::uint32_t>::max();
 constexpr std::size_t vertex_bytes = 8 * sizeof(float);
 constexpr std::size_t min_part_bytes = 3 * vertex_bytes + 8 * sizeof(std::uint32_t);
@@ -83,9 +84,16 @@ bool appendPart(std::vector<std::byte> &bytes, const StaticMeshPart &part, std::
     if (part.material) {
         const auto &material = *part.material;
         const std::array factors{material.metallic, material.roughness};
-        if (!appendFloats(bytes, material.base_color) || !appendFloats(bytes, factors)) {
+        const std::array cutoff{material.alpha_cutoff};
+        if (!appendFloats(bytes, material.base_color) || !appendFloats(bytes, factors) ||
+            !appendFloats(bytes, cutoff)) {
             return false;
         }
+        if (material.alpha_cutoff < 0.0F || material.alpha_cutoff > 1.0F ||
+            material.blend > MaterialBlendMode::Transparent) {
+            return false;
+        }
+        appendUInt32(bytes, static_cast<std::uint32_t>(material.blend));
         for (const auto index : {material.base_color_texture, material.metallic_roughness_texture}) {
             if (index && *index >= texture_count) {
                 return false;
@@ -111,7 +119,8 @@ bool appendPart(std::vector<std::byte> &bytes, const StaticMeshPart &part, std::
     return true;
 }
 
-bool readPart(std::span<const std::byte> &bytes, StaticMeshPart &part, std::size_t texture_count) {
+bool readPart(std::span<const std::byte> &bytes, StaticMeshPart &part, std::size_t texture_count,
+              std::uint32_t file_version) {
     if (!readString(bytes, part.name) || !readString(bytes, part.material_name)) {
         return false;
     }
@@ -127,6 +136,19 @@ bool readPart(std::span<const std::byte> &bytes, StaticMeshPart &part, std::size
         }
         material.metallic = factors[0];
         material.roughness = factors[1];
+        if (file_version >= 2) {
+            std::array<float, 1> cutoff{};
+            if (!readFloats(bytes, cutoff)) {
+                return false;
+            }
+            const auto blend = takeUInt32(bytes);
+            if (!blend || *blend > static_cast<std::uint32_t>(MaterialBlendMode::Transparent) || cutoff[0] < 0.0F ||
+                cutoff[0] > 1.0F) {
+                return false;
+            }
+            material.blend = static_cast<MaterialBlendMode>(*blend);
+            material.alpha_cutoff = cutoff[0];
+        }
         for (auto *index : {&material.base_color_texture, &material.metallic_roughness_texture}) {
             const auto field = takeUInt32(bytes);
             if (!field || (*field != no_texture && *field >= texture_count)) {
@@ -200,7 +222,7 @@ std::expected<StaticModelAsset, ModelAssetError> readModelAsset(std::span<const 
     if (!file_version) {
         return std::unexpected(ModelAssetError::InvalidHeader);
     }
-    if (*file_version != version) {
+    if (*file_version < oldest_version || *file_version > version) {
         return std::unexpected(ModelAssetError::UnsupportedVersion);
     }
     const auto parts = takeUInt32(bytes);
@@ -210,7 +232,7 @@ std::expected<StaticModelAsset, ModelAssetError> readModelAsset(std::span<const 
     }
     StaticModelAsset model;
     for (std::uint32_t index = 0; index < *parts; ++index) {
-        if (!readPart(bytes, model.parts.emplace_back(), *textures)) {
+        if (!readPart(bytes, model.parts.emplace_back(), *textures, *file_version)) {
             return std::unexpected(ModelAssetError::InvalidModel);
         }
     }

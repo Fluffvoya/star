@@ -1,6 +1,7 @@
 #pragma once
 
 #include "asset/export.hpp"
+#include "asset/material.hpp"
 #include "asset/texture_asset.hpp"
 #include "core/math.hpp"
 
@@ -25,6 +26,9 @@ struct StaticPbrMaterial {
     std::array<float, 4> base_color{1, 1, 1, 1};
     float metallic = 1.0F;
     float roughness = 1.0F;
+    MaterialBlendMode blend = MaterialBlendMode::Opaque;
+    // Fragments with a lower alpha are discarded for masked materials. Ignored for other blends.
+    float alpha_cutoff = 0.5F;
     std::optional<std::size_t> base_color_texture;
     std::optional<std::size_t> metallic_roughness_texture;
 };

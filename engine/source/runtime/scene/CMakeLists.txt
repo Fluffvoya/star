@@ -20,4 +20,4 @@ star_add_module(Scene scene
     src/system.cpp
 )
 
-target_link_libraries(StarScene PUBLIC Star::Core Star::Reflection Star::Serialization Star::Asset PRIVATE EnTT::EnTT Star::Jobs Star::Platform)
+target_link_libraries(StarScene PUBLIC Star::Core Star::Reflection Star::Serialization Star::Asset Star::Renderer PRIVATE EnTT::EnTT Star::Jobs Star::Platform)
