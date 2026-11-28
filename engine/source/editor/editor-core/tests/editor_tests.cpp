@@ -110,5 +110,19 @@ STAR_TEST(documentSavesAndReopensSceneFiles) {
     STAR_CHECK(loaded != nullptr && loaded->getName() == "First");
     const auto *transform = scene.findComponent<star::Transform>(loaded->getHandle());
     STAR_CHECK(transform != nullptr && std::abs(transform->position.y - 3.0F) < 0.001F);
+
+    document->execute(std::make_unique<star::editor::RenameObjectCommand>(guid, "Second"));
+    const auto blocked_path = temp_scene_path(star::Guid::generate().toString());
+    STAR_CHECK(std::filesystem::create_directory(blocked_path));
+    STAR_CHECK(!document->save(blocked_path));
+    STAR_CHECK(document->isDirty());
+    STAR_CHECK(document->getPath() == path);
+    STAR_CHECK(std::filesystem::is_directory(blocked_path));
+    auto unchanged = star::editor::EditorDocument::open(path);
+    STAR_CHECK(unchanged && (*unchanged)->getScene().findObject(guid)->getName() == "First");
+    STAR_CHECK(document->save());
+    auto replaced = star::editor::EditorDocument::open(path);
+    STAR_CHECK(replaced && (*replaced)->getScene().findObject(guid)->getName() == "Second");
+    std::filesystem::remove(blocked_path);
     std::filesystem::remove(path);
 }

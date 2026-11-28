@@ -12,6 +12,7 @@
 #include <deque>
 #include <filesystem>
 #include <format>
+#include <map>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -47,17 +48,14 @@ struct ConsoleEntry {
     return ImVec4(1.0F, 1.0F, 1.0F, 1.0F);
 }
 
-[[nodiscard]] bool is_read_only_string(const reflect::TypeInfo *type) {
-    if (type == nullptr) {
-        return false;
-    }
-    return type->name == "star::Guid" || type->name == "star::Name" || type->name == "std::filesystem::path";
-}
-
 } // namespace
 
 struct EditorShell::Impl {
     bool quit = false;
+    bool quit_requested = false;
+    bool confirm_transition = false;
+    std::shared_ptr<EditorDocument> next_document;
+    std::string save_error;
     bool layout_initialized = false;
     bool show_console = true;
     bool show_stats = true;
@@ -96,21 +94,88 @@ struct EditorShell::Impl {
         }
     }
 
-    void save_document() {
+    bool saveDocument() {
         if (!document) {
-            return;
+            return false;
         }
-        std::filesystem::path path = document->getPath();
+        save_error.clear();
+        auto path = document->getPath();
         if (path.empty()) {
-            const std::filesystem::path content = project_root.empty() ? std::filesystem::path(".") : project_root;
-            path = content / "Content" / "Scenes" / (document->getName() + ".scene");
+            const auto directory = project_root / "Content" / "Scenes";
+            const auto name = document->getName();
+            path = directory / (name + ".scene");
+            std::error_code error;
+            for (std::size_t suffix = 2; std::filesystem::exists(path, error); ++suffix) {
+                path = directory / std::format("{} {}.scene", name, suffix);
+            }
+            if (error) {
+                save_error = error.message();
+                log::error(k_log_category, "Cannot choose a scene path: {}", save_error);
+                return false;
+            }
         }
         if (const auto saved = document->save(path); !saved) {
-            log::error(k_log_category, "Save failed: {}", saved.error().message);
-            return;
+            save_error = saved.error().message;
+            log::error(k_log_category, "Save failed: {}", save_error);
+            return false;
         }
         log::info(k_log_category, "Scene saved to {}", path.string());
         next_scan = 0.0;
+        return true;
+    }
+
+    void finishTransition() {
+        if (quit_requested) {
+            quit = true;
+        } else {
+            document = std::move(next_document);
+            rename_target = {};
+        }
+        confirm_transition = false;
+    }
+
+    void requestTransition(std::shared_ptr<EditorDocument> replacement, bool close = false) {
+        if (confirm_transition) {
+            return;
+        }
+        quit_requested = close;
+        next_document = std::move(replacement);
+        save_error.clear();
+        if (document && document->isDirty()) {
+            confirm_transition = true;
+        } else {
+            finishTransition();
+        }
+    }
+
+    void drawUnsavedChanges() {
+        constexpr const char *title = "Unsaved Scene";
+        if (confirm_transition && !ImGui::IsPopupOpen(title)) {
+            ImGui::OpenPopup(title);
+        }
+        if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            return;
+        }
+        ImGui::Text("Save changes to %s?", document->getName().c_str());
+        if (!save_error.empty()) {
+            ImGui::TextUnformatted(save_error.c_str());
+        }
+        if (ImGui::Button("Save") && saveDocument()) {
+            finishTransition();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Discard")) {
+            finishTransition();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            next_document.reset();
+            confirm_transition = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 
     void rescan_content() {
@@ -167,18 +232,17 @@ struct EditorShell::Impl {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Scene")) {
                 if (auto created = EditorDocument::createEmpty("Untitled"); created) {
-                    document = *created;
-                    rename_target = {};
+                    requestTransition(*created);
                 } else {
                     log::error(k_log_category, "New scene failed: {}", created.error().message);
                 }
             }
             if (ImGui::MenuItem("Save", "Ctrl+S", false, static_cast<bool>(document))) {
-                save_document();
+                saveDocument();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Alt+F4")) {
-                quit = true;
+                requestTransition({}, true);
             }
             ImGui::EndMenu();
         }
@@ -188,12 +252,14 @@ struct EditorShell::Impl {
             const std::string redo_label =
                 document && document->canRedo() ? std::format("Redo {}", document->getRedoName()) : "Redo";
             if (ImGui::MenuItem(undo_label.c_str(), "Ctrl+Z", false, document && document->canUndo())) {
-                document->undo();
-                rename_target = {};
+                if (document->undo()) {
+                    rename_target = {};
+                }
             }
             if (ImGui::MenuItem(redo_label.c_str(), "Ctrl+Y", false, document && document->canRedo())) {
-                document->redo();
-                rename_target = {};
+                if (document->redo()) {
+                    rename_target = {};
+                }
             }
             ImGui::EndMenu();
         }
@@ -235,7 +301,6 @@ struct EditorShell::Impl {
         ImGui::DockBuilderDockWindow("Console", bottom);
         ImGui::DockBuilderDockWindow("Statistics", right_bottom);
         ImGui::DockBuilderFinish(dockspace_id);
-        layout_initialized = true;
     }
 
     void draw_hierarchy() {
@@ -259,26 +324,48 @@ struct EditorShell::Impl {
             }
             ImGui::Separator();
             Scene &scene = document->getScene();
-            int row = 0;
+            std::map<Guid, std::vector<const GameObject *>> children;
             for (const ObjectHandle handle : scene.getObjects()) {
-                const GameObject *object = scene.findObject(handle);
-                if (object == nullptr) {
-                    continue;
+                if (const auto *object = scene.findObject(handle)) {
+                    const auto *parent = object->getParent();
+                    children[parent ? parent->getGuid() : Guid{}].push_back(object);
                 }
-                const Guid guid = object->getGuid();
-                const bool selected = std::find(document->getSelection().begin(), document->getSelection().end(),
-                                                guid) != document->getSelection().end();
-                ImGui::PushID(row++);
-                if (ImGui::Selectable(object->getName().c_str(), selected)) {
-                    document->select(guid, ImGui::GetIO().KeyCtrl);
-                    rename_target = {};
-                }
-                ImGui::PopID();
             }
+            drawHierarchyChildren(children, {});
         } else {
             ImGui::TextDisabled("No scene open");
         }
         ImGui::End();
+    }
+
+    void drawHierarchyChildren(const std::map<Guid, std::vector<const GameObject *>> &children, const Guid &parent) {
+        const auto siblings = children.find(parent);
+        if (siblings == children.end()) {
+            return;
+        }
+        for (const GameObject *object : siblings->second) {
+            const Guid guid = object->getGuid();
+            const auto &selection = document->getSelection();
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+            if (!children.contains(guid)) {
+                flags |= ImGuiTreeNodeFlags_Leaf;
+            }
+            if (std::find(selection.begin(), selection.end(), guid) != selection.end()) {
+                flags |= ImGuiTreeNodeFlags_Selected;
+            }
+            const std::string id = guid.toString();
+            ImGui::PushID(id.c_str());
+            const bool expanded = ImGui::TreeNodeEx("object", flags, "%s", object->getName().c_str());
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+                document->select(guid, ImGui::GetIO().KeyCtrl);
+                rename_target = {};
+            }
+            if (expanded) {
+                drawHierarchyChildren(children, guid);
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
     }
 
     void push_property_command(EditorDocument &target, const Guid &object, reflect::TypeId component,
@@ -291,7 +378,7 @@ struct EditorShell::Impl {
         for (const reflect::PropertyInfo &property : type.properties) {
             const std::string name(property.name);
             path.push_back(name);
-            void *member = property.get_mutable(value);
+            void *member = property.get_mutable ? property.get_mutable(value) : nullptr;
             if (member == nullptr) {
                 path.pop_back();
                 continue;
@@ -305,52 +392,30 @@ struct EditorShell::Impl {
             switch (property.kind) {
             case reflect::PropertyKind::Boolean: {
                 bool current = *static_cast<bool *>(member);
+                const bool read_only = reflect::hasFlag(property.flags, reflect::PropertyFlags::ReadOnly);
+                ImGui::BeginDisabled(read_only);
                 if (ImGui::Checkbox(name.c_str(), &current)) {
                     push_property_command(target, object, component, path, current ? "true" : "false");
                 }
+                ImGui::EndDisabled();
                 break;
             }
-            case reflect::PropertyKind::FloatingPoint: {
-                if (nested != nullptr && nested->size == sizeof(double)) {
-                    double current = *static_cast<double *>(member);
-                    ImGui::InputScalar(name.c_str(), ImGuiDataType_Double, &current);
-                    if (ImGui::IsItemDeactivatedAfterEdit()) {
-                        push_property_command(target, object, component, path, std::format("{}", current));
-                    }
-                } else {
-                    float current = *static_cast<float *>(member);
-                    ImGui::DragFloat(name.c_str(), &current, 0.02F);
-                    if (ImGui::IsItemDeactivatedAfterEdit()) {
-                        push_property_command(target, object, component, path, std::format("{}", current));
-                    }
-                }
-                break;
-            }
-            case reflect::PropertyKind::SignedInteger: {
-                const std::size_t size = nested != nullptr ? nested->size : sizeof(std::int32_t);
-                std::int64_t current = 0;
-                std::memcpy(&current, member, std::min(size, sizeof(current)));
-                ImGui::InputScalar(name.c_str(), size > sizeof(std::int32_t) ? ImGuiDataType_S64 : ImGuiDataType_S32,
-                                   &current);
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    push_property_command(target, object, component, path, std::format("{}", current));
-                }
-                break;
-            }
-            case reflect::PropertyKind::UnsignedInteger: {
-                const std::size_t size = nested != nullptr ? nested->size : sizeof(std::uint32_t);
-                std::uint64_t current = 0;
-                std::memcpy(&current, member, std::min(size, sizeof(current)));
-                ImGui::InputScalar(name.c_str(), size > sizeof(std::uint32_t) ? ImGuiDataType_U64 : ImGuiDataType_U32,
-                                   &current);
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    push_property_command(target, object, component, path, std::format("{}", current));
-                }
-                break;
-            }
+            case reflect::PropertyKind::FloatingPoint:
+            case reflect::PropertyKind::SignedInteger:
+            case reflect::PropertyKind::UnsignedInteger:
             case reflect::PropertyKind::String: {
-                const std::string current = *static_cast<const std::string *>(member);
-                ImGui::LabelText(name.c_str(), "%s", current.c_str());
+                const std::string current = property.format_scalar ? property.format_scalar(member) : "";
+                if (property.kind == reflect::PropertyKind::String ||
+                    reflect::hasFlag(property.flags, reflect::PropertyFlags::ReadOnly) || !property.parse_scalar) {
+                    ImGui::LabelText(name.c_str(), "%s", current.c_str());
+                    break;
+                }
+                char input[128]{};
+                current.copy(input, sizeof(input) - 1);
+                if (ImGui::InputText(name.c_str(), input, sizeof(input), ImGuiInputTextFlags_EnterReturnsTrue) &&
+                    current != input) {
+                    push_property_command(target, object, component, path, input);
+                }
                 break;
             }
             case reflect::PropertyKind::Reflected: {
@@ -373,7 +438,9 @@ struct EditorShell::Impl {
                     ImGui::LabelText(name.c_str(), "%s", label.c_str());
                 } else if (nested->kind == reflect::TypeKind::Struct) {
                     if (ImGui::TreeNodeEx(name.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                        ImGui::BeginDisabled(reflect::hasFlag(property.flags, reflect::PropertyFlags::ReadOnly));
                         draw_properties(target, object, component, *nested, member, path);
+                        ImGui::EndDisabled();
                         ImGui::TreePop();
                     }
                 } else {
@@ -400,6 +467,8 @@ struct EditorShell::Impl {
             ImGui::End();
             return;
         }
+        const auto selection_id = selected->getGuid().toString();
+        ImGui::PushID(selection_id.c_str());
         sync_name_buffer();
         ImGui::SetNextItemWidth(-1.0F);
         if (ImGui::InputText("##name", rename_buffer, sizeof(rename_buffer), ImGuiInputTextFlags_EnterReturnsTrue)) {
@@ -421,6 +490,7 @@ struct EditorShell::Impl {
                 draw_properties(*document, selected->getGuid(), component, *type, value, path);
             }
         }
+        ImGui::PopID();
         ImGui::End();
     }
 
@@ -460,8 +530,7 @@ struct EditorShell::Impl {
             ImGui::PopID();
         }
         if (pending) {
-            document = std::move(pending);
-            rename_target = {};
+            requestTransition(std::move(pending));
         }
         ImGui::End();
     }
@@ -540,18 +609,18 @@ struct EditorShell::Impl {
         ImGui::End();
     }
 
-    void handle_shortcuts() const {
-        if (!ImGui::GetIO().KeyCtrl) {
+    void handleShortcuts() {
+        if (!ImGui::GetIO().KeyCtrl || ImGui::GetIO().WantTextInput || confirm_transition || !document) {
             return;
         }
-        if (ImGui::IsKeyPressed(ImGuiKey_S, false) && document) {
-            const_cast<Impl *>(this)->save_document();
+        if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+            saveDocument();
         }
-        if (ImGui::IsKeyPressed(ImGuiKey_Z, false) && document && document->canUndo()) {
-            document->undo();
+        if (ImGui::IsKeyPressed(ImGuiKey_Z, false) && document->undo()) {
+            rename_target = {};
         }
-        if (ImGui::IsKeyPressed(ImGuiKey_Y, false) && document && document->canRedo()) {
-            document->redo();
+        if (ImGui::IsKeyPressed(ImGuiKey_Y, false) && document->redo()) {
+            rename_target = {};
         }
     }
 
@@ -559,19 +628,24 @@ struct EditorShell::Impl {
         ImGuiViewport *viewport = ImGui::GetMainViewport();
         const ImGuiID dockspace_id = ImGui::DockSpaceOverViewport(0, viewport, ImGuiDockNodeFlags_PassthruCentralNode);
         if (!layout_initialized) {
-            build_default_layout(dockspace_id);
+            const auto *node = ImGui::DockBuilderGetNode(dockspace_id);
+            if (node == nullptr || !node->IsSplitNode()) {
+                build_default_layout(dockspace_id);
+            }
+            layout_initialized = true;
         }
         if (now >= next_scan) {
             rescan_content();
             next_scan = now + 2.0;
         }
-        handle_shortcuts();
+        handleShortcuts();
         draw_menu_bar();
         draw_hierarchy();
         draw_inspector();
         draw_content();
         draw_console();
         draw_statistics(status);
+        drawUnsavedChanges();
         if (show_demo) {
             ImGui::ShowDemoWindow(&show_demo);
         }
@@ -610,9 +684,9 @@ void EditorShell::draw(const EditorShellStatus &status) { m_impl->draw_frame(sta
 
 bool EditorShell::shouldQuit() const noexcept { return !m_impl || m_impl->quit; }
 
-void EditorShell::requestQuit() noexcept {
+void EditorShell::requestQuit() {
     if (m_impl) {
-        m_impl->quit = true;
+        m_impl->requestTransition({}, true);
     }
 }
 

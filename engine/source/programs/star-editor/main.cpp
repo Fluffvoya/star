@@ -110,6 +110,9 @@ int main(int argc, char **argv) {
         star::log::error(k_log_category, "Window creation failed: {}", window.error().message);
         return 1;
     }
+    if (const auto text_input = (*window)->startTextInput(); !text_input) {
+        star::log::warning(k_log_category, "Text input unavailable: {}", text_input.error().message);
+    }
 
     star::rhi::DeviceCreateInfo create_info{};
     create_info.enableValidation = validation;
@@ -219,10 +222,10 @@ int main(int argc, char **argv) {
         for (const star::WindowEvent &event : (*window)->pollEvents()) {
             layer->processEvent(event);
             if (event.type == star::WindowEventType::CloseRequested) {
-                running = false;
+                shell.requestQuit();
             }
         }
-        if (!running || (*window)->shouldClose() || shell.shouldQuit()) {
+        if (shell.shouldQuit()) {
             break;
         }
 
@@ -330,7 +333,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    shell.requestQuit();
     star::log::info(k_log_category, "Last frame recorded {} ImGui draw calls", layer->getDrawCallCount());
     layer.reset();
     static_cast<void>(device->waitIdle());

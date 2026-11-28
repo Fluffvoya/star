@@ -56,6 +56,7 @@ class STAR_PLATFORM_API Window final {
     Window &operator=(Window &&) noexcept;
 
     [[nodiscard]] std::span<const WindowEvent> pollEvents();
+    [[nodiscard]] std::expected<void, PlatformError> startTextInput();
     // Present an RGB frame using the window surface on the main thread.
     [[nodiscard]] std::expected<void, PlatformError> presentSolidColor(std::uint8_t red, std::uint8_t green,
                                                                        std::uint8_t blue);

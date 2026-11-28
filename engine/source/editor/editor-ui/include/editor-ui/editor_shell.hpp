@@ -35,7 +35,7 @@ class STAR_EDITORUI_API EditorShell final {
     void draw(const EditorShellStatus &status);
 
     [[nodiscard]] bool shouldQuit() const noexcept;
-    void requestQuit() noexcept;
+    void requestQuit();
 
   private:
     struct Impl;
