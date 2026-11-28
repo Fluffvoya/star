@@ -141,6 +141,8 @@ struct PointLight {
     std::array<float, 4> color_intensity;
 };
 
+enum class DrawPass { Depth, Shadow, Color };
+
 struct DrawPart {
     std::uint32_t index_count;
     std::uint32_t index_offset;
@@ -148,6 +150,7 @@ struct DrawPart {
     std::array<float, 4> albedo;
     std::array<float, 4> factors;
     VkDescriptorSet textures = VK_NULL_HANDLE;
+    bool cast_shadows = true;
 };
 
 DrawConstants makeCamera(std::span<const StaticMeshVertex> vertices, bool front_view) {
@@ -293,7 +296,7 @@ class VulkanForwardPasses {
         vk.vkDestroyCommandPool(device, m_pool, nullptr);
     }
 
-    void initialize(const StaticModelAsset &model, const std::filesystem::path &assets, bool front_view,
+    void initialize(const StaticModelAsset &model, const ForwardRenderOptions &options,
                     const ForwardMaterial &material);
     double draw();
     ForwardImage capture() const;
@@ -313,7 +316,7 @@ class VulkanForwardPasses {
     void uploadImage(const Image &image, std::span<const std::byte> bytes, std::span<const VkBufferImageCopy> regions);
     void submitCommands() const;
     void renderShadows() const;
-    void drawParts(const DrawConstants &frame, bool bind_materials = false) const;
+    void drawParts(const DrawConstants &frame, DrawPass pass) const;
     void dispatchClusters() const;
 
     const VulkanRuntime &m_gpu;
@@ -353,8 +356,8 @@ class VulkanForwardPasses {
     VkQueryPool m_queries = VK_NULL_HANDLE;
 };
 
-void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::filesystem::path &assets,
-                                     bool front_view, const ForwardMaterial &material) {
+void VulkanForwardPasses::initialize(const StaticModelAsset &model, const ForwardRenderOptions &options,
+                                     const ForwardMaterial &material) {
     if ((m_gpu.queueProperties.queueFlags & VK_QUEUE_COMPUTE_BIT) == 0) {
         throw std::runtime_error("The graphics queue must also support compute shaders");
     }
@@ -378,11 +381,14 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::f
         draw.albedo = material.base_color.value_or(draw.albedo);
         draw.factors[0] = material.roughness.value_or(draw.factors[0]);
         draw.factors[1] = material.metallic.value_or(draw.factors[1]);
+        if (!options.shadow_casters.empty()) {
+            draw.cast_shadows = options.shadow_casters[m_parts.size()] != 0;
+        }
         m_parts.push_back(draw);
         vertices.insert(vertices.end(), part.vertices.begin(), part.vertices.end());
         indices.insert(indices.end(), part.indices.begin(), part.indices.end());
     }
-    m_camera = makeCamera(vertices, front_view);
+    m_camera = makeCamera(vertices, options.front_view);
     m_color.create(color_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     m_depth.create(depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -431,15 +437,15 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::f
 
     const auto destroy_shader = [&](VkShaderModule shader) { vk.vkDestroyShaderModule(device, shader, nullptr); };
     using Shader = std::unique_ptr<std::remove_pointer_t<VkShaderModule>, decltype(destroy_shader)>;
-    const Shader vertex(loadShader(assets / "forward-vertex.spv"), destroy_shader);
+    const Shader vertex(loadShader(options.shader_directory / "forward-vertex.spv"), destroy_shader);
     const auto &state = material.variant.state;
     const auto fragment_file =
         state.shading == star::MaterialShadingModel::Unlit ? "forward-unlit.spv" : "forward-fragment.spv";
-    const Shader fragment(loadShader(assets / fragment_file), destroy_shader);
+    const Shader fragment(loadShader(options.shader_directory / fragment_file), destroy_shader);
     m_prepass = createPipeline(vertex.get(), VK_NULL_HANDLE, resolution, state.double_sided);
     m_forward = createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided);
     m_shadow_pipeline = createPipeline(vertex.get(), VK_NULL_HANDLE, shadow_resolution, state.double_sided);
-    const Shader cluster(loadShader(assets / "forward-cluster.spv"), destroy_shader);
+    const Shader cluster(loadShader(options.shader_directory / "forward-cluster.spv"), destroy_shader);
     auto compute = vkInfo<VkComputePipelineCreateInfo>(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
     compute.stage = vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
     compute.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -453,8 +459,7 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::f
     auto submit = vkInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &m_upload_commands;
-    // The first frame is submitted to the same queue. Its fence also retires the
-    // staging buffers.
+    // The first frame is submitted to the same queue. Its fence also retires the staging buffers.
     check(vk.vkQueueSubmit(m_gpu.queue, 1, &submit, VK_NULL_HANDLE), "Submit static resource upload");
 }
 
@@ -895,7 +900,7 @@ void VulkanForwardPasses::renderPass(bool depth_only) const {
         vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 0, 1, &m_descriptors, 0,
                                    nullptr);
     }
-    drawParts(m_camera, !depth_only);
+    drawParts(m_camera, depth_only ? DrawPass::Depth : DrawPass::Color);
     vk.vkCmdEndRendering(m_commands);
 }
 
@@ -919,18 +924,21 @@ void VulkanForwardPasses::renderShadows() const {
         view.clip_y = m_shadow_frame.views[layer].clip_y;
         view.clip_z = m_shadow_frame.views[layer].clip_z;
         view.clip_w = {0, 0, 0, 1};
-        drawParts(view);
+        drawParts(view, DrawPass::Shadow);
         vk.vkCmdEndRendering(m_commands);
     }
 }
 
-void VulkanForwardPasses::drawParts(const DrawConstants &frame, bool bind_materials) const {
+void VulkanForwardPasses::drawParts(const DrawConstants &frame, DrawPass pass) const {
     const auto &vk = m_gpu.vk;
     constexpr VkDeviceSize offset = 0;
     vk.vkCmdBindVertexBuffers(m_commands, 0, 1, &m_vertices.handle, &offset);
     vk.vkCmdBindIndexBuffer(m_commands, m_indices.handle, 0, VK_INDEX_TYPE_UINT32);
     for (const auto &part : m_parts) {
-        if (bind_materials) {
+        if (pass == DrawPass::Shadow && !part.cast_shadows) {
+            continue;
+        }
+        if (pass == DrawPass::Color) {
             vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 1, 1, &part.textures, 0,
                                        nullptr);
         }
@@ -1078,7 +1086,8 @@ ForwardRenderer::~ForwardRenderer() = default;
 std::expected<std::unique_ptr<ForwardRenderer>, ForwardRenderError>
 ForwardRenderer::create(const StaticModelAsset &model, const ForwardRenderOptions &options,
                         const ForwardMaterial &material) {
-    if (!validGeometry(model) || !std::ranges::all_of(model.textures, validTexture)) {
+    if (!validGeometry(model) || !std::ranges::all_of(model.textures, validTexture) ||
+        (!options.shadow_casters.empty() && options.shadow_casters.size() != model.parts.size())) {
         return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid static model"});
     }
     if (material.variant.shader != defaultForwardMaterial().variant.shader ||
@@ -1094,7 +1103,7 @@ ForwardRenderer::create(const StaticModelAsset &model, const ForwardRenderOption
             return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::BackendFailure,
                                                       "Cannot initialize the requested Vulkan device"});
         }
-        implementation->passes.initialize(model, options.shader_directory, options.front_view, material);
+        implementation->passes.initialize(model, options, material);
         return std::unique_ptr<ForwardRenderer>(new ForwardRenderer(std::move(implementation)));
     } catch (const std::exception &error) {
         return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::BackendFailure, error.what()});

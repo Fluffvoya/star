@@ -114,16 +114,23 @@ if(STAR_TEST_WINDOWS_VULKAN)
 
     add_test(NAME windows-vulkan-rhi COMMAND StarRHITests)
     add_test(NAME windows-vulkan-present COMMAND StarVulkanMesh --validation --frames=12)
-    set_tests_properties(windows-vulkan-rhi windows-vulkan-present PROPERTIES
+    set(vulkan_tests windows-vulkan-rhi windows-vulkan-present)
+    set(sync_validation "VK_LAYER_VALIDATE_SYNC=1")
+    if(TARGET StarVulkanForward)
+        add_test(NAME windows-vulkan-forward COMMAND StarVulkanForward
+            "$<TARGET_FILE_DIR:StarVulkanForward>/forward-scene.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/windows-vulkan-forward.ppm" 3)
+        list(APPEND vulkan_tests windows-vulkan-forward)
+    endif()
+    set_tests_properties(${vulkan_tests} PROPERTIES
         LABELS "windows-vulkan"
         TIMEOUT 60
-        FAIL_REGULAR_EXPRESSION "\\[error\\] Vulkan:;Validation Error:"
+        ENVIRONMENT "${sync_validation}"
+        FAIL_REGULAR_EXPRESSION "[[]error[]] Vulkan:;Validation Error:"
     )
-    set(sync_validation "VK_LAYER_VALIDATE_SYNC=1")
-    set_tests_properties(windows-vulkan-rhi PROPERTIES
-        ENVIRONMENT "STAR_TEST_REQUIRE_VULKAN=1;STAR_TEST_VULKAN_VALIDATION=1;${sync_validation}")
-    set_tests_properties(windows-vulkan-present PROPERTIES
-        ENVIRONMENT "SDL_VIDEODRIVER=windows;${sync_validation}")
+    set_property(TEST windows-vulkan-rhi APPEND PROPERTY ENVIRONMENT
+        "STAR_TEST_REQUIRE_VULKAN=1" "STAR_TEST_VULKAN_VALIDATION=1")
+    set_property(TEST windows-vulkan-present APPEND PROPERTY ENVIRONMENT "SDL_VIDEODRIVER=windows")
 endif()
 
 if(NOT STAR_MONOLITHIC)

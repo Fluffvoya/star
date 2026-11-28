@@ -22,3 +22,5 @@
 | 18 纯运行时构建与基础验收 | [Linux x64 验收记录](18-runtime-only-acceptance.md) |
 | 19 Windows x64 验收 | [Windows x64 验收记录](19-windows-acceptance.md) |
 | 20 独立显卡自动选择 | [Windows x64 实机记录](20-discrete-gpu-selection.md) |
+| 21 Vulkan 静态资源上传 | [Linux x64 复验记录](21-vulkan-static-upload.md) |
+| 22 静态场景提取 | [Linux x64 验证与 Windows 复验入口](22-static-scene-rendering.md) |
