@@ -6,6 +6,7 @@
 
 #include <array>
 
+#if !defined(STAR_FIXTURE_SECONDARY)
 namespace {
 
 class Actor final : public star::GameObject {
@@ -55,6 +56,7 @@ bool startup(star::GameModuleContext &context) noexcept {
 }
 
 } // namespace
+#endif
 
 #if defined(_WIN32)
 #define STAR_GAME_FIXTURE_EXPORT __declspec(dllexport)
@@ -65,6 +67,29 @@ bool startup(star::GameModuleContext &context) noexcept {
 extern "C" STAR_GAME_FIXTURE_EXPORT const star::GameModuleDescriptor *StarGetModuleDescriptor() noexcept {
     using namespace game_fixture;
     using namespace star;
+#if defined(STAR_FIXTURE_SECONDARY)
+    constexpr reflect::ModuleId auxiliary_id = module_id + 1;
+    static const std::array properties{reflect::makeProperty<AuxiliaryScore, int, &AuxiliaryScore::value>("value")};
+    static const reflect::TypeInfo score{componentTypeId<AuxiliaryScore>(),
+                                         ComponentTraits<AuxiliaryScore>::name,
+                                         reflect::TypeKind::Struct,
+                                         sizeof(AuxiliaryScore),
+                                         alignof(AuxiliaryScore),
+                                         properties,
+                                         reflect::makeTypeOps<AuxiliaryScore>(),
+                                         auxiliary_id,
+                                         1,
+                                         nullptr};
+    static const std::array components{&score};
+    static const GameModuleDescriptor descriptor{
+        game_module_abi_version, auxiliary_id, "M5 Auxiliary", components, {}, [](GameModuleContext &) noexcept {
+#if defined(STAR_FIXTURE_FAIL_STARTUP)
+            return false;
+#else
+            return true;
+#endif
+        }};
+#else
 #if defined(STAR_FIXTURE_RELOAD_VERSION)
     static const std::array properties{
         reflect::makeProperty<Score, int, &Score::value>("points", reflect::PropertyFlags::None, nullptr, "value"),
@@ -89,5 +114,6 @@ extern "C" STAR_GAME_FIXTURE_EXPORT const star::GameModuleDescriptor *StarGetMod
     static const std::array objects{makeGameObjectType<Actor>(object_type)};
     static const GameModuleDescriptor descriptor{
         game_module_abi_version, module_id, "M3 Fixture", components, objects, startup};
+#endif
     return &descriptor;
 }

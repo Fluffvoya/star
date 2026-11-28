@@ -161,7 +161,10 @@ int main(int argc, char **argv) {
         star::log::error(k_log_category, "ImGui initialization failed: {}", layer_result.error().message);
         return 1;
     }
-    auto game_module = parse_path_option(argc, argv, "--game-module=");
+    std::vector<std::filesystem::path> game_modules;
+    if (auto override = parse_path_option(argc, argv, "--game-module="); !override.empty()) {
+        game_modules.push_back(std::move(override));
+    }
     auto scene_path = parse_path_option(argc, argv, "--scene=");
     std::filesystem::path project_root = parse_path_option(argc, argv, "--project=");
     if (project_root.empty()) {
@@ -185,12 +188,10 @@ int main(int argc, char **argv) {
         if (scene_path.empty()) {
             scene_path = project->resolve(settings.startup_scene);
         }
-        if (game_module.empty() && !settings.modules.empty()) {
-            if (settings.modules.size() > 1) {
-                star::log::error(k_log_category, "StarEditor currently loads one game module per project");
-                return 1;
+        if (game_modules.empty()) {
+            for (const auto &path : settings.modules) {
+                game_modules.push_back(project->resolve(path));
             }
-            game_module = project->resolve(settings.modules.front());
         }
     }
 
@@ -208,7 +209,7 @@ int main(int argc, char **argv) {
 
     std::shared_ptr<star::editor::EditorDocument> document;
     if (!scene_path.empty()) {
-        auto opened = star::editor::EditorDocument::open(scene_path, game_module);
+        auto opened = star::editor::EditorDocument::openWithModules(scene_path, game_modules);
         if (!opened) {
             star::log::error(k_log_category, "Open failed: {}", opened.error().message);
         } else {
@@ -216,7 +217,7 @@ int main(int argc, char **argv) {
         }
     }
     if (!document) {
-        auto created = star::editor::EditorDocument::createEmpty("Untitled", game_module);
+        auto created = star::editor::EditorDocument::createEmptyWithModules("Untitled", game_modules);
         if (!created) {
             star::log::error(k_log_category, "Scene creation failed: {}", created.error().message);
             return 1;
