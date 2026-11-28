@@ -137,6 +137,35 @@ STAR_TEST(documentSavesAndReopensSceneFiles) {
     std::filesystem::remove(path);
 }
 
+STAR_TEST(documentAppliesWorldTransformToChildAsOneUndoableCommand) {
+    using namespace star;
+    using namespace star::editor;
+    auto document = EditorDocument::createEmpty("Transform").value();
+    auto &scene = document->getScene();
+    auto *parent = scene.findObject(scene.createObject("Parent").value());
+    auto *child = scene.findObject(scene.createObject("Child").value());
+    STAR_CHECK(parent && child);
+    parent->setTransform({.position = {2, 0, 0}, .rotation = {}, .scale = {2, 3, 4}});
+    STAR_CHECK(scene.queueSetParent(child->getHandle(), parent->getHandle(), false) && scene.commitCommands());
+    auto next_world = child->getWorldTransform().matrix;
+    next_world.columns[3].x += 2.0F;
+    const auto local = scene.localTransformForWorld(child->getHandle(), next_world);
+    STAR_CHECK(local && local->position.x == 1.0F);
+    document->execute(std::make_unique<SetTransformCommand>(child->getGuid(), *local));
+    STAR_CHECK(scene.commitCommands() && child->getWorldTransform().matrix.columns[3].x == 4.0F);
+    STAR_CHECK(document->undo() && scene.commitCommands() && child->getWorldTransform().matrix.columns[3].x == 2.0F);
+    STAR_CHECK(document->redo() && scene.commitCommands() && child->getWorldTransform().matrix.columns[3].x == 4.0F);
+    const auto child_guid = child->getGuid();
+    document->execute(std::make_unique<DeleteObjectCommand>(child_guid));
+    STAR_CHECK(scene.findObject(child_guid) == nullptr);
+    STAR_CHECK(document->undo());
+    child = scene.findObject(child_guid);
+    STAR_CHECK(child && child->getParent() == parent && child->getWorldTransform().matrix.columns[3].x == 4.0F);
+    parent->setTransform({.position = {}, .rotation = {}, .scale = {0, 1, 1}});
+    const auto singular = scene.localTransformForWorld(child->getHandle(), next_world);
+    STAR_CHECK(!singular && singular.error() == SceneError::IncompatibleTransform);
+}
+
 #ifdef STAR_GAME_MODULE_PATH
 namespace {
 

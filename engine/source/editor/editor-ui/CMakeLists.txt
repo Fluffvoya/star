@@ -22,6 +22,17 @@ endif()
 
 find_package(SDL3 3.2 REQUIRED CONFIG)
 
+set(star_imguizmo_dir "${PROJECT_SOURCE_DIR}/engine/source/third-party/imguizmo")
+add_library(StarImGuizmo STATIC "${star_imguizmo_dir}/ImGuizmo.cpp")
+target_include_directories(StarImGuizmo SYSTEM PUBLIC "${star_imguizmo_dir}")
+target_link_libraries(StarImGuizmo PRIVATE StarImGui)
+set_target_properties(StarImGuizmo PROPERTIES
+    OUTPUT_NAME star-imguizmo
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 star_add_module(EditorUI editor-ui
     include/editor-ui/imgui_layer.hpp
     include/editor-ui/editor_shell.hpp
@@ -31,7 +42,8 @@ star_add_module(EditorUI editor-ui
     src/scene_viewport.hpp
 )
 
-target_link_libraries(StarEditorUI PUBLIC Star::Core Star::Platform Star::RHI Star::EditorCore PRIVATE StarImGui SDL3::SDL3)
+target_link_libraries(StarEditorUI PUBLIC Star::Core Star::Platform Star::RHI Star::EditorCore
+    PRIVATE StarImGui StarImGuizmo SDL3::SDL3)
 
 include("${PROJECT_SOURCE_DIR}/cmake/StarSlang.cmake")
 if(STAR_SLANGC)

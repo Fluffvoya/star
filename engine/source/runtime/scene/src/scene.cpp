@@ -855,6 +855,18 @@ const WorldTransform *Scene::findWorldTransform(ObjectHandle handle) const noexc
     return object == nullptr ? nullptr : m_impl->registry.try_get<WorldTransform>(object->entity);
 }
 
+std::expected<Transform, SceneError> Scene::localTransformForWorld(ObjectHandle handle,
+                                                                   const math::Mat4 &world) const noexcept {
+    const auto *hierarchy = findHierarchy(handle);
+    if (!hierarchy) {
+        return std::unexpected(SceneError::InvalidHandle);
+    }
+    if (auto local = scene_detail::relativeTransform(m_impl->computeWorld(hierarchy->parent), world)) {
+        return *local;
+    }
+    return std::unexpected(SceneError::IncompatibleTransform);
+}
+
 std::expected<void, SceneError> Scene::queueSetParent(ObjectHandle child, ObjectHandle parent,
                                                       bool keep_world_transform) noexcept {
     Impl &impl = *m_impl;

@@ -1,11 +1,16 @@
 #include "scene_viewport.hpp"
 
+#include "core/log.hpp"
+#include "editor/command.hpp"
 #include "editor/document.hpp"
 #include "scene/components.hpp"
 #include "scene/world.hpp"
 
+#include <ImGuizmo.h>
+
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <fstream>
@@ -17,6 +22,8 @@ namespace {
 
 constexpr int k_grid_radius = 20;
 constexpr std::size_t k_vertex_count = (2 * k_grid_radius + 1) * 4;
+const LogCategory k_viewport_log("SceneViewport", LogLevel::Info);
+using MatrixElements = std::array<float, 16>;
 
 [[nodiscard]] std::vector<std::uint32_t> readSpirv(const std::filesystem::path &path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -145,11 +152,17 @@ math::Vec3 SceneViewport::forward() const {
     return {-std::sin(m_yaw) * std::cos(m_pitch), std::sin(m_pitch), -std::cos(m_yaw) * std::cos(m_pitch)};
 }
 
-math::Mat4::Vector4 SceneViewport::project(math::Vec3 point, float aspect) const {
+SceneViewport::CameraView SceneViewport::cameraView() const {
+    if (m_game_camera) {
+        return *m_game_camera;
+    }
     const auto direction = forward();
     const auto right = math::normalize(math::cross(direction, {0, 1, 0}));
-    const CameraView camera = m_game_camera.value_or(
-        CameraView{m_eye, direction, right, math::cross(right, direction), math::pi / 3.0F, 0.05F, 250.0F});
+    return {m_eye, direction, right, math::cross(right, direction), math::pi / 3.0F, 0.05F, 250.0F};
+}
+
+math::Mat4::Vector4 SceneViewport::project(math::Vec3 point, float aspect) const {
+    const auto camera = cameraView();
     const auto relative = point - camera.eye;
     const float distance = math::dot(relative, camera.forward);
     if (m_orthographic && !m_game_camera) {
@@ -162,6 +175,115 @@ math::Mat4::Vector4 SceneViewport::project(math::Vec3 point, float aspect) const
             (distance - camera.near_plane) * camera.far_plane / (camera.far_plane - camera.near_plane), distance};
 }
 
+void SceneViewport::cancelGizmo() {
+    if (m_drag) {
+        m_drag.reset();
+        ImGuizmo::Enable(false);
+    }
+}
+
+bool SceneViewport::drawGizmo(EditorDocument &document, ImVec2 origin, ImVec2 size, bool hovered) {
+    auto *selected = document.findSelected();
+    if (!selected || m_looking || document.getScene().getWorld().isPlaying()) {
+        cancelGizmo();
+        return false;
+    }
+    const auto &original = selected->getWorldTransform().matrix;
+    const auto object = selected->getHandle();
+    if (m_drag &&
+        (m_drag->object != object || ImGui::IsKeyPressed(ImGuiKey_Escape, false) || !ImGui::IsWindowFocused() ||
+         std::bit_cast<MatrixElements>(m_drag->original) != std::bit_cast<MatrixElements>(original))) {
+        cancelGizmo();
+        return true;
+    }
+    if (hovered && !m_drag && !ImGui::GetIO().WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
+            m_gizmo_operation = 0;
+        } else if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+            m_gizmo_operation = 1;
+        } else if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+            m_gizmo_operation = 2;
+        }
+    }
+    const auto camera = cameraView();
+    const auto &right = camera.right;
+    const auto &up = camera.up;
+    const auto backward = -camera.forward;
+    const MatrixElements view{
+        right.x,
+        up.x,
+        backward.x,
+        0.0F,
+        right.y,
+        up.y,
+        backward.y,
+        0.0F,
+        right.z,
+        up.z,
+        backward.z,
+        0.0F,
+        -math::dot(right, camera.eye),
+        -math::dot(up, camera.eye),
+        -math::dot(backward, camera.eye),
+        1.0F,
+    };
+    const float near_plane = camera.near_plane;
+    const float far_plane = camera.far_plane;
+    const float depth = far_plane - near_plane;
+    const float vertical = m_orthographic ? 2.0F / m_ortho_height : 1.0F / std::tan(camera.fov * 0.5F);
+    const MatrixElements projection{
+        vertical * size.y / size.x,
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        vertical,
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        m_orthographic ? -2.0F / depth : -(far_plane + near_plane) / depth,
+        m_orthographic ? 0.0F : -1.0F,
+        0.0F,
+        0.0F,
+        m_orthographic ? -(far_plane + near_plane) / depth : -2.0F * far_plane * near_plane / depth,
+        m_orthographic ? 1.0F : 0.0F,
+    };
+    auto matrix = std::bit_cast<MatrixElements>(m_drag ? m_drag->preview : original);
+    constexpr std::array operations{ImGuizmo::TRANSLATE, ImGuizmo::ROTATE, ImGuizmo::SCALE};
+    constexpr std::array increments{0.5F, 15.0F, 0.1F};
+    const auto operation = static_cast<std::size_t>(m_gizmo_operation);
+    const std::array snap{increments[operation], increments[operation], increments[operation]};
+    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+    ImGuizmo::SetRect(origin.x, origin.y, size.x, size.y);
+    ImGuizmo::SetOrthographic(m_orthographic);
+    ImGuizmo::Enable(hovered || m_drag.has_value());
+    const bool changed = ImGuizmo::Manipulate(view.data(), projection.data(), operations[operation],
+                                              m_local_gizmo ? ImGuizmo::LOCAL : ImGuizmo::WORLD, matrix.data(), nullptr,
+                                              m_snap_gizmo ? snap.data() : nullptr);
+    const bool using_gizmo = ImGuizmo::IsUsing();
+    const bool was_dragging = m_drag.has_value();
+    if (using_gizmo && !m_drag) {
+        m_drag = TransformDrag{object, original, original, {}};
+    }
+    if (changed && m_drag) {
+        m_drag->preview = std::bit_cast<math::Mat4>(matrix);
+        const auto converted = document.getScene().localTransformForWorld(object, m_drag->preview);
+        m_drag->local = converted ? std::optional{*converted} : std::nullopt;
+    }
+    if (was_dragging && !using_gizmo) {
+        if (m_drag->local &&
+            std::bit_cast<MatrixElements>(original) != std::bit_cast<MatrixElements>(m_drag->preview)) {
+            document.execute(std::make_unique<SetTransformCommand>(selected->getGuid(), *m_drag->local));
+        } else if (!m_drag->local &&
+                   std::bit_cast<MatrixElements>(original) != std::bit_cast<MatrixElements>(m_drag->preview)) {
+            log::warning(k_viewport_log, "Transform cannot be represented relative to the parent");
+        }
+        m_drag.reset();
+    }
+    return was_dragging || using_gizmo || ImGuizmo::IsOver();
+}
+
 void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool game_view) {
     Scene &scene = document.getScene();
     if (!scene.getWorld().isPlaying() && !scene.commitCommands()) {
@@ -170,6 +292,7 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
     const auto objects = scene.getObjects();
     m_game_camera.reset();
     if (game_view) {
+        cancelGizmo();
         m_looking = false;
         for (const auto handle : objects) {
             const auto *object = scene.findObject(handle);
@@ -199,6 +322,17 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
         }
         ImGui::TextDisabled("Game Camera");
     } else {
+        if (!scene.getWorld().isPlaying()) {
+            constexpr const char *operations[] = {"Move (W)", "Rotate (E)", "Scale (R)"};
+            ImGui::BeginDisabled(m_drag.has_value());
+            ImGui::SetNextItemWidth(115.0F);
+            ImGui::Combo("##transform-operation", &m_gizmo_operation, operations, IM_ARRAYSIZE(operations));
+            ImGui::SameLine();
+            ImGui::Checkbox("Local", &m_local_gizmo);
+            ImGui::SameLine();
+            ImGui::Checkbox("Snap", &m_snap_gizmo);
+            ImGui::EndDisabled();
+        }
         ImGui::Checkbox("Orthographic", &m_orthographic);
         ImGui::SameLine();
         ImGui::TextDisabled("RMB + WASD to fly  |  F to focus");
@@ -207,6 +341,7 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
     if (size.x < 2.0F || size.y < 2.0F ||
         !resize(static_cast<std::uint32_t>(size.x), static_cast<std::uint32_t>(size.y))) {
         m_looking = false;
+        cancelGizmo();
         return;
     }
     const ImVec2 origin = ImGui::GetCursorScreenPos();
@@ -214,7 +349,7 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
     m_draw_requested = true;
     const bool hovered = ImGui::IsItemHovered();
     const ImGuiIO &io = ImGui::GetIO();
-    if (!game_view && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    if (!game_view && !m_drag && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         m_looking = true;
     }
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right) || !ImGui::IsWindowFocused()) {
@@ -232,20 +367,21 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
                               math::Vec3{0, 1, 0} * axis(ImGuiKey_E, ImGuiKey_Q);
         m_eye = m_eye + math::normalize(movement) * (std::min(delta_seconds, 0.1F) * (io.KeyShift ? 15.0F : 5.0F));
     }
-    if (!game_view && hovered && io.MouseWheel != 0.0F) {
+    if (!game_view && !m_drag && hovered && io.MouseWheel != 0.0F) {
         if (m_orthographic) {
             m_ortho_height = std::clamp(m_ortho_height * std::pow(0.8F, io.MouseWheel), 0.25F, 150.0F);
         } else {
             m_eye = m_eye + forward() * io.MouseWheel;
         }
     }
-    if (!game_view && hovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+    if (!game_view && !m_drag && hovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
         if (const auto *selected = document.findSelected()) {
             m_eye = selected->getWorldTransform().matrix.transformPoint({}) - forward() * 6.0F;
         }
     }
     auto *draw_list = ImGui::GetWindowDrawList();
     draw_list->PushClipRect(origin, {origin.x + size.x, origin.y + size.y}, true);
+    const bool gizmo_captured = !game_view && drawGizmo(document, origin, size, hovered);
     const auto &selection = document.getSelection();
     const float aspect = size.x / size.y;
     Guid picked;
@@ -256,7 +392,8 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
         if (object == nullptr) {
             continue;
         }
-        const auto clip = project(object->getWorldTransform().matrix.transformPoint({}), aspect);
+        const auto &matrix = m_drag && m_drag->object == handle ? m_drag->preview : object->getWorldTransform().matrix;
+        const auto clip = project(matrix.transformPoint({}), aspect);
         if (clip.w <= 0.0F || clip.z < 0.0F || clip.z > clip.w || std::abs(clip.x) > clip.w ||
             std::abs(clip.y) > clip.w) {
             continue;
@@ -278,7 +415,7 @@ void SceneViewport::draw(EditorDocument &document, float delta_seconds, bool gam
         }
     }
     draw_list->PopClipRect();
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (!gizmo_captured && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (picked.isValid()) {
             document.select(picked, io.KeyCtrl);
         } else if (!io.KeyCtrl) {
