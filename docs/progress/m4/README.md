@@ -26,3 +26,4 @@
 | 22 静态场景提取 | [Linux x64 验证与 Windows 复验入口](22-static-scene-rendering.md) |
 | 23 场景渲染桥接与透明材质 | [Linux x64 验证记录](23-scene-bridge.md) |
 | 24 逐实例材质覆盖 | [Linux x64 验证记录](24-material-overrides.md) |
+| 25 纹理块压缩 | [Linux x64 验证记录](25-block-compressed-textures.md) |

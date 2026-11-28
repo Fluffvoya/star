@@ -41,6 +41,13 @@ std::expected<TextureImportSettings, CachedTextureError> getSettings(const Asset
         }
         settings.generate_mips = text == "true";
     }
+    if (const auto compress = meta.settings.find("BlockCompress"); compress != meta.settings.end()) {
+        const auto text = scalar(compress->second);
+        if (text != "true" && text != "false") {
+            return error(CachedTextureErrorCode::InvalidMeta, "Settings.BlockCompress");
+        }
+        settings.block_compress = text == "true";
+    }
     return settings;
 }
 
@@ -67,7 +74,11 @@ std::expected<CachedTexture, CachedTextureError> importCachedTexture(std::span<c
             const auto &last = imported->mips.back();
             const bool expected_mips =
                 settings->generate_mips ? last.width == 1 && last.height == 1 : imported->mips.size() == 1;
-            if (expected_mips) {
+            // Payloads without block compression predate the format field and must be rebuilt.
+            const bool expects_blocks = settings->block_compress && settings->usage != TextureUsage::Normal;
+            const bool expected_format =
+                expects_blocks ? imported->format != TextureFormat::Rgba8 : imported->format == TextureFormat::Rgba8;
+            if (expected_mips && expected_format) {
                 return CachedTexture{std::move(*imported), *key, true};
             }
         }

@@ -258,3 +258,22 @@ STAR_TEST(resolve_material_rejects_malformed_known_parameters) {
     const auto out_of_range = resolveMaterial(material);
     STAR_CHECK(!out_of_range && out_of_range.error().code == serialization::ArchiveErrorCode::InvalidInput);
 }
+
+STAR_TEST(texture_asset_round_trips_block_compressed_mips) {
+    const std::vector<std::uint8_t> block(8, 0x7F);
+    TextureAsset texture{TextureColorSpace::Color, {{4, 4, block}}, TextureFormat::Bc1};
+    const auto payload = writeTextureAsset(texture);
+    STAR_CHECK(payload.has_value());
+    const auto decoded = readTextureAsset(std::span<const std::byte>(*payload));
+    STAR_CHECK(decoded.has_value());
+    STAR_CHECK(decoded->format == TextureFormat::Bc1);
+    STAR_CHECK(*decoded == texture);
+
+    auto truncated = texture;
+    truncated.mips.front().data.resize(4);
+    STAR_CHECK(!writeTextureAsset(truncated).has_value());
+
+    auto empty = texture;
+    empty.mips.front().data.clear();
+    STAR_CHECK(!writeTextureAsset(empty).has_value());
+}
