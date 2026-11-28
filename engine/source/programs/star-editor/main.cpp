@@ -2,6 +2,7 @@
 #include "editor-ui/editor_shell.hpp"
 #include "editor-ui/imgui_layer.hpp"
 #include "editor/document.hpp"
+#include "editor/project.hpp"
 #include "platform/platform.hpp"
 #include "rhi/rhi.hpp"
 #include "rhi/vulkan.hpp"
@@ -156,8 +157,8 @@ int main(int argc, char **argv) {
         star::log::error(k_log_category, "ImGui initialization failed: {}", layer_result.error().message);
         return 1;
     }
-    const auto game_module = parse_path_option(argc, argv, "--game-module=");
-    const std::filesystem::path scene_path = parse_path_option(argc, argv, "--scene=");
+    auto game_module = parse_path_option(argc, argv, "--game-module=");
+    auto scene_path = parse_path_option(argc, argv, "--scene=");
     std::filesystem::path project_root = parse_path_option(argc, argv, "--project=");
     if (project_root.empty()) {
         for (int index = 1; index < argc; ++index) {
@@ -168,10 +169,34 @@ int main(int argc, char **argv) {
             }
         }
     }
+    std::shared_ptr<star::editor::EditorProject> project;
+    if (project_root.extension() == ".starproject") {
+        const auto opened = star::editor::EditorProject::open(project_root);
+        if (!opened) {
+            star::log::error(k_log_category, "Project open failed: {}", opened.error().message);
+            return 1;
+        }
+        project = *opened;
+        const auto &settings = project->getSettings();
+        if (scene_path.empty()) {
+            scene_path = project->resolve(settings.startup_scene);
+        }
+        if (game_module.empty() && !settings.modules.empty()) {
+            if (settings.modules.size() > 1) {
+                star::log::error(k_log_category, "StarEditor currently loads one game module per project");
+                return 1;
+            }
+            game_module = project->resolve(settings.modules.front());
+        }
+    }
 
     std::unique_ptr<star::editor::ImGuiLayer> layer = std::move(*layer_result);
     star::editor::EditorShell shell;
-    shell.setProjectRoot(project_root.empty() ? std::filesystem::path(".") : project_root);
+    if (project) {
+        shell.setProject(std::move(project));
+    } else {
+        shell.setProjectRoot(project_root.empty() ? std::filesystem::path(".") : project_root);
+    }
     if (const auto viewport = shell.initializeViewport(*device, *layer, executable_dir); !viewport) {
         star::log::error(k_log_category, "Scene viewport unavailable: {}", viewport.error().message);
         return 1;

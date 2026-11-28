@@ -8,6 +8,7 @@
 #include <ImGuizmo.h>
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <misc/cpp/imgui_stdlib.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -81,6 +82,10 @@ struct EditorShell::Impl {
     std::string reload_status;
     std::unique_ptr<SceneViewport> scene_viewport;
     std::filesystem::path project_root;
+    std::shared_ptr<EditorProject> project;
+    std::optional<ProjectSettings> project_draft;
+    bool show_project_settings = false;
+    std::string project_save_error;
     std::vector<std::filesystem::path> scenes;
     double next_scan = 0.0;
     char rename_buffer[128] = {};
@@ -300,6 +305,11 @@ struct EditorShell::Impl {
             }
             if (ImGui::MenuItem("Save", "Ctrl+S", false, document && !document->isRecovering() && !play_document)) {
                 saveDocument();
+            }
+            if (ImGui::MenuItem("Project Settings", nullptr, &show_project_settings, static_cast<bool>(project)) &&
+                show_project_settings) {
+                project_draft = project->getSettings();
+                project_save_error.clear();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Alt+F4")) {
@@ -637,6 +647,57 @@ struct EditorShell::Impl {
         ImGui::End();
     }
 
+    void drawProjectSettings() {
+        if (!show_project_settings || !project || !project_draft) {
+            return;
+        }
+        ImGui::SetNextWindowSize(ImVec2{440.0F, 260.0F}, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Project Settings", &show_project_settings)) {
+            ImGui::TextWrapped("%s", project->getPath().string().c_str());
+            auto &settings = *project_draft;
+            for (const auto &property : projectSettingsType().properties) {
+                if (property.kind != reflect::PropertyKind::String) {
+                    continue;
+                }
+                void *value = property.get_mutable(&settings);
+                auto text = property.format_scalar(value);
+                if (ImGui::InputText(property.name.data(), &text)) {
+                    static_cast<void>(property.parse_scalar(text, value));
+                }
+            }
+            if (settings.modules.size() <= 1) {
+                const auto path_type = reflect::makeValueInfo<std::filesystem::path>();
+                std::string module = settings.modules.empty() ? "" : path_type.format_scalar(&settings.modules.front());
+                if (ImGui::InputText("Game Module", &module)) {
+                    settings.modules.clear();
+                    if (!module.empty()) {
+                        auto &path = settings.modules.emplace_back();
+                        static_cast<void>(path_type.parse_scalar(module, &path));
+                    }
+                }
+            }
+            ImGui::TextDisabled("Startup scene and module changes apply on restart.");
+            if (ImGui::Button("Save Project")) {
+                const auto saved = project->save(settings);
+                if (saved) {
+                    project_save_error.clear();
+                    show_project_settings = false;
+                    log::info(k_log_category, "Project saved to {}", project->getPath().string());
+                } else {
+                    project_save_error = saved.error().message;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                show_project_settings = false;
+            }
+            if (!project_save_error.empty()) {
+                ImGui::TextWrapped("%s", project_save_error.c_str());
+            }
+        }
+        ImGui::End();
+    }
+
     void draw_console() {
         if (!show_console) {
             return;
@@ -758,6 +819,7 @@ struct EditorShell::Impl {
             ImGui::End();
         }
         draw_content();
+        drawProjectSettings();
         draw_console();
         draw_statistics(status);
         drawUnsavedChanges();
@@ -791,6 +853,15 @@ void EditorShell::setProjectRoot(std::filesystem::path root) {
         m_impl->scene_viewport->setProjectRoot(m_impl->project_root);
     }
     m_impl->next_scan = 0.0;
+}
+
+void EditorShell::setProject(std::shared_ptr<EditorProject> project) {
+    m_impl->project = std::move(project);
+    m_impl->project_draft.reset();
+    m_impl->show_project_settings = false;
+    if (m_impl->project) {
+        setProjectRoot(m_impl->project->getRoot());
+    }
 }
 
 const std::filesystem::path &EditorShell::getProjectRoot() const noexcept {

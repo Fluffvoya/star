@@ -3,6 +3,7 @@
 #include "editor-ui/export.hpp"
 #include "editor-ui/imgui_layer.hpp"
 #include "editor/document.hpp"
+#include "editor/project.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -31,6 +32,7 @@ class STAR_EDITORUI_API EditorShell final {
     void setDocument(std::shared_ptr<EditorDocument> document);
     [[nodiscard]] std::shared_ptr<EditorDocument> getDocument() const;
     void setProjectRoot(std::filesystem::path root);
+    void setProject(std::shared_ptr<EditorProject> project);
     [[nodiscard]] const std::filesystem::path &getProjectRoot() const noexcept;
     // The device and layer outlive the shell.
     [[nodiscard]] std::expected<void, UiError> initializeViewport(rhi::Device &device, ImGuiLayer &layer,

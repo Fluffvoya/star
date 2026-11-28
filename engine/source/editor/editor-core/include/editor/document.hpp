@@ -25,6 +25,7 @@ enum class EditorErrorCode : std::uint8_t {
     PlayFailed,
     ReloadFailed,
     RecoveryRequired,
+    InvalidProject,
 };
 
 struct EditorError {
