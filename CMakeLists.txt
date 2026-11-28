@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 option(STAR_BUILD_ASSET_PIPELINE "Build source asset import and derived data tools" ON)
+option(STAR_BUILD_EDITOR "Build the editor and its ImGui layer" ON)
 if(STAR_BUILD_ASSET_PIPELINE AND NOT "asset-pipeline" IN_LIST VCPKG_MANIFEST_FEATURES)
     list(APPEND VCPKG_MANIFEST_FEATURES asset-pipeline)
 endif()
@@ -104,6 +105,11 @@ add_subdirectory(engine/source/runtime/renderer)
 add_subdirectory(engine/source/runtime/platform)
 if(STAR_BUILD_ASSET_PIPELINE)
     add_subdirectory(engine/source/editor/asset-pipeline)
+endif()
+
+if(STAR_BUILD_EDITOR)
+    add_subdirectory(engine/source/editor/editor-ui)
+    add_subdirectory(engine/source/programs/star-editor)
 endif()
 
 if(STAR_BUILD_HEADER_TOOL)

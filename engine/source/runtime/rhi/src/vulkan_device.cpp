@@ -603,6 +603,22 @@ class VulkanCommandList final : public CommandList {
         m_texture_references.push_back(source);
     }
 
+    void copyBuffer(BufferHandle source, BufferHandle destination, std::uint64_t size) noexcept override {
+        std::scoped_lock lock(m_mutex);
+        if (m_closed) {
+            return;
+        }
+        const auto *from = m_pools.buffers.get(source);
+        const auto *to = m_pools.buffers.get(destination);
+        if (from == nullptr || to == nullptr || size == 0 || size > (*from)->size || size > (*to)->size) {
+            m_error = from == nullptr || to == nullptr ? DeviceError::InvalidHandle : DeviceError::InvalidDescriptor;
+            return;
+        }
+        VkBufferCopy region{};
+        region.size = size;
+        m_runtime.vk.vkCmdCopyBuffer(m_commands, (*from)->buffer, (*to)->buffer, 1, &region);
+    }
+
     [[nodiscard]] std::expected<void, DeviceError> validate(QueueType queue) const noexcept {
         if (m_closed || m_queue != queue || m_label_depth != 0 || m_in_pass) {
             return std::unexpected(DeviceError::InvalidState);
@@ -648,6 +664,13 @@ class VulkanCommandList final : public CommandList {
 
 class VulkanDevice final : public Device {
   public:
+    ~VulkanDevice() override {
+        if (m_descriptor_pool != VK_NULL_HANDLE) {
+            m_runtime.vk.vkDestroyDescriptorPool(m_runtime.device, m_descriptor_pool, nullptr);
+            m_descriptor_pool = VK_NULL_HANDLE;
+        }
+    }
+
     [[nodiscard]] std::expected<void, DeviceError> initialize(const DeviceCreateInfo &info) {
         if (auto initialized =
                 m_runtime.initialize(info.enableValidation, static_cast<SDL_Window *>(info.native_window));
@@ -669,6 +692,8 @@ class VulkanDevice final : public Device {
     }
 
     [[nodiscard]] const Capabilities &getCapabilities() const noexcept override { return m_capabilities; }
+
+    [[nodiscard]] std::string_view getDeviceName() const noexcept override { return m_runtime.properties.deviceName; }
 
     std::expected<BufferHandle, DeviceError> createBuffer(const BufferDesc &description) override {
         VkBufferUsageFlags usage = 0;

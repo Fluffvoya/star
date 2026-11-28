@@ -115,6 +115,12 @@ class NullCommandList final : public CommandList {
         }
     }
 
+    void copyBuffer(BufferHandle, BufferHandle, std::uint64_t) noexcept override {
+        if (!m_submitted) {
+            ++m_copyCount;
+        }
+    }
+
   private:
     QueueType m_queue;
     bool m_submitted = false;
@@ -146,6 +152,8 @@ class NullDevice final : public Device {
     }
 
     [[nodiscard]] const Capabilities &getCapabilities() const noexcept override { return m_capabilities; }
+
+    [[nodiscard]] std::string_view getDeviceName() const noexcept override { return "Null device"; }
 
     [[nodiscard]] std::expected<BufferHandle, DeviceError> createBuffer(const BufferDesc &description) override {
         if (description.size == 0 || description.usage == BufferUsage::None) {

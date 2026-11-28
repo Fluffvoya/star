@@ -107,6 +107,15 @@ std::span<const WindowEvent> Window::pollEvents() {
             continue;
         }
 
+        if (event.type == SDL_EVENT_TEXT_INPUT && event.text.windowID == m_implementation->id) {
+            const char *text = event.text.text;
+            while (text != nullptr && *text != '\0') {
+                const std::uint32_t codepoint = static_cast<std::uint32_t>(SDL_StepUTF8(&text, nullptr));
+                m_implementation->events.push_back(WindowEvent{WindowEventType::TextInput, 0, 0, codepoint, 0});
+            }
+            continue;
+        }
+
         if (event.type == SDL_EVENT_MOUSE_WHEEL && event.wheel.windowID == m_implementation->id) {
             m_implementation->events.push_back(WindowEvent{
                 WindowEventType::MouseWheel,

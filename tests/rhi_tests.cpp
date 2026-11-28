@@ -398,6 +398,39 @@ STAR_TEST(vulkanDeviceClearsTextureAndReadsBackPixels) {
     STAR_CHECK(!(*device)->isAlive(*texture));
 }
 
+STAR_TEST(vulkanDeviceRoundTripsUploadedBufferBytes) {
+    using namespace star::rhi;
+    auto device = createVulkanDevice({.enableValidation = enableVulkanValidation()});
+    if (!device) {
+        STAR_CHECK(device.error() == DeviceError::BackendUnavailable && !requireVulkan());
+        return;
+    }
+    constexpr std::uint64_t byte_count = 40;
+    auto upload = (*device)->createBuffer({.size = byte_count,
+                                           .usage = BufferUsage::CopySource,
+                                           .memory = MemoryType::Upload,
+                                           .debugName = "rhi-roundtrip-upload"});
+    auto readback = (*device)->createBuffer({.size = byte_count,
+                                             .usage = BufferUsage::CopyDestination,
+                                             .memory = MemoryType::Readback,
+                                             .debugName = "rhi-roundtrip-readback"});
+    STAR_CHECK(upload && readback);
+    std::array<std::byte, byte_count> source{};
+    for (std::size_t index = 0; index < source.size(); ++index) {
+        source[index] = static_cast<std::byte>((index + 1) & 0xFFU);
+    }
+    STAR_CHECK((*device)->writeBuffer(*upload, source));
+    auto commands = (*device)->beginCommandList(QueueType::Graphics);
+    STAR_CHECK(commands);
+    (*commands)->copyBuffer(*upload, *readback, byte_count);
+    const std::array list{*commands};
+    STAR_CHECK((*device)->submit(QueueType::Graphics, list, {}));
+    std::array<std::byte, byte_count> result{};
+    STAR_CHECK((*device)->readBuffer(*readback, result));
+    STAR_CHECK(result == source);
+    STAR_CHECK((*device)->destroy(*upload) && (*device)->destroy(*readback));
+}
+
 STAR_TEST(vulkanDeviceCreatesSampledTextureBindings) {
     using namespace star::rhi;
     auto device = createVulkanDevice({.enableValidation = enableVulkanValidation()});

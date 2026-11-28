@@ -325,6 +325,8 @@ class STAR_RHI_API CommandList {
     virtual void copyBufferToTexture(BufferHandle source, TextureHandle destination) noexcept = 0;
     // Copies mip 0 of a texture into a readback buffer with tightly packed texels.
     virtual void copyTextureToBuffer(TextureHandle source, BufferHandle destination) noexcept = 0;
+    // Copies the first `size` bytes between buffers.
+    virtual void copyBuffer(BufferHandle source, BufferHandle destination, std::uint64_t size) noexcept = 0;
 
   protected:
     CommandList() = default;
@@ -337,6 +339,8 @@ class STAR_RHI_API Device {
     Device &operator=(const Device &) = delete;
 
     [[nodiscard]] virtual const Capabilities &getCapabilities() const noexcept = 0;
+    // Human readable backend or adapter name for diagnostics.
+    [[nodiscard]] virtual std::string_view getDeviceName() const noexcept = 0;
     [[nodiscard]] virtual std::expected<BufferHandle, DeviceError> createBuffer(const BufferDesc &description) = 0;
     [[nodiscard]] virtual std::expected<TextureHandle, DeviceError> createTexture(const TextureDesc &description) = 0;
 

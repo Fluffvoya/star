@@ -3,6 +3,7 @@
 #include "core/export.hpp"
 #include "core/name.hpp"
 
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -35,6 +36,20 @@ class STAR_CORE_API LogCategory final {
 namespace log {
 
 enum class SinkError : unsigned char { FileOpen };
+
+struct LogRecord {
+    std::string_view category;
+    LogLevel level;
+    std::string_view message;
+};
+
+using LogSinkFn = void (*)(const LogRecord &record, void *user_data);
+using LogSinkId = std::uint32_t;
+
+// Sinks run on the writing thread with borrowed strings and must not log themselves.
+// Removing a sink does not wait for calls already in flight.
+[[nodiscard]] STAR_CORE_API LogSinkId addSink(LogSinkFn sink, void *user_data) noexcept;
+STAR_CORE_API void removeSink(LogSinkId id) noexcept;
 
 STAR_CORE_API std::expected<void, SinkError> setFileSink(const std::filesystem::path &path) noexcept;
 STAR_CORE_API void clearFileSink() noexcept;
