@@ -31,9 +31,6 @@ Desktop.ini
 *.swp
 *.swo
 
-# Private project documentation is local-only.
-/.private-docs/
-
 # Local environment data, not shared examples.
 .env
 .env.*
