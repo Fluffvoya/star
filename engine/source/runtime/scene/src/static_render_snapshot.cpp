@@ -163,6 +163,20 @@ std::expected<StaticRenderSnapshot, StaticRenderError> extractStaticRenderSnapsh
         StaticRenderSnapshot snapshot;
         BoundsAccumulator bounds;
         std::map<Guid, LoadedModel> loaded_models;
+        std::map<Guid, std::size_t> material_textures;
+        const auto textureIndex = [&](const Guid &guid) -> std::optional<std::size_t> {
+            if (const auto found = material_textures.find(guid); found != material_textures.end()) {
+                return found->second;
+            }
+            auto loaded = AssetRef<TextureAsset>{guid}.load(assets);
+            if (!loaded) {
+                return std::nullopt;
+            }
+            const auto index = snapshot.model.textures.size();
+            snapshot.model.textures.push_back(*loaded->get());
+            material_textures.emplace(guid, index);
+            return index;
+        };
         for (const auto &instance : instances) {
             auto it = loaded_models.find(instance.mesh);
             if (it == loaded_models.end()) {
@@ -211,6 +225,25 @@ std::expected<StaticRenderSnapshot, StaticRenderError> extractStaticRenderSnapsh
                     pbr.metallic = resolved.metallic;
                     pbr.roughness = resolved.roughness;
                     pbr.blend = resolved.state.blend;
+                    pbr.shading = resolved.state.shading;
+                    pbr.double_sided = resolved.state.double_sided;
+                    if (resolved.base_color_texture) {
+                        const auto index = textureIndex(*resolved.base_color_texture);
+                        if (!index) {
+                            return std::unexpected(StaticRenderError{StaticRenderErrorCode::AssetLoadFailed,
+                                                                     instance.object, *resolved.base_color_texture});
+                        }
+                        pbr.base_color_texture = *index;
+                    }
+                    if (resolved.metallic_roughness_texture) {
+                        const auto index = textureIndex(*resolved.metallic_roughness_texture);
+                        if (!index) {
+                            return std::unexpected(StaticRenderError{StaticRenderErrorCode::AssetLoadFailed,
+                                                                     instance.object,
+                                                                     *resolved.metallic_roughness_texture});
+                        }
+                        pbr.metallic_roughness_texture = *index;
+                    }
                     material = pbr;
                 }
             }

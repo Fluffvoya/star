@@ -909,3 +909,103 @@ STAR_TEST(staticRenderSnapshotAppliesInstanceMaterials) {
     std::error_code error;
     std::filesystem::remove(material_path, error);
 }
+
+STAR_TEST(staticRenderSnapshotResolvesMaterialTexturesAndStates) {
+    using namespace star;
+    SnapshotFixture fixture;
+    const auto mesh_id = fixture.write();
+    const auto material_id = Guid::generate();
+    const auto texture_id = Guid::generate();
+    const auto material_path =
+        std::filesystem::temp_directory_path() / ("star-scene-" + Guid::generate().toString() + ".mat");
+    const auto texture_path =
+        std::filesystem::temp_directory_path() / ("star-scene-" + Guid::generate().toString() + ".stex");
+    {
+        const TextureAsset texture{TextureColorSpace::Color, {{1, 1, {200, 40, 10, 255}}}};
+        const auto bytes = writeTextureAsset(texture).value();
+        std::ofstream output(texture_path, std::ios::binary);
+        output.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        STAR_CHECK(output.good());
+    }
+    const auto write_material = [&](std::string_view depth_test) {
+        std::ofstream material(material_path, std::ios::binary);
+        material << "Type: star::Material\n"
+                    "Version: 1\n"
+                    "Properties:\n"
+                    "  Shader: "
+                 << Guid::generate().toString()
+                 << "\n"
+                    "  Parameters:\n"
+                    "    BaseColor: [1, 1, 1, 1]\n"
+                    "    BaseColorTexture: "
+                 << texture_id.toString()
+                 << "\n"
+                    "    MetallicRoughnessTexture: "
+                 << texture_id.toString()
+                 << "\n"
+                    "  RenderState:\n"
+                    "    Blend: Opaque\n"
+                    "    Shading: Unlit\n"
+                    "    DoubleSided: true\n"
+                    "    DepthTest: "
+                 << depth_test << "\n";
+        STAR_CHECK(material.good());
+    };
+    write_material("true");
+
+    World world;
+    auto &scene = *world.createScene().value();
+    const auto mesh = scene.createObject("Mesh").value();
+    const MeshRenderer renderer{mesh_id, {material_id}, true, 1};
+    STAR_CHECK(scene.queueAddComponent(mesh, componentTypeId<MeshRenderer>(), &renderer));
+    STAR_CHECK(scene.commitCommands());
+
+    AssetManager assets;
+    STAR_CHECK(assets.registerAsset<StaticModelAsset>(mesh_id, fixture.path));
+    STAR_CHECK(assets.registerAsset<MaterialAsset>(material_id, material_path));
+    STAR_CHECK(assets.registerAsset<TextureAsset>(texture_id, texture_path));
+
+    const auto snapshot = extractStaticRenderSnapshot(scene, assets).value();
+    STAR_CHECK(snapshot.model.parts.size() == 1);
+    STAR_CHECK(snapshot.model.textures.size() == 1);
+    const auto &material = snapshot.model.parts.front().material;
+    STAR_CHECK(material.has_value());
+    STAR_CHECK(material->shading == MaterialShadingModel::Unlit);
+    STAR_CHECK(material->double_sided);
+    STAR_CHECK(material->base_color_texture == 0);
+    STAR_CHECK(material->metallic_roughness_texture == 0);
+
+    // Loaded assets are cached by GUID, so an invalid depth state needs its own asset.
+    const auto bad_material_id = Guid::generate();
+    const auto bad_material_path =
+        std::filesystem::temp_directory_path() / ("star-scene-" + Guid::generate().toString() + ".mat");
+    {
+        std::ofstream material(bad_material_path, std::ios::binary);
+        material << "Type: star::Material\n"
+                    "Version: 1\n"
+                    "Properties:\n"
+                    "  Shader: "
+                 << Guid::generate().toString()
+                 << "\n"
+                    "  Parameters:\n"
+                    "    BaseColor: [1, 1, 1, 1]\n"
+                    "  RenderState:\n"
+                    "    Blend: Opaque\n"
+                    "    Shading: Lit\n"
+                    "    DoubleSided: false\n"
+                    "    DepthTest: false\n";
+        STAR_CHECK(material.good());
+    }
+    const auto bad_mesh = scene.createObject("BadMesh").value();
+    const MeshRenderer bad_renderer{mesh_id, {bad_material_id}, true, 1};
+    STAR_CHECK(scene.queueAddComponent(bad_mesh, componentTypeId<MeshRenderer>(), &bad_renderer));
+    STAR_CHECK(scene.commitCommands());
+    STAR_CHECK(assets.registerAsset<MaterialAsset>(bad_material_id, bad_material_path));
+    const auto rejected = extractStaticRenderSnapshot(scene, assets);
+    STAR_CHECK(!rejected && rejected.error().code == StaticRenderErrorCode::InvalidMaterial);
+
+    std::error_code error;
+    std::filesystem::remove(material_path, error);
+    std::filesystem::remove(bad_material_path, error);
+    std::filesystem::remove(texture_path, error);
+}
