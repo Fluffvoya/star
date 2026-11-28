@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace star {
 namespace {
@@ -17,6 +18,22 @@ std::mutex &getLogMutex() {
 std::unique_ptr<std::ofstream> &getFileSink() {
     static std::unique_ptr<std::ofstream> sink;
     return sink;
+}
+
+struct SinkEntry {
+    log::LogSinkId id;
+    log::LogSinkFn function;
+    void *user_data;
+};
+
+std::vector<SinkEntry> &getSinks() {
+    static std::vector<SinkEntry> sinks;
+    return sinks;
+}
+
+log::LogSinkId &getNextSinkId() {
+    static log::LogSinkId next = 1;
+    return next;
 }
 
 [[nodiscard]] const char *levelName(LogLevel level) {
@@ -48,6 +65,27 @@ std::string_view LogCategory::getName() const noexcept { return m_name.getString
 
 namespace log {
 
+LogSinkId addSink(LogSinkFn sink, void *user_data) noexcept {
+    if (sink == nullptr) {
+        return 0;
+    }
+    std::scoped_lock lock(getLogMutex());
+    const LogSinkId id = getNextSinkId()++;
+    try {
+        getSinks().push_back(SinkEntry{id, sink, user_data});
+    } catch (...) {
+        return 0;
+    }
+    return id;
+}
+
+void removeSink(LogSinkId id) noexcept {
+    std::scoped_lock lock(getLogMutex());
+    auto &sinks = getSinks();
+    sinks.erase(std::remove_if(sinks.begin(), sinks.end(), [id](const SinkEntry &entry) { return entry.id == id; }),
+                sinks.end());
+}
+
 std::expected<void, SinkError> setFileSink(const std::filesystem::path &path) noexcept {
     try {
         auto sink = std::make_unique<std::ofstream>(path, std::ios::out | std::ios::app);
@@ -78,16 +116,38 @@ void flush() noexcept {
 void write(const LogCategory &category, LogLevel level, std::string_view message) {
     const std::string line = std::format("[{}] {}: {}\n", levelName(level), category.getName(), message);
 
-    std::scoped_lock lock(getLogMutex());
-    std::fwrite(line.data(), 1, line.size(), stderr);
-    if (getFileSink()) {
-        getFileSink()->write(line.data(), static_cast<std::streamsize>(line.size()));
+    std::vector<SinkEntry> sinks;
+    {
+        std::scoped_lock lock(getLogMutex());
+        std::fwrite(line.data(), 1, line.size(), stderr);
+        if (getFileSink()) {
+            getFileSink()->write(line.data(), static_cast<std::streamsize>(line.size()));
+            if (level >= LogLevel::Error) {
+                getFileSink()->flush();
+            }
+        }
         if (level >= LogLevel::Error) {
-            getFileSink()->flush();
+            std::fflush(stderr);
+        }
+        if (!getSinks().empty()) {
+            try {
+                sinks = getSinks();
+            } catch (...) {
+                return;
+            }
         }
     }
-    if (level >= LogLevel::Error) {
-        std::fflush(stderr);
+
+    if (sinks.empty()) {
+        return;
+    }
+    const LogRecord record{category.getName(), level, message};
+    for (const SinkEntry &sink : sinks) {
+        try {
+            sink.function(record, sink.user_data);
+        } catch (...) {
+            // A failing sink must not take the logging path down.
+        }
     }
 }
 

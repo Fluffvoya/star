@@ -24,6 +24,8 @@ enum class WindowEventType : std::uint8_t {
     MouseButtonDown,
     MouseButtonUp,
     MouseWheel,
+    // `code` holds the Unicode codepoint.
+    TextInput,
 };
 
 struct WindowEvent {
