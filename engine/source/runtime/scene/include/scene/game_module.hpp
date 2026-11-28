@@ -65,4 +65,8 @@ struct GameModuleDescriptor {
 
 using GetGameModuleDescriptor = const GameModuleDescriptor *(*)() noexcept;
 
+// Resolves loader dependencies, ABI and the descriptor without registering or starting a module.
+[[nodiscard]] STAR_SCENE_API std::expected<reflect::ModuleId, GameModuleError>
+probeGameModule(const std::filesystem::path &path) noexcept;
+
 } // namespace star

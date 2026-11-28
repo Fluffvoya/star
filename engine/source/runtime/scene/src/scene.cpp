@@ -164,7 +164,7 @@ struct Scene::Impl {
     std::expected<void, SceneError> applyParent(const ParentCommand &command) noexcept;
     void unlink(Hierarchy &links) noexcept;
     void destroySubtree(ObjectHandle root, EndPlayReason reason) noexcept;
-    void refreshActivity(bool playing) noexcept;
+    void refreshActivity(bool playing, bool notify = true) noexcept;
     void propagateTransforms() noexcept;
 
     [[nodiscard]] ObjectStorage::Handle resolve(std::uint32_t index, std::uint32_t generation) const noexcept;
@@ -321,7 +321,7 @@ void Scene::Impl::destroySubtree(ObjectHandle root, EndPlayReason reason) noexce
     }
 }
 
-void Scene::Impl::refreshActivity(bool playing) noexcept {
+void Scene::Impl::refreshActivity(bool playing, bool notify) noexcept {
     for (std::size_t index = 0; index < objects.getSize(); ++index) {
         const auto root = objects.get(objects.getHandleAt(index))->object->getHandle();
         if (hierarchy(root).parent != ObjectHandle{}) {
@@ -336,14 +336,14 @@ void Scene::Impl::refreshActivity(bool playing) noexcept {
             const auto parent = hierarchy(node).parent;
             const bool active =
                 object.m_active && (parent == ObjectHandle{} || entry(parent)->object->m_active_in_hierarchy);
-            if (std::exchange(object.m_active_in_hierarchy, active) != active) {
+            if (std::exchange(object.m_active_in_hierarchy, active) != active && notify) {
                 if (active) {
                     invoke(item, [](GameObject &value) { value.onEnable(); });
                 } else {
                     invoke(item, [](GameObject &value) { value.onDisable(); });
                 }
             }
-            if (playing && active && !object.m_pending_destroy && !std::exchange(object.m_begun_play, true)) {
+            if (notify && playing && active && !object.m_pending_destroy && !std::exchange(object.m_begun_play, true)) {
                 invoke(item, [](GameObject &value) { value.onBeginPlay(); });
             }
         }
@@ -1059,8 +1059,8 @@ const serialization::ArchiveValue::Mapping &SceneArchiveAccess::sceneFields(cons
     return scene.m_impl->archive_fields;
 }
 
-std::expected<std::vector<ArchivedObject>, serialization::ArchiveError> SceneArchiveAccess::capture(const Scene &scene,
-                                                                                                    ObjectHandle root) {
+std::expected<std::vector<ArchivedObject>, serialization::ArchiveError>
+SceneArchiveAccess::capture(const Scene &scene, ObjectHandle root, serialization::CapturePolicy policy) {
     using namespace serialization;
     auto &impl = *scene.m_impl;
     std::vector<ArchivedObject> records;
@@ -1108,7 +1108,7 @@ std::expected<std::vector<ArchivedObject>, serialization::ArchiveError> SceneArc
                     extensions = &known->second;
                 }
             }
-            auto document = captureObject(*pool.type, value->second.get(), *extensions, CapturePolicy::OmitDefaults);
+            auto document = captureObject(*pool.type, value->second.get(), *extensions, policy);
             if (!document) {
                 document.error().path.insert(0, "/GameObjects/" + object.getGuid().toString() + "/Components/" +
                                                     std::string(pool.type->name));
@@ -1140,7 +1140,7 @@ std::expected<std::vector<ArchivedObject>, serialization::ArchiveError> SceneArc
 
 std::expected<void, serialization::ArchiveError>
 SceneArchiveAccess::restore(Scene &scene, std::span<ArchivedObject> objects, serialization::LoadPolicy policy,
-                            std::vector<serialization::ArchiveError> &diagnostics) {
+                            std::vector<serialization::ArchiveError> &diagnostics, SceneSnapshotRestore mode) {
     using namespace serialization;
     auto &impl = *scene.m_impl;
     if (scene.isBusy()) {
@@ -1166,6 +1166,7 @@ SceneArchiveAccess::restore(Scene &scene, std::span<ArchivedObject> objects, ser
         }
     } rollback{impl, attached, original_order};
 
+    std::vector<std::pair<ComponentValue *, ComponentValue>> authored_values;
     attached.reserve(objects.size());
     for (auto &record : objects) {
         const auto location = "/GameObjects/" + record.guid.toString();
@@ -1272,6 +1273,13 @@ SceneArchiveAccess::restore(Scene &scene, std::span<ArchivedObject> objects, ser
                 diagnostic.path.insert(0, component_path);
                 diagnostics.push_back(std::move(diagnostic));
             }
+            if (mode == SceneSnapshotRestore::Reload) {
+                auto saved = makeComponentValue(*pool->second.type, value->second.get());
+                if (!saved) {
+                    return std::unexpected(ArchiveError{ArchiveErrorCode::OperationFailed, component_path});
+                }
+                authored_values.emplace_back(&value->second, std::move(*saved));
+            }
             state->component_extensions.emplace(pool->first, std::move(applied->extensions));
         }
         entry.archive = std::move(state);
@@ -1300,6 +1308,23 @@ SceneArchiveAccess::restore(Scene &scene, std::span<ArchivedObject> objects, ser
         impl.invoke(entry, [](GameObject &object) { object.onCreate(); });
     }
     impl.refreshActivity(false);
+    if (mode == SceneSnapshotRestore::Reload) {
+        // Lifecycle hooks initialize the new instances. The captured scene still owns its authored state.
+        for (auto &[destination, saved] : authored_values) {
+            saved.get_deleter().type->ops.swap(destination->get(), saved.get());
+        }
+        impl.pending_components.clear();
+        impl.pending_parents.clear();
+        impl.pending_destroy.clear();
+        impl.pending_spawns.clear();
+        for (std::size_t i = 0; i < attached.size(); ++i) {
+            auto &object = *impl.entry(attached[i])->object;
+            object.m_name = std::move(objects[i].name);
+            object.m_active = objects[i].active;
+            object.m_pending_destroy = false;
+        }
+        impl.refreshActivity(false, false);
+    }
     impl.propagateTransforms();
     rollback.completed = true;
     return {};

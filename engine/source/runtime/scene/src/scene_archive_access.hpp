@@ -20,11 +20,13 @@ struct SceneArchiveAccess {
     static bool isBusy(const Scene &scene) noexcept;
     static serialization::ArchiveValue::Mapping &sceneFields(Scene &scene) noexcept;
     static const serialization::ArchiveValue::Mapping &sceneFields(const Scene &scene) noexcept;
-    static std::expected<std::vector<ArchivedObject>, serialization::ArchiveError> capture(const Scene &scene,
-                                                                                           ObjectHandle root);
+    static std::expected<std::vector<ArchivedObject>, serialization::ArchiveError>
+    capture(const Scene &scene, ObjectHandle root,
+            serialization::CapturePolicy policy = serialization::CapturePolicy::OmitDefaults);
     static std::expected<void, serialization::ArchiveError>
     restore(Scene &scene, std::span<ArchivedObject> objects, serialization::LoadPolicy policy,
-            std::vector<serialization::ArchiveError> &diagnostics);
+            std::vector<serialization::ArchiveError> &diagnostics,
+            SceneSnapshotRestore mode = SceneSnapshotRestore::Play);
 };
 
 } // namespace star

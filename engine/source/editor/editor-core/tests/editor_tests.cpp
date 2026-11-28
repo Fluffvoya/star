@@ -13,6 +13,9 @@
 
 #ifdef STAR_GAME_MODULE_PATH
 #include "fixtures/game-module/game_module_fixture.hpp"
+#if defined(__linux__)
+#include <dlfcn.h>
+#endif
 #endif
 
 namespace {
@@ -135,10 +138,9 @@ STAR_TEST(documentSavesAndReopensSceneFiles) {
 }
 
 #ifdef STAR_GAME_MODULE_PATH
-STAR_TEST(playCopyRunsIndependentGameObjectsAndKeepsEditorState) {
-    using namespace star;
-    using namespace star::editor;
-    const auto path = temp_scene_path(Guid::generate().toString());
+namespace {
+
+void writeGameScene(const std::filesystem::path &path) {
     {
         std::ofstream file(path);
         file << R"yaml(StarFile: Scene
@@ -151,8 +153,18 @@ GameObjects:
       - {Type: "game_fixture::Score", value: 5, future_field: retained}
       - {Type: "future::Unknown", future_value: 99}
 )yaml";
+        file.close();
         STAR_CHECK(file.good());
     }
+}
+
+} // namespace
+
+STAR_TEST(playCopyRunsIndependentGameObjectsAndKeepsEditorState) {
+    using namespace star;
+    using namespace star::editor;
+    const auto path = temp_scene_path(Guid::generate().toString());
+    writeGameScene(path);
     auto opened = EditorDocument::open(path, STAR_GAME_MODULE_PATH);
     STAR_CHECK(opened);
     auto &document = **opened;
@@ -181,4 +193,105 @@ GameObjects:
     STAR_CHECK(document.redo() && document.findSelected()->getName() == "Unsaved");
     std::filesystem::remove(path);
 }
+
+STAR_TEST(reloadsGameModuleAndPreservesDocumentAcrossFailure) {
+    using namespace star;
+    using namespace star::editor;
+    const auto path = temp_scene_path(Guid::generate().toString());
+    writeGameScene(path);
+    const auto recovery = path.parent_path() / "Recovery";
+    auto opened = EditorDocument::open(path, STAR_GAME_MODULE_PATH);
+    STAR_CHECK(opened);
+    auto &document = **opened;
+    const auto guid = *Guid::parse("00000000000000000000000000000001");
+    const auto score = componentTypeId<game_fixture::Score>();
+    document.select(guid, false);
+    document.execute(std::make_unique<RenameObjectCommand>(guid, "Unsaved"));
+    document.execute(std::make_unique<SetPropertyCommand>(guid, score, std::vector<std::string>{"value"}, "42"));
+    document.execute(std::make_unique<RenameObjectCommand>(guid, "Pending Redo"));
+    STAR_CHECK(document.undo() && document.canRedo());
+    auto play = document.createPlayCopy().value();
+    bool stopped = false;
+    const auto stop = [&] {
+        play.reset();
+        stopped = true;
+    };
+    STAR_CHECK(!document.reloadGameModule(path, recovery, stop));
+    STAR_CHECK(!stopped && play->getScene().getWorld().isPlaying());
+
+    const auto failed = document.reloadGameModule(STAR_FAILING_MODULE_PATH, recovery, stop);
+    STAR_CHECK(!failed && failed.error().code == EditorErrorCode::ReloadFailed);
+    STAR_CHECK(stopped && !play && !document.isRecovering());
+    STAR_CHECK(document.findSelected()->tryGetComponent<game_fixture::Score>()->value == 42);
+    STAR_CHECK(document.findSelected()->getName() == "Unsaved" && document.isDirty());
+    STAR_CHECK(document.undo() && document.findSelected()->tryGetComponent<game_fixture::Score>()->value == 6);
+    STAR_CHECK(document.redo() && document.findSelected()->tryGetComponent<game_fixture::Score>()->value == 42);
+    STAR_CHECK(document.canRedo());
+
+    STAR_CHECK(document.reloadGameModule(STAR_RELOAD_MODULE_PATH, recovery));
+    STAR_CHECK(document.getGameModulePath() == STAR_RELOAD_MODULE_PATH);
+    const auto *migrated = document.findSelected()->tryGetComponent<game_fixture::Score>();
+    STAR_CHECK(migrated && migrated->value == 42 && migrated->bonus == 7);
+    const auto yaml = saveSceneYaml(document.getScene());
+    STAR_CHECK(yaml && yaml->find("future_field") != std::string::npos &&
+               yaml->find("future::Unknown") != std::string::npos);
+    STAR_CHECK(document.isDirty() && document.findSelected()->getGuid() == guid);
+    STAR_CHECK(!document.undo() && document.canUndo() && document.canRedo());
+    STAR_CHECK(document.redo() && document.findSelected()->getName() == "Pending Redo");
+    auto replay = document.createPlayCopy();
+    STAR_CHECK(replay && (*replay)->getScene().getWorld().tick(1.0F / 60.0F));
+    STAR_CHECK(document.findSelected()->tryGetComponent<game_fixture::Score>()->value == 42);
+    std::ifstream source(path);
+    const std::string text(std::istreambuf_iterator<char>{source}, {});
+    STAR_CHECK(text.find("Name: Actor") != std::string::npos);
+    source.close();
+    std::filesystem::remove(path);
+}
+
+#if defined(__linux__)
+STAR_TEST(reloadRetainsSnapshotWhenBothModuleVersionsFail) {
+    using namespace star;
+    using namespace star::editor;
+    const auto dir = temp_scene_path(Guid::generate().toString()).replace_extension();
+    STAR_CHECK(std::filesystem::create_directory(dir));
+    const auto module_path = dir / "game.so";
+    STAR_CHECK(std::filesystem::copy_file(STAR_GAME_MODULE_PATH, module_path));
+    const auto path = dir / "game.scene";
+    writeGameScene(path);
+    auto document = EditorDocument::open(path, module_path).value();
+    const auto guid = *Guid::parse("00000000000000000000000000000001");
+    document->select(guid, false);
+    document->execute(std::make_unique<RenameObjectCommand>(guid, "Recover Me"));
+    std::filesystem::path old_image;
+    for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+        if (entry.path().filename().string().starts_with(".star-module-")) {
+            old_image = entry.path();
+        }
+    }
+    STAR_CHECK(!old_image.empty() && std::filesystem::remove(old_image));
+    const auto recovery = dir / "Recovery";
+    const auto failed = document->reloadGameModule(STAR_FAILING_MODULE_PATH, recovery);
+    STAR_CHECK(!failed && failed.error().code == EditorErrorCode::RecoveryRequired);
+    STAR_CHECK(document->isRecovering() && !document->save() && !document->createPlayCopy());
+    STAR_CHECK(std::filesystem::is_directory(recovery));
+    bool snapshot_written = false;
+    bool diagnostic_written = false;
+    for (const auto &entry : std::filesystem::directory_iterator(recovery)) {
+        snapshot_written |= entry.path().extension() == ".snapshot" && entry.file_size() > 0;
+        diagnostic_written |= entry.path().extension() == ".log" && entry.file_size() > 0;
+    }
+    STAR_CHECK(snapshot_written && diagnostic_written);
+    void *still_loaded = dlopen(old_image.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+    if (still_loaded) {
+        dlclose(still_loaded);
+    }
+    STAR_CHECK(!still_loaded);
+    STAR_CHECK(document->reloadGameModule(module_path, recovery));
+    STAR_CHECK(!document->isRecovering() && document->isDirty());
+    STAR_CHECK(document->findSelected()->getName() == "Recover Me" && document->undo());
+    STAR_CHECK(document->findSelected()->getName() == "Actor");
+    document.reset();
+    std::filesystem::remove_all(dir);
+}
+#endif
 #endif

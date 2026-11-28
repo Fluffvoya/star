@@ -9,6 +9,7 @@ inline constexpr std::string_view object_type = "game_fixture::Actor";
 
 struct Score {
     int value = 0;
+    int bonus = 7;
 };
 
 } // namespace game_fixture

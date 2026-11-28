@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -22,6 +23,8 @@ enum class EditorErrorCode : std::uint8_t {
     FileWriteFailed,
     GameModuleFailed,
     PlayFailed,
+    ReloadFailed,
+    RecoveryRequired,
 };
 
 struct EditorError {
@@ -41,6 +44,10 @@ class STAR_EDITORCORE_API EditorDocument final {
     [[nodiscard]] static std::expected<std::shared_ptr<EditorDocument>, EditorError>
     open(const std::filesystem::path &scene_path, const std::filesystem::path &game_module = {});
     [[nodiscard]] std::expected<std::shared_ptr<EditorDocument>, EditorError> createPlayCopy();
+    // Called at an editor frame boundary. The callback stops PIE after preflight succeeds.
+    [[nodiscard]] std::expected<void, EditorError> reloadGameModule(const std::filesystem::path &source,
+                                                                    const std::filesystem::path &recovery_directory,
+                                                                    const std::function<void()> &stop_play = {});
 
     ~EditorDocument();
     EditorDocument(const EditorDocument &) = delete;
@@ -51,6 +58,7 @@ class STAR_EDITORCORE_API EditorDocument final {
     [[nodiscard]] const std::filesystem::path &getGameModulePath() const noexcept { return m_game_module; }
     [[nodiscard]] const std::string &getName() const noexcept { return m_name; }
     [[nodiscard]] bool isDirty() const noexcept { return m_dirty; }
+    [[nodiscard]] bool isRecovering() const noexcept { return !m_recovery_snapshot.empty(); }
     void markDirty() noexcept { m_dirty = true; }
 
     [[nodiscard]] std::expected<void, EditorError> save(const std::filesystem::path &scene_path);
@@ -60,8 +68,8 @@ class STAR_EDITORCORE_API EditorDocument final {
     void execute(std::unique_ptr<EditorCommand> command);
     [[nodiscard]] bool undo();
     [[nodiscard]] bool redo();
-    [[nodiscard]] bool canUndo() const noexcept { return m_undo_index > 0; }
-    [[nodiscard]] bool canRedo() const noexcept { return m_undo_index < m_undo.size(); }
+    [[nodiscard]] bool canUndo() const noexcept { return !isRecovering() && m_undo_index > 0; }
+    [[nodiscard]] bool canRedo() const noexcept { return !isRecovering() && m_undo_index < m_undo.size(); }
     [[nodiscard]] std::string_view getUndoName() const noexcept;
     [[nodiscard]] std::string_view getRedoName() const noexcept;
 
@@ -72,9 +80,11 @@ class STAR_EDITORCORE_API EditorDocument final {
 
   private:
     EditorDocument();
+    struct ModuleImage;
     [[nodiscard]] std::expected<void, EditorError> loadGameModule(const std::filesystem::path &path);
     [[nodiscard]] bool hasSelection(const Guid &guid) const noexcept;
 
+    std::unique_ptr<ModuleImage> m_module_image;
     std::unique_ptr<World> m_world;
     Scene *m_scene = nullptr;
     std::filesystem::path m_path;
@@ -84,6 +94,7 @@ class STAR_EDITORCORE_API EditorDocument final {
     std::vector<Guid> m_selection;
     std::vector<std::unique_ptr<EditorCommand>> m_undo;
     std::size_t m_undo_index = 0;
+    std::vector<std::byte> m_recovery_snapshot;
 };
 
 } // namespace star::editor

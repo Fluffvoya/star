@@ -94,14 +94,15 @@ bool CreateObjectCommand::execute(EditorDocument &document) {
     return true;
 }
 
-void CreateObjectCommand::undo(EditorDocument &document) {
+bool CreateObjectCommand::undo(EditorDocument &document) {
     Scene &scene = document.getScene();
-    if (GameObject *object = scene.findObject(m_guid); object != nullptr) {
-        static_cast<void>(scene.queueDestroy(object->getHandle()));
-        static_cast<void>(scene.commitCommands());
+    const auto *object = scene.findObject(m_guid);
+    if (!object || !scene.queueDestroy(object->getHandle()) || !scene.commitCommands()) {
+        return false;
     }
     document.clearSelection();
     document.markDirty();
+    return true;
 }
 
 DeleteObjectCommand::DeleteObjectCommand(Guid object) : m_object(object) {}
@@ -132,16 +133,16 @@ bool DeleteObjectCommand::execute(EditorDocument &document) {
     return true;
 }
 
-void DeleteObjectCommand::undo(EditorDocument &document) {
+bool DeleteObjectCommand::undo(EditorDocument &document) {
     if (!m_captured) {
-        return;
+        return false;
     }
     Scene &scene = document.getScene();
     auto restored =
         instantiatePrefabYaml(scene, m_snapshot, m_prefab_asset, {}, serialization::LoadPolicy::Preserve, true);
     if (!restored) {
         log::warning(k_log_category, "Cannot restore the deleted object");
-        return;
+        return false;
     }
     if (m_parent.isValid()) {
         if (GameObject *parent = scene.findObject(m_parent); parent != nullptr) {
@@ -153,6 +154,7 @@ void DeleteObjectCommand::undo(EditorDocument &document) {
         document.select(object->getGuid(), false);
     }
     document.markDirty();
+    return true;
 }
 
 RenameObjectCommand::RenameObjectCommand(Guid object, std::string name) : m_object(object), m_name(std::move(name)) {}
@@ -173,14 +175,14 @@ bool RenameObjectCommand::execute(EditorDocument &document) {
     return true;
 }
 
-void RenameObjectCommand::undo(EditorDocument &document) {
-    if (!m_has_before) {
-        return;
+bool RenameObjectCommand::undo(EditorDocument &document) {
+    auto *object = document.getScene().findObject(m_object);
+    if (!object || !m_has_before) {
+        return false;
     }
-    if (GameObject *object = document.getScene().findObject(m_object); object != nullptr) {
-        object->setName(m_before);
-        document.markDirty();
-    }
+    object->setName(m_before);
+    document.markDirty();
+    return true;
 }
 
 SetPropertyCommand::SetPropertyCommand(Guid object, reflect::TypeId component, std::vector<std::string> path,
@@ -213,13 +215,12 @@ bool SetPropertyCommand::execute(EditorDocument &document) {
     return true;
 }
 
-void SetPropertyCommand::undo(EditorDocument &document) {
-    if (!m_has_before) {
-        return;
+bool SetPropertyCommand::undo(EditorDocument &document) {
+    if (!m_has_before || !apply(document, m_before)) {
+        return false;
     }
-    if (apply(document, m_before)) {
-        document.markDirty();
-    }
+    document.markDirty();
+    return true;
 }
 
 SetTransformCommand::SetTransformCommand(Guid object, Transform transform) : m_object(object), m_transform(transform) {}
@@ -239,12 +240,14 @@ bool SetTransformCommand::execute(EditorDocument &document) {
     return true;
 }
 
-void SetTransformCommand::undo(EditorDocument &document) {
+bool SetTransformCommand::undo(EditorDocument &document) {
     auto *object = document.getScene().findObject(m_object);
-    if (object && m_before) {
-        object->setTransform(*m_before);
-        document.markDirty();
+    if (!object || !m_before) {
+        return false;
     }
+    object->setTransform(*m_before);
+    document.markDirty();
+    return true;
 }
 
 } // namespace star::editor

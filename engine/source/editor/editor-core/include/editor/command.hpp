@@ -17,7 +17,7 @@ class STAR_EDITORCORE_API EditorCommand {
     virtual ~EditorCommand() = default;
     [[nodiscard]] virtual std::string_view getName() const noexcept = 0;
     [[nodiscard]] virtual bool execute(EditorDocument &document) = 0;
-    virtual void undo(EditorDocument &document) = 0;
+    [[nodiscard]] virtual bool undo(EditorDocument &document) = 0;
 };
 
 // A resolved component property: the pointer to write and its metadata.
@@ -39,7 +39,7 @@ class STAR_EDITORCORE_API CreateObjectCommand final : public EditorCommand {
     CreateObjectCommand(std::string name, Guid parent = {});
     [[nodiscard]] std::string_view getName() const noexcept override;
     [[nodiscard]] bool execute(EditorDocument &document) override;
-    void undo(EditorDocument &document) override;
+    [[nodiscard]] bool undo(EditorDocument &document) override;
     [[nodiscard]] const Guid &getCreatedGuid() const noexcept { return m_guid; }
 
   private:
@@ -53,7 +53,7 @@ class STAR_EDITORCORE_API DeleteObjectCommand final : public EditorCommand {
     explicit DeleteObjectCommand(Guid object);
     [[nodiscard]] std::string_view getName() const noexcept override;
     [[nodiscard]] bool execute(EditorDocument &document) override;
-    void undo(EditorDocument &document) override;
+    [[nodiscard]] bool undo(EditorDocument &document) override;
 
   private:
     Guid m_object;
@@ -68,7 +68,7 @@ class STAR_EDITORCORE_API RenameObjectCommand final : public EditorCommand {
     RenameObjectCommand(Guid object, std::string name);
     [[nodiscard]] std::string_view getName() const noexcept override;
     [[nodiscard]] bool execute(EditorDocument &document) override;
-    void undo(EditorDocument &document) override;
+    [[nodiscard]] bool undo(EditorDocument &document) override;
 
   private:
     Guid m_object;
@@ -82,7 +82,7 @@ class STAR_EDITORCORE_API SetPropertyCommand final : public EditorCommand {
     SetPropertyCommand(Guid object, reflect::TypeId component, std::vector<std::string> path, std::string text);
     [[nodiscard]] std::string_view getName() const noexcept override;
     [[nodiscard]] bool execute(EditorDocument &document) override;
-    void undo(EditorDocument &document) override;
+    [[nodiscard]] bool undo(EditorDocument &document) override;
 
   private:
     [[nodiscard]] bool apply(EditorDocument &document, std::string_view text);
@@ -100,7 +100,7 @@ class STAR_EDITORCORE_API SetTransformCommand final : public EditorCommand {
     SetTransformCommand(Guid object, Transform transform);
     [[nodiscard]] std::string_view getName() const noexcept override;
     [[nodiscard]] bool execute(EditorDocument &document) override;
-    void undo(EditorDocument &document) override;
+    [[nodiscard]] bool undo(EditorDocument &document) override;
 
   private:
     Guid m_object;
