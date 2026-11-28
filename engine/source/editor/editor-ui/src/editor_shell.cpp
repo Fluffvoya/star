@@ -2,6 +2,7 @@
 
 #include "core/log.hpp"
 #include "editor/command.hpp"
+#include "project_build.hpp"
 #include "scene/world.hpp"
 #include "scene_viewport.hpp"
 
@@ -80,6 +81,8 @@ struct EditorShell::Impl {
     bool simulate = false;
     bool step_requested = false;
     std::string reload_status;
+    ProjectBuild project_build;
+    bool quit_after_build = false;
     std::unique_ptr<SceneViewport> scene_viewport;
     std::filesystem::path project_root;
     std::shared_ptr<EditorProject> project;
@@ -152,6 +155,58 @@ struct EditorShell::Impl {
         play_paused = false;
         step_requested = false;
         rename_target = {};
+    }
+
+    void reloadActiveModules() {
+        if (gameModulePaths().empty()) {
+            return;
+        }
+        const auto result =
+            document->reloadGameModules(gameModulePaths(), project_root / "Saved" / "Recovery", [this] { stopPlay(); });
+        rename_target = {};
+        if (result) {
+            reload_status.clear();
+            log::info(k_log_category, "Game modules reloaded");
+        } else {
+            reload_status = result.error().message;
+            log::error(k_log_category, "{}", reload_status);
+        }
+    }
+
+    void startBuild() {
+        const auto &settings = project->getSettings();
+        const auto started =
+            project_build.start(project->resolve(settings.build_directory), settings.build_configuration);
+        if (!started) {
+            reload_status = started.error();
+            log::error(k_log_category, "Build could not start: {}", reload_status);
+        } else {
+            reload_status.clear();
+        }
+    }
+
+    void pollBuild() {
+        const auto status = project_build.poll();
+        if (!status) {
+            return;
+        }
+        if (*status != 0) {
+            reload_status = std::format("Build failed with exit code {}", *status);
+            log::error(k_log_category, "{}", reload_status);
+        }
+        if (std::exchange(quit_after_build, false)) {
+            requestTransition({}, true);
+        } else if (*status == 0) {
+            reloadActiveModules();
+        }
+    }
+
+    void requestQuit() {
+        if (project_build.isRunning()) {
+            quit_after_build = true;
+        } else {
+            requestTransition({}, true);
+        }
     }
 
     void drawPlayControls() {
@@ -314,7 +369,7 @@ struct EditorShell::Impl {
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Alt+F4")) {
-                requestTransition({}, true);
+                requestQuit();
             }
             ImGui::EndMenu();
         }
@@ -339,17 +394,13 @@ struct EditorShell::Impl {
         if (ImGui::BeginMenu("Play")) {
             drawPlayControls();
             ImGui::Separator();
-            if (ImGui::MenuItem("Reload Game Modules", nullptr, false, !gameModulePaths().empty())) {
-                const auto result = document->reloadGameModules(gameModulePaths(), project_root / "Saved" / "Recovery",
-                                                                [this] { stopPlay(); });
-                rename_target = {};
-                if (result) {
-                    reload_status.clear();
-                    log::info(k_log_category, "Game modules reloaded");
-                } else {
-                    reload_status = result.error().message;
-                    log::error(k_log_category, "{}", reload_status);
-                }
+            const bool can_reload = !gameModulePaths().empty() && !project_build.isRunning();
+            if (ImGui::MenuItem("Reload Game Modules", nullptr, false, can_reload)) {
+                reloadActiveModules();
+            }
+            if (ImGui::MenuItem("Build and Reload", nullptr, false,
+                                can_reload && project && !project->getSettings().build_directory.empty())) {
+                startBuild();
             }
             ImGui::EndMenu();
         }
@@ -378,6 +429,9 @@ struct EditorShell::Impl {
             if (play_document) {
                 ImGui::TextColored(ImVec4(0.95F, 0.74F, 0.32F, 1.0F), "%s", play_paused ? "Paused" : "Playing");
             }
+        }
+        if (project_build.isRunning()) {
+            ImGui::TextDisabled("%s", quit_after_build ? "Closing after build" : "Building...");
         }
         ImGui::EndMainMenuBar();
     }
@@ -824,6 +878,7 @@ struct EditorShell::Impl {
             rescan_content();
             next_scan = now + 2.0;
         }
+        pollBuild();
         handleShortcuts();
         draw_menu_bar();
         tickPlay(status.frame_time_ms * 0.001F);
@@ -918,7 +973,7 @@ bool EditorShell::shouldQuit() const noexcept { return !m_impl || m_impl->quit; 
 
 void EditorShell::requestQuit() {
     if (m_impl) {
-        m_impl->requestTransition({}, true);
+        m_impl->requestQuit();
     }
 }
 
