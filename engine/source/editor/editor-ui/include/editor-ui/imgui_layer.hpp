@@ -43,6 +43,9 @@ class STAR_EDITORUI_API ImGuiLayer final {
     void beginFrame(std::uint32_t width, std::uint32_t height, float delta_seconds);
     // Finishes the ImGui frame. Draw data stays valid until the next beginFrame.
     void endFrame();
+    // The caller retains the view until unregisterTexture and completion of submitted draws.
+    [[nodiscard]] std::expected<std::uint64_t, UiError> registerTexture(rhi::TextureViewHandle view);
+    void unregisterTexture(std::uint64_t id);
     // Records the finished frame into one render pass. Clears the target when clear is true.
     // May be called more than once to render the same frame into several targets.
     void render(rhi::CommandList &commands, rhi::TextureHandle target, bool present_after,

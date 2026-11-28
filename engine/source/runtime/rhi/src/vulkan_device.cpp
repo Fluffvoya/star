@@ -1002,16 +1002,6 @@ class VulkanDevice final : public Device {
             if (pool == VK_NULL_HANDLE) {
                 return std::unexpected(DeviceError::OutOfMemory);
             }
-            VkDescriptorSetAllocateInfo allocate{};
-            allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            allocate.descriptorPool = pool;
-            allocate.descriptorSetCount = 1;
-            allocate.pSetLayouts = &layout->layout;
-            VulkanBindGroup group;
-            VkResult result = m_runtime.vk.vkAllocateDescriptorSets(m_runtime.device, &allocate, &group.set);
-            if (result != VK_SUCCESS) {
-                return std::unexpected(vulkanError(result));
-            }
             std::vector<VkDescriptorImageInfo> images;
             std::vector<VkDescriptorBufferInfo> buffers;
             std::vector<VkWriteDescriptorSet> writes;
@@ -1028,7 +1018,6 @@ class VulkanDevice final : public Device {
                 }
                 VkWriteDescriptorSet write{};
                 write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write.dstSet = group.set;
                 write.dstBinding = binding.binding;
                 write.descriptorCount = 1;
                 write.descriptorType = binding.descriptorType;
@@ -1058,9 +1047,27 @@ class VulkanDevice final : public Device {
                 }
                 writes.push_back(write);
             }
+            VkDescriptorSetAllocateInfo allocate{};
+            allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocate.descriptorPool = pool;
+            allocate.descriptorSetCount = 1;
+            allocate.pSetLayouts = &layout->layout;
+            VulkanBindGroup group;
+            const VkResult result = m_runtime.vk.vkAllocateDescriptorSets(m_runtime.device, &allocate, &group.set);
+            if (result != VK_SUCCESS) {
+                return std::unexpected(vulkanError(result));
+            }
+            const auto handle = m_pools.bind_groups.emplace(group);
+            if (!handle) {
+                m_runtime.vk.vkFreeDescriptorSets(m_runtime.device, pool, 1, &group.set);
+                return std::unexpected(handle.error());
+            }
+            for (auto &write : writes) {
+                write.dstSet = group.set;
+            }
             m_runtime.vk.vkUpdateDescriptorSets(m_runtime.device, static_cast<std::uint32_t>(writes.size()),
                                                 writes.data(), 0, nullptr);
-            return m_pools.bind_groups.emplace(group);
+            return handle;
         } catch (const std::bad_alloc &) {
             return std::unexpected(DeviceError::OutOfMemory);
         }
@@ -1287,8 +1294,14 @@ class VulkanDevice final : public Device {
 
     std::expected<void, DeviceError> destroy(BindGroupHandle group) noexcept override {
         std::scoped_lock lock(m_mutex);
-        if (m_pools.bind_groups.get(group) == nullptr) {
+        const auto *resolved = m_pools.bind_groups.get(group);
+        if (resolved == nullptr) {
             return std::unexpected(DeviceError::InvalidHandle);
+        }
+        if (const auto result =
+                m_runtime.vk.vkFreeDescriptorSets(m_runtime.device, m_descriptor_pool, 1, &resolved->set);
+            result != VK_SUCCESS) {
+            return std::unexpected(vulkanError(result));
         }
         m_pools.bind_groups.erase(group);
         return {};
@@ -1529,6 +1542,7 @@ class VulkanDevice final : public Device {
         }};
         VkDescriptorPoolCreateInfo create{};
         create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        create.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         create.maxSets = 256;
         create.poolSizeCount = static_cast<std::uint32_t>(sizes.size());
         create.pPoolSizes = sizes.data();

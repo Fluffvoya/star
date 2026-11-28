@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor-ui/export.hpp"
+#include "editor-ui/imgui_layer.hpp"
 #include "editor/document.hpp"
 
 #include <cstdint>
@@ -31,8 +32,12 @@ class STAR_EDITORUI_API EditorShell final {
     [[nodiscard]] std::shared_ptr<EditorDocument> getDocument() const;
     void setProjectRoot(std::filesystem::path root);
     [[nodiscard]] const std::filesystem::path &getProjectRoot() const noexcept;
+    // The device and layer outlive the shell.
+    [[nodiscard]] std::expected<void, UiError> initializeViewport(rhi::Device &device, ImGuiLayer &layer,
+                                                                  const std::filesystem::path &shader_directory);
 
     void draw(const EditorShellStatus &status);
+    void renderViewport(rhi::CommandList &commands);
 
     [[nodiscard]] bool shouldQuit() const noexcept;
     void requestQuit();
