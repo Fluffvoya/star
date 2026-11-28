@@ -141,6 +141,10 @@ std::expected<void, PlatformError> Window::presentSolidColor(std::uint8_t red, s
 
 bool Window::shouldClose() const { return !m_implementation || m_implementation->should_close; }
 
+void *Window::getNativeHandle() const noexcept {
+    return m_implementation ? static_cast<void *>(m_implementation->handle) : nullptr;
+}
+
 std::int32_t Window::getWidth() const { return m_implementation ? m_implementation->width : 0; }
 
 std::int32_t Window::getHeight() const { return m_implementation ? m_implementation->height : 0; }

@@ -160,8 +160,11 @@ std::expected<void, DeviceError> VulkanRuntime::initialize(bool validation, SDL_
         };
         std::vector<AcceptableDevice> acceptable;
         for (VkPhysicalDevice candidate : physical_devices) {
+            VkPhysicalDeviceVulkan11Features features11{};
+            features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
             VkPhysicalDeviceVulkan12Features features12{};
             features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+            features12.pNext = &features11;
             VkPhysicalDeviceVulkan13Features features13{};
             features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
             features13.pNext = &features12;
@@ -173,7 +176,7 @@ std::expected<void, DeviceError> VulkanRuntime::initialize(bool validation, SDL_
             inst.vkGetPhysicalDeviceFeatures2(candidate, &features);
             if (candidate_properties.apiVersion < VK_API_VERSION_1_3 || !features13.dynamicRendering ||
                 !features13.synchronization2 || !features13.shaderDemoteToHelperInvocation ||
-                !features12.timelineSemaphore || !features12.bufferDeviceAddress ||
+                !features11.shaderDrawParameters || !features12.timelineSemaphore || !features12.bufferDeviceAddress ||
                 !features12.runtimeDescriptorArray || !features12.descriptorBindingPartiallyBound ||
                 !features12.descriptorBindingSampledImageUpdateAfterBind ||
                 !features12.descriptorBindingStorageBufferUpdateAfterBind ||
@@ -232,8 +235,12 @@ std::expected<void, DeviceError> VulkanRuntime::initialize(bool validation, SDL_
         queue_create.queueFamilyIndex = queueFamily;
         queue_create.queueCount = 1;
         queue_create.pQueuePriorities = &priority;
+        VkPhysicalDeviceVulkan11Features enable11{};
+        enable11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+        enable11.shaderDrawParameters = VK_TRUE;
         VkPhysicalDeviceVulkan12Features enable12{};
         enable12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        enable12.pNext = &enable11;
         enable12.timelineSemaphore = VK_TRUE;
         enable12.bufferDeviceAddress = VK_TRUE;
         enable12.runtimeDescriptorArray = VK_TRUE;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rhi/export.hpp"
+#include "rhi/rhi.hpp"
 
 #include <cstdint>
 #include <expected>
@@ -9,8 +9,6 @@
 #include <vector>
 
 namespace star::rhi {
-
-enum class ShaderStage : std::uint8_t { Vertex, Fragment, Compute };
 
 enum class ShaderCompileError : std::uint8_t {
     InvalidSource,
