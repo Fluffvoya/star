@@ -2,6 +2,7 @@
 
 #include "core/log.hpp"
 #include "editor/command.hpp"
+#include "scene_viewport.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -62,6 +63,7 @@ struct EditorShell::Impl {
     bool show_hierarchy = true;
     bool show_inspector = true;
     bool show_content = true;
+    bool show_viewport = true;
     bool show_demo = false;
     bool auto_scroll = true;
     LogLevel minimum_level = LogLevel::Info;
@@ -70,6 +72,7 @@ struct EditorShell::Impl {
     std::deque<ConsoleEntry> entries;
 
     std::shared_ptr<EditorDocument> document;
+    std::unique_ptr<SceneViewport> scene_viewport;
     std::filesystem::path project_root;
     std::vector<std::filesystem::path> scenes;
     double next_scan = 0.0;
@@ -264,6 +267,7 @@ struct EditorShell::Impl {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Scene", nullptr, &show_viewport, static_cast<bool>(scene_viewport));
             ImGui::MenuItem("Hierarchy", nullptr, &show_hierarchy);
             ImGui::MenuItem("Inspector", nullptr, &show_inspector);
             ImGui::MenuItem("Content", nullptr, &show_content);
@@ -300,6 +304,7 @@ struct EditorShell::Impl {
         ImGui::DockBuilderDockWindow("Content", bottom);
         ImGui::DockBuilderDockWindow("Console", bottom);
         ImGui::DockBuilderDockWindow("Statistics", right_bottom);
+        ImGui::DockBuilderDockWindow("Scene", center);
         ImGui::DockBuilderFinish(dockspace_id);
     }
 
@@ -594,7 +599,7 @@ struct EditorShell::Impl {
         ImGui::Text("Frame %.2f ms", static_cast<double>(status.frame_time_ms));
         ImGui::Text("FPS %.1f", static_cast<double>(status.fps));
         ImGui::Separator();
-        ImGui::Text("Viewport %u x %u", status.width, status.height);
+        ImGui::Text("Window %u x %u", status.width, status.height);
         ImGui::Text("ImGui draw calls %u", status.draw_calls);
         if (document) {
             ImGui::Text("Objects %zu", document->getScene().getObjectCount());
@@ -642,6 +647,17 @@ struct EditorShell::Impl {
         draw_menu_bar();
         draw_hierarchy();
         draw_inspector();
+        if (scene_viewport && show_viewport) {
+            if (const auto *center = ImGui::DockBuilderGetCentralNode(dockspace_id)) {
+                ImGui::SetNextWindowDockID(center->ID, ImGuiCond_FirstUseEver);
+            }
+            if (ImGui::Begin("Scene", &show_viewport,
+                             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse) &&
+                document) {
+                scene_viewport->draw(*document, status.frame_time_ms * 0.001F);
+            }
+            ImGui::End();
+        }
         draw_content();
         draw_console();
         draw_statistics(status);
@@ -681,6 +697,22 @@ const std::filesystem::path &EditorShell::getProjectRoot() const noexcept {
 }
 
 void EditorShell::draw(const EditorShellStatus &status) { m_impl->draw_frame(status, ImGui::GetTime()); }
+
+std::expected<void, UiError> EditorShell::initializeViewport(rhi::Device &device, ImGuiLayer &layer,
+                                                             const std::filesystem::path &shader_directory) {
+    auto viewport = std::make_unique<SceneViewport>(device, layer);
+    if (auto initialized = viewport->initialize(shader_directory); !initialized) {
+        return std::unexpected(std::move(initialized.error()));
+    }
+    m_impl->scene_viewport = std::move(viewport);
+    return {};
+}
+
+void EditorShell::renderViewport(rhi::CommandList &commands) {
+    if (m_impl->scene_viewport) {
+        m_impl->scene_viewport->render(commands);
+    }
+}
 
 bool EditorShell::shouldQuit() const noexcept { return !m_impl || m_impl->quit; }
 

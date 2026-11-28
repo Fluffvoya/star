@@ -27,6 +27,8 @@ star_add_module(EditorUI editor-ui
     include/editor-ui/editor_shell.hpp
     src/imgui_layer.cpp
     src/editor_shell.cpp
+    src/scene_viewport.cpp
+    src/scene_viewport.hpp
 )
 
 target_link_libraries(StarEditorUI PUBLIC Star::Core Star::Platform Star::RHI Star::EditorCore PRIVATE StarImGui SDL3::SDL3)
@@ -38,8 +40,14 @@ if(STAR_SLANGC)
     set(ui_fragment "${CMAKE_CURRENT_BINARY_DIR}/imgui-ui-fragment.spv")
     star_compile_slang_spirv("${ui_vertex}" "${ui_shader}" vertexMain vertex)
     star_compile_slang_spirv("${ui_fragment}" "${ui_shader}" fragmentMain fragment)
-    add_custom_target(StarEditorUIShaders DEPENDS "${ui_vertex}" "${ui_fragment}")
-    set_property(TARGET StarEditorUIShaders PROPERTY STAR_UI_SPIRV "${ui_vertex};${ui_fragment}")
+    set(viewport_shader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene-viewport.slang")
+    set(viewport_vertex "${CMAKE_CURRENT_BINARY_DIR}/scene-viewport-vertex.spv")
+    set(viewport_fragment "${CMAKE_CURRENT_BINARY_DIR}/scene-viewport-fragment.spv")
+    star_compile_slang_spirv("${viewport_vertex}" "${viewport_shader}" vertexMain vertex)
+    star_compile_slang_spirv("${viewport_fragment}" "${viewport_shader}" fragmentMain fragment)
+    set(editor_shaders "${ui_vertex}" "${ui_fragment}" "${viewport_vertex}" "${viewport_fragment}")
+    add_custom_target(StarEditorUIShaders DEPENDS ${editor_shaders})
+    set_property(TARGET StarEditorUIShaders PROPERTY STAR_UI_SPIRV "${editor_shaders}")
     add_dependencies(StarEditorUI StarEditorUIShaders)
 else()
     message(STATUS "Star: EditorUI needs slangc to compile its ImGui shaders")

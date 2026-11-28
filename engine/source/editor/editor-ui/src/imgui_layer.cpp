@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -86,8 +87,22 @@ static_assert(sizeof(UiUniforms) == 16, "Uniform size must match the shader cons
         return ImGuiKey_A;
     case SDL_SCANCODE_C:
         return ImGuiKey_C;
+    case SDL_SCANCODE_D:
+        return ImGuiKey_D;
+    case SDL_SCANCODE_E:
+        return ImGuiKey_E;
+    case SDL_SCANCODE_F:
+        return ImGuiKey_F;
+    case SDL_SCANCODE_Q:
+        return ImGuiKey_Q;
+    case SDL_SCANCODE_R:
+        return ImGuiKey_R;
+    case SDL_SCANCODE_S:
+        return ImGuiKey_S;
     case SDL_SCANCODE_V:
         return ImGuiKey_V;
+    case SDL_SCANCODE_W:
+        return ImGuiKey_W;
     case SDL_SCANCODE_X:
         return ImGuiKey_X;
     case SDL_SCANCODE_Y:
@@ -184,6 +199,8 @@ struct ImGuiLayer::Impl {
     rhi::TextureViewHandle font_view;
     rhi::BufferHandle uniform_buffer;
     rhi::BindGroupHandle bind_group;
+    std::map<std::uint64_t, rhi::BindGroupHandle> images;
+    std::uint64_t next_image_id = 2;
     rhi::BufferHandle vertex_buffer;
     rhi::BufferHandle index_buffer;
     std::uint64_t vertex_capacity = 0;
@@ -424,6 +441,9 @@ ImGuiLayer::~ImGuiLayer() {
         return;
     }
     static_cast<void>(device->waitIdle());
+    for (const auto &[id, group] : m_impl->images) {
+        static_cast<void>(device->destroy(group));
+    }
     static_cast<void>(device->destroy(m_impl->bind_group));
     static_cast<void>(device->destroy(m_impl->font_view));
     static_cast<void>(device->destroy(m_impl->font_texture));
@@ -489,6 +509,29 @@ void ImGuiLayer::beginFrame(std::uint32_t width, std::uint32_t height, float del
 
 void ImGuiLayer::endFrame() { ImGui::Render(); }
 
+std::expected<std::uint64_t, UiError> ImGuiLayer::registerTexture(rhi::TextureViewHandle view) {
+    const std::array entries{
+        rhi::BindGroupEntry{0, {}, {}, m_impl->uniform_buffer, 0, sizeof(UiUniforms)},
+        rhi::BindGroupEntry{1, view, m_impl->sampler, {}, 0, 0},
+    };
+    const auto group = m_impl->device->createBindGroup(
+        {.layout = m_impl->bind_group_layout, .entries = entries, .debugName = "ImGui Image"});
+    if (!group) {
+        return std::unexpected(UiError{"Failed to bind the ImGui image"});
+    }
+    const auto id = m_impl->next_image_id++;
+    m_impl->images.emplace(id, *group);
+    return id;
+}
+
+void ImGuiLayer::unregisterTexture(std::uint64_t id) {
+    const auto found = m_impl->images.find(id);
+    if (found != m_impl->images.end()) {
+        static_cast<void>(m_impl->device->destroy(found->second));
+        m_impl->images.erase(found);
+    }
+}
+
 void ImGuiLayer::render(rhi::CommandList &commands, rhi::TextureHandle target, bool present_after,
                         const std::array<float, 4> &clear_color) {
     ImDrawData *draw_data = ImGui::GetDrawData();
@@ -542,11 +585,10 @@ void ImGuiLayer::render(rhi::CommandList &commands, rhi::TextureHandle target, b
         }
 
         if (uploaded) {
-            const std::array groups{m_impl->bind_group};
-            commands.bindGraphicsPipeline(m_impl->pipeline, groups);
             commands.bindVertexBuffer(m_impl->vertex_buffer);
             commands.bindIndexBuffer(m_impl->index_buffer, 0, sizeof(ImDrawIdx) == 4);
 
+            rhi::BindGroupHandle bound_group;
             const ImVec2 position = draw_data->DisplayPos;
             std::uint32_t global_vertex_offset = 0;
             std::uint32_t global_index_offset = 0;
@@ -572,6 +614,19 @@ void ImGuiLayer::render(rhi::CommandList &commands, rhi::TextureHandle target, b
                         static_cast<std::int32_t>(std::min(clip_bottom, static_cast<float>(draw_data->DisplaySize.y)));
                     if (right <= x || bottom <= y) {
                         continue;
+                    }
+                    rhi::BindGroupHandle group = m_impl->bind_group;
+                    if (command.GetTexID() != ImTextureID{1}) {
+                        const auto texture = m_impl->images.find(command.GetTexID());
+                        if (texture == m_impl->images.end()) {
+                            continue;
+                        }
+                        group = texture->second;
+                    }
+                    if (bound_group != group) {
+                        const std::array groups{group};
+                        commands.bindGraphicsPipeline(m_impl->pipeline, groups);
+                        bound_group = group;
                     }
                     commands.setScissor(x, y, static_cast<std::uint32_t>(right - x),
                                         static_cast<std::uint32_t>(bottom - y));

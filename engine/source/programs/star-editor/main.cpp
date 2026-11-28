@@ -171,6 +171,10 @@ int main(int argc, char **argv) {
     std::unique_ptr<star::editor::ImGuiLayer> layer = std::move(*layer_result);
     star::editor::EditorShell shell;
     shell.setProjectRoot(project_root.empty() ? std::filesystem::path(".") : project_root);
+    if (const auto viewport = shell.initializeViewport(*device, *layer, executable_dir); !viewport) {
+        star::log::error(k_log_category, "Scene viewport unavailable: {}", viewport.error().message);
+        return 1;
+    }
 
     std::shared_ptr<star::editor::EditorDocument> document;
     if (!scene_path.empty()) {
@@ -272,6 +276,7 @@ int main(int argc, char **argv) {
         }
         star::rhi::CommandList *commands = *commands_result;
         commands->beginDebugMarker("Editor Frame");
+        shell.renderViewport(*commands);
 
         star::rhi::TextureHandle capture_texture;
         star::rhi::BufferHandle capture_readback;
@@ -334,7 +339,6 @@ int main(int argc, char **argv) {
     }
 
     star::log::info(k_log_category, "Last frame recorded {} ImGui draw calls", layer->getDrawCallCount());
-    layer.reset();
     static_cast<void>(device->waitIdle());
     static_cast<void>(device->destroy(swapchain));
     star::log::info(k_log_category, "Editor stopped after {} frames", rendered);

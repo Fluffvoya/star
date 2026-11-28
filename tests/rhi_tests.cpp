@@ -452,10 +452,14 @@ STAR_TEST(vulkanDeviceCreatesSampledTextureBindings) {
     const auto layout = (*device)->createBindGroupLayout({.entries = binding, .debugName = "rhi-bind-layout"});
     STAR_CHECK(layout);
     const std::array entry{BindGroupEntry{0, *view, *sampler, {}, 0, 0}};
-    const auto group = (*device)->createBindGroup({.layout = *layout, .entries = entry, .debugName = "rhi-bind-group"});
-    STAR_CHECK(group);
-    STAR_CHECK((*device)->destroy(*group) && (*device)->destroy(*layout) && (*device)->destroy(*view) &&
-               (*device)->destroy(*sampler) && (*device)->destroy(*texture));
+    for (int replacement = 0; replacement < 300; ++replacement) {
+        const auto group =
+            (*device)->createBindGroup({.layout = *layout, .entries = entry, .debugName = "rhi-bind-group"});
+        STAR_CHECK(group);
+        STAR_CHECK((*device)->destroy(*group));
+    }
+    STAR_CHECK((*device)->destroy(*layout) && (*device)->destroy(*view) && (*device)->destroy(*sampler) &&
+               (*device)->destroy(*texture));
 }
 
 } // namespace
