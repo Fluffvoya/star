@@ -47,6 +47,8 @@ struct MeshRenderer {
 };
 
 struct Light {
+    // A directional light follows the object's -Z axis; a point light sits at the object's origin.
+    bool directional = false;
     math::Vec3 color{1.0F, 1.0F, 1.0F};
     float intensity = 1.0F;
     float range = 10.0F;

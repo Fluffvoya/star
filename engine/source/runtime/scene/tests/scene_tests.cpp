@@ -6,6 +6,7 @@
 #include "scene/world.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -711,4 +712,138 @@ STAR_TEST(staticRenderSnapshotResolvesAssetsAndBakesWorldTransforms) {
 
     STAR_CHECK(scene.queueDestroy(mirrored));
     STAR_CHECK(extractStaticRenderSnapshot(scene, assets, 1).value().model.parts.size() == 1);
+}
+
+namespace {
+
+struct SnapshotFixture {
+    star::StaticModelAsset model;
+    std::filesystem::path path =
+        std::filesystem::temp_directory_path() / ("star-scene-" + star::Guid::generate().toString() + ".smdl");
+    ~SnapshotFixture() {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+
+    star::Guid write() {
+        auto &part = model.parts.emplace_back();
+        part.vertices = {{{0, 0, 0}, {0, 0, 1}, {}}, {{1, 0, 0}, {0, 0, 1}, {}}, {{0, 1, 0}, {0, 0, 1}, {}}};
+        part.indices = {0, 1, 2};
+        const auto bytes = star::writeModelAsset(model).value();
+        std::ofstream output(path, std::ios::binary);
+        output.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        return star::Guid::generate();
+    }
+};
+
+bool closeTo(float left, float right) { return std::abs(left - right) < 1e-5F; }
+
+bool closeTo(star::math::Vec3 left, star::math::Vec3 right) {
+    return closeTo(left.x, right.x) && closeTo(left.y, right.y) && closeTo(left.z, right.z);
+}
+
+} // namespace
+
+STAR_TEST(staticRenderSnapshotCarriesCamerasLightsAndBounds) {
+    using namespace star;
+    SnapshotFixture fixture;
+    const auto mesh_id = fixture.write();
+
+    World world;
+    auto &scene = *world.createScene().value();
+    const auto mesh = scene.createObject("Mesh").value();
+    const MeshRenderer renderer{mesh_id, {}, true, 1};
+    STAR_CHECK(scene.queueAddComponent(mesh, componentTypeId<MeshRenderer>(), &renderer));
+
+    const auto camera_object = scene.createObject("Camera").value();
+    const Camera camera{0.9F, 0.2F, 90.0F};
+    STAR_CHECK(scene.queueAddComponent(camera_object, componentTypeId<Camera>(), &camera));
+    auto *camera_transform = scene.findComponent<Transform>(camera_object);
+    camera_transform->position = {4.0F, 3.0F, 2.0F};
+
+    const auto sun_object = scene.createObject("Sun").value();
+    const Light sun{true, {1.0F, 0.95F, 0.9F}, 2.5F, 1.0F};
+    STAR_CHECK(scene.queueAddComponent(sun_object, componentTypeId<Light>(), &sun));
+    const auto sun_rotation = math::Quaternion::fromAxisAngle({1.0F, 0.0F, 0.0F}, math::pi * 0.5F);
+    scene.findComponent<Transform>(sun_object)->rotation = sun_rotation;
+
+    const auto lamp = scene.createObject("Lamp").value();
+    const Light point{{}, {0.2F, 0.4F, 1.0F}, 12.0F, 6.0F};
+    STAR_CHECK(scene.queueAddComponent(lamp, componentTypeId<Light>(), &point));
+    scene.findComponent<Transform>(lamp)->position = {1.0F, 2.0F, 3.0F};
+
+    STAR_CHECK(scene.commitCommands());
+    AssetManager assets;
+    STAR_CHECK(assets.registerAsset<StaticModelAsset>(mesh_id, fixture.path));
+
+    const auto snapshot = extractStaticRenderSnapshot(scene, assets).value();
+    STAR_CHECK(snapshot.cameras.size() == 1);
+    const auto &entry = snapshot.cameras.front();
+    STAR_CHECK(closeTo(entry.vertical_fov, 0.9F));
+    STAR_CHECK(closeTo(entry.near_plane, 0.2F));
+    STAR_CHECK(closeTo(entry.far_plane, 90.0F));
+    STAR_CHECK(closeTo(entry.world.columns[3].x, 4.0F));
+    STAR_CHECK(closeTo(entry.world.columns[3].y, 3.0F));
+    STAR_CHECK(closeTo(entry.world.columns[3].z, 2.0F));
+
+    STAR_CHECK(snapshot.directional_light.has_value());
+    STAR_CHECK(
+        closeTo(snapshot.directional_light->direction, math::normalize(sun_rotation.rotate({0.0F, 0.0F, 1.0F}))));
+    STAR_CHECK(closeTo(snapshot.directional_light->intensity, 2.5F));
+
+    STAR_CHECK(snapshot.point_lights.size() == 1);
+    STAR_CHECK(closeTo(snapshot.point_lights.front().position, {1.0F, 2.0F, 3.0F}));
+    STAR_CHECK(closeTo(snapshot.point_lights.front().range, 6.0F));
+
+    STAR_CHECK(closeTo(snapshot.bounds.center, {0.5F, 0.5F, 0.0F}));
+    STAR_CHECK(closeTo(snapshot.bounds.radius, std::sqrt(2.0F) * 0.5F));
+}
+
+STAR_TEST(staticRenderSnapshotCapsPointLights) {
+    using namespace star;
+    SnapshotFixture fixture;
+    const auto mesh_id = fixture.write();
+    World world;
+    auto &scene = *world.createScene().value();
+    const auto mesh = scene.createObject("Mesh").value();
+    const MeshRenderer renderer{mesh_id, {}, true, 1};
+    STAR_CHECK(scene.queueAddComponent(mesh, componentTypeId<MeshRenderer>(), &renderer));
+    const Light point{};
+    for (std::size_t index = 0; index < renderer::kMaxRenderPointLights + 3; ++index) {
+        const auto lamp = scene.createObject("Lamp").value();
+        STAR_CHECK(scene.queueAddComponent(lamp, componentTypeId<Light>(), &point));
+    }
+    STAR_CHECK(scene.commitCommands());
+    AssetManager assets;
+    STAR_CHECK(assets.registerAsset<StaticModelAsset>(mesh_id, fixture.path));
+    const auto snapshot = extractStaticRenderSnapshot(scene, assets).value();
+    STAR_CHECK(snapshot.point_lights.size() == renderer::kMaxRenderPointLights);
+}
+
+STAR_TEST(staticRenderSnapshotRejectsInvalidCameraAndLight) {
+    using namespace star;
+    SnapshotFixture fixture;
+    const auto mesh_id = fixture.write();
+    World world;
+    auto &scene = *world.createScene().value();
+    const auto mesh = scene.createObject("Mesh").value();
+    const MeshRenderer renderer{mesh_id, {}, true, 1};
+    STAR_CHECK(scene.queueAddComponent(mesh, componentTypeId<MeshRenderer>(), &renderer));
+    const auto camera_object = scene.createObject("Camera").value();
+    const Camera camera{0.0F, 0.1F, 10.0F};
+    STAR_CHECK(scene.queueAddComponent(camera_object, componentTypeId<Camera>(), &camera));
+    STAR_CHECK(scene.commitCommands());
+    AssetManager assets;
+    STAR_CHECK(assets.registerAsset<StaticModelAsset>(mesh_id, fixture.path));
+    const auto invalid_camera = extractStaticRenderSnapshot(scene, assets);
+    STAR_CHECK(!invalid_camera && invalid_camera.error().code == StaticRenderErrorCode::InvalidCamera);
+
+    STAR_CHECK(scene.queueRemoveComponent(camera_object, componentTypeId<Camera>()));
+    const auto lamp = scene.createObject("Lamp").value();
+    const Light invalid_light{{}, {1.0F, 1.0F, 1.0F}, 1.0F, 0.0F};
+    STAR_CHECK(scene.queueAddComponent(lamp, componentTypeId<Light>(), &invalid_light));
+    STAR_CHECK(scene.commitCommands());
+    const auto invalid_lighting = extractStaticRenderSnapshot(scene, assets);
+    STAR_CHECK(!invalid_lighting && invalid_lighting.error().code == StaticRenderErrorCode::InvalidLight);
 }

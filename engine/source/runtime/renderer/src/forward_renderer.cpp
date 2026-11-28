@@ -34,6 +34,8 @@ constexpr VkFormat environment_format = VK_FORMAT_R32G32B32A32_SFLOAT;
 constexpr VkFormat color_format = VK_FORMAT_R8G8B8A8_SRGB;
 constexpr VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
 constexpr std::size_t image_bytes = resolution.width * resolution.height * 4;
+constexpr auto default_sun_direction = Vector3{-0.45F, 0.85F, 0.35F};
+constexpr float default_sun_intensity = 3.5F;
 
 template <typename T> T vkInfo(VkStructureType type) {
     T info{};
@@ -55,6 +57,7 @@ struct Buffer {
     const VulkanRuntime &gpu;
     VkBuffer handle = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
+    VkDeviceSize size = 0;
 
     ~Buffer() {
         if (handle) {
@@ -62,18 +65,28 @@ struct Buffer {
         }
     }
 
-    void create(VkDeviceSize size, VkBufferUsageFlags flags, MemoryType memory) {
+    void create(VkDeviceSize bytes, VkBufferUsageFlags flags, MemoryType memory) {
         auto info = vkInfo<VkBufferCreateInfo>(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
-        info.size = size;
+        info.size = bytes;
         info.usage = flags;
         const auto allocation_info = vulkanAllocationInfo(memory);
         check(vmaCreateBuffer(gpu.allocator, &info, &allocation_info, &handle, &allocation, nullptr), "Create buffer");
+        size = bytes;
     }
 
     void upload(std::span<const std::byte> bytes, VkBufferUsageFlags flags) {
         create(bytes.size(), flags, MemoryType::Upload);
         check(vmaCopyMemoryToAllocation(gpu.allocator, bytes.data(), allocation, 0, bytes.size()),
               "Write staging buffer");
+    }
+
+    // Writes host-visible contents in place. The copy flushes non-coherent memory.
+    void write(std::span<const std::byte> bytes) {
+        if (bytes.size() > size) {
+            throw std::runtime_error("Host write exceeds buffer size");
+        }
+        check(vmaCopyMemoryToAllocation(gpu.allocator, bytes.data(), allocation, 0, bytes.size()),
+              "Write buffer contents");
     }
 };
 
@@ -141,7 +154,7 @@ struct PointLight {
     std::array<float, 4> color_intensity;
 };
 
-enum class DrawPass { Depth, Shadow, Color };
+enum class DrawPass { Depth, Shadow, ColorOpaque, ColorMasked, ColorTransparent };
 
 struct DrawPart {
     std::uint32_t index_count;
@@ -151,19 +164,22 @@ struct DrawPart {
     std::array<float, 4> factors;
     VkDescriptorSet textures = VK_NULL_HANDLE;
     bool cast_shadows = true;
+    MaterialBlendMode blend = MaterialBlendMode::Opaque;
+    math::Vec3 center{};
 };
 
-DrawConstants makeCamera(std::span<const StaticMeshVertex> vertices, bool front_view) {
+bool finite(Vector3 value) { return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z); }
+
+Vector3 column(const math::Mat4 &matrix, std::size_t index) {
+    const auto &value = matrix.columns[index];
+    return {value.x, value.y, value.z};
+}
+
+// Builds the four clip-space rows the shader applies to world positions.
+DrawConstants makeFramedCamera(const RenderBounds &bounds, bool front_view) {
     using namespace star::math;
-    Vector3 low = vertices.front().position;
-    Vector3 high = low;
-    for (const auto &vertex : vertices) {
-        const auto &p = vertex.position;
-        low = {std::min(low.x, p.x), std::min(low.y, p.y), std::min(low.z, p.z)};
-        high = {std::max(high.x, p.x), std::max(high.y, p.y), std::max(high.z, p.z)};
-    }
-    const auto center = (low + high) * 0.5F;
-    const float radius = std::max(length(high - low) * 0.5F, 1e-6F);
+    const auto center = bounds.center;
+    const float radius = std::max(bounds.radius, 1e-6F);
     const auto camera_direction = front_view ? Vector3{0, 0, 1} : normalize(Vector3{0.9F, 0.62F, 1.0F});
     const auto eye = center + camera_direction * (radius * 2.6F);
     const auto forward = normalize(center - eye);
@@ -189,6 +205,45 @@ DrawConstants makeCamera(std::span<const StaticMeshVertex> vertices, bool front_
     return constants;
 }
 
+bool validCamera(const RenderCamera &camera) {
+    const auto right = column(camera.world, 0);
+    const auto up = column(camera.world, 1);
+    const auto forward = column(camera.world, 2);
+    const auto eye = column(camera.world, 3);
+    return finite(right) && finite(up) && finite(forward) && finite(eye) && lengthSquared(right) > 1e-12F &&
+           lengthSquared(up) > 1e-12F && lengthSquared(forward) > 1e-12F && std::isfinite(camera.vertical_fov) &&
+           camera.vertical_fov > 0.0F && camera.vertical_fov < math::pi && std::isfinite(camera.near_plane) &&
+           std::isfinite(camera.far_plane) && camera.near_plane > 0.0F && camera.far_plane > camera.near_plane;
+}
+
+// Uses the scene camera transform. -Z is forward, so the third column points backward.
+DrawConstants makeSceneCamera(const RenderCamera &camera) {
+    using namespace star::math;
+    const auto eye = column(camera.world, 3);
+    const auto right = normalize(column(camera.world, 0));
+    const auto up = normalize(column(camera.world, 1));
+    const auto forward = normalize(-column(camera.world, 2));
+    constexpr float aspect = static_cast<float>(resolution.width) / resolution.height;
+    const float focal_y = 1.0F / std::tan(camera.vertical_fov * 0.5F);
+    const float focal_x = focal_y / aspect;
+    const float near_plane = camera.near_plane;
+    const float far_plane = camera.far_plane;
+    const float scale_z = far_plane / (far_plane - near_plane);
+    const auto row = [&](Vector3 direction) {
+        return std::array{direction.x, direction.y, direction.z, -dot(direction, eye)};
+    };
+    DrawConstants constants{};
+    constants.clip_x = row(right * focal_x);
+    constants.clip_y = row(up * -focal_y);
+    constants.clip_w = row(forward);
+    constants.clip_z = row(forward * scale_z);
+    constants.clip_z[3] -= near_plane * scale_z;
+    constants.eye = {eye.x, eye.y, eye.z, 1.0F};
+    constants.cluster_params = {near_plane, far_plane, static_cast<float>(resolution.width),
+                                static_cast<float>(resolution.height)};
+    return constants;
+}
+
 struct ShadowView {
     std::array<float, 4> clip_x;
     std::array<float, 4> clip_y;
@@ -202,7 +257,8 @@ struct ShadowFrame {
 };
 static_assert(sizeof(ShadowFrame) == 224);
 
-ShadowFrame makeShadowFrame(const DrawConstants &camera) {
+ShadowFrame makeShadowFrame(const DrawConstants &camera, const RenderBounds &bounds, Vector3 towards_light,
+                            float intensity) {
     using namespace star::math;
     const auto xyz = [](const std::array<float, 4> &value) { return Vector3{value[0], value[1], value[2]}; };
     const auto eye = xyz(camera.eye);
@@ -213,16 +269,16 @@ ShadowFrame makeShadowFrame(const DrawConstants &camera) {
     const auto vertical = camera_down / lengthSquared(camera_down);
     const float near_plane = camera.cluster_params[0];
     const float far_plane = camera.cluster_params[1];
-    const float radius = near_plane / 0.05F;
-    const auto scene_center = eye + forward * (radius * 2.6F);
+    const float radius = std::max(bounds.radius, 1e-3F);
+    const auto scene_center = bounds.center;
 
-    const Vector3 direction = normalize(Vector3{-0.45F, 0.85F, 0.35F});
+    const Vector3 direction = normalize(towards_light);
     const Vector3 light_forward = -direction;
     const auto light_right = normalize(cross(light_forward, {0, 1, 0}));
     const auto light_down = cross(light_right, light_forward) * -1.0F;
 
     ShadowFrame result{};
-    result.light_direction = {direction.x, direction.y, direction.z, 0};
+    result.light_direction = {direction.x, direction.y, direction.z, intensity};
     float split_near = near_plane;
     const auto ortho_row = [](Vector3 axis, float low, float high, float range_min, float range_size) {
         const float scale = range_size / (high - low);
@@ -279,6 +335,8 @@ class VulkanForwardPasses {
         vk.vkDeviceWaitIdle(device);
         vk.vkDestroyPipeline(device, m_prepass, nullptr);
         vk.vkDestroyPipeline(device, m_forward, nullptr);
+        vk.vkDestroyPipeline(device, m_forward_masked, nullptr);
+        vk.vkDestroyPipeline(device, m_forward_transparent, nullptr);
         vk.vkDestroyPipeline(device, m_shadow_pipeline, nullptr);
         for (const auto layer : m_shadow_layers) {
             vk.vkDestroyImageView(device, layer, nullptr);
@@ -296,27 +354,33 @@ class VulkanForwardPasses {
         vk.vkDestroyCommandPool(device, m_pool, nullptr);
     }
 
-    void initialize(const StaticModelAsset &model, const ForwardRenderOptions &options,
-                    const ForwardMaterial &material);
+    void initialize(const StaticModelAsset &model, const ForwardRenderOptions &options, const ForwardMaterial &material,
+                    std::span<const std::uint8_t> shadow_casters);
+    void applyScene(const RenderScene &scene, const ForwardRenderOptions &options);
+    [[nodiscard]] bool setCamera(const RenderCamera &camera);
+    [[nodiscard]] bool setLights(std::span<const RenderPointLight> point_lights, const RenderDirectionalLight *sun);
     double draw();
     ForwardImage capture() const;
 
   private:
-    VkPipeline createPipeline(VkShaderModule vertex, VkShaderModule fragment, VkExtent2D extent,
-                              bool double_sided) const;
+    VkPipeline createPipeline(VkShaderModule vertex, VkShaderModule fragment, VkExtent2D extent, bool double_sided,
+                              DrawPass pass) const;
     VkShaderModule loadShader(const std::filesystem::path &path) const;
-    void renderPass(bool depth_only) const;
+    void renderDepthPass() const;
+    void renderColorPass() const;
     void createLightingDescriptors();
     void createShadows();
     void createEnvironment();
     void createMaterialDescriptors(const StaticModelAsset &model);
+    void updateShadowFrame();
+    void writeLights(std::span<const RenderPointLight> point_lights);
     VkBuffer stageUpload(std::span<const std::byte> bytes);
     void uploadBuffer(Buffer &buffer, std::span<const std::byte> bytes, VkBufferUsageFlags usage,
                       VkPipelineStageFlags2 stages, VkAccessFlags2 access);
     void uploadImage(const Image &image, std::span<const std::byte> bytes, std::span<const VkBufferImageCopy> regions);
     void submitCommands() const;
     void renderShadows() const;
-    void drawParts(const DrawConstants &frame, DrawPass pass) const;
+    void drawParts(const DrawConstants &frame, DrawPass pass, VkPipeline pipeline) const;
     void dispatchClusters() const;
 
     const VulkanRuntime &m_gpu;
@@ -340,6 +404,11 @@ class VulkanForwardPasses {
     VkDescriptorPool m_material_pool = VK_NULL_HANDLE;
     VkSampler m_material_sampler = VK_NULL_HANDLE;
     DrawConstants m_camera{};
+    RenderBounds m_bounds{};
+    RenderDirectionalLight m_sun{};
+    std::vector<RenderPointLight> m_scene_lights;
+    bool m_lights_dirty = true;
+    bool m_shadow_dirty = true;
     VkPipelineLayout m_layout = VK_NULL_HANDLE;
     VkDescriptorPool m_descriptor_pool = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_descriptor_layout = VK_NULL_HANDLE;
@@ -348,6 +417,8 @@ class VulkanForwardPasses {
     VkPipeline m_shadow_pipeline = VK_NULL_HANDLE;
     VkPipeline m_prepass = VK_NULL_HANDLE;
     VkPipeline m_forward = VK_NULL_HANDLE;
+    VkPipeline m_forward_masked = VK_NULL_HANDLE;
+    VkPipeline m_forward_transparent = VK_NULL_HANDLE;
     VkCommandPool m_pool = VK_NULL_HANDLE;
     VkCommandBuffer m_commands = VK_NULL_HANDLE;
     VkCommandBuffer m_upload_commands = VK_NULL_HANDLE;
@@ -357,7 +428,7 @@ class VulkanForwardPasses {
 };
 
 void VulkanForwardPasses::initialize(const StaticModelAsset &model, const ForwardRenderOptions &options,
-                                     const ForwardMaterial &material) {
+                                     const ForwardMaterial &material, std::span<const std::uint8_t> shadow_casters) {
     if ((m_gpu.queueProperties.queueFlags & VK_QUEUE_COMPUTE_BIT) == 0) {
         throw std::runtime_error("The graphics queue must also support compute shaders");
     }
@@ -377,18 +448,44 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const Forwar
         if (part.material) {
             draw.albedo = part.material->base_color;
             draw.factors = {part.material->roughness, part.material->metallic, 0, 0};
+            draw.blend = part.material->blend;
+            if (draw.blend == MaterialBlendMode::Masked) {
+                draw.factors[2] = part.material->alpha_cutoff;
+            }
+        }
+        // A variant-wide blend mode overrides the per-part value.
+        if (material.variant.state.blend != MaterialBlendMode::Opaque) {
+            draw.blend = material.variant.state.blend;
+        }
+        if (!part.vertices.empty()) {
+            Vector3 center{};
+            for (const auto &vertex : part.vertices) {
+                center = center + vertex.position;
+            }
+            draw.center = center / static_cast<float>(part.vertices.size());
         }
         draw.albedo = material.base_color.value_or(draw.albedo);
         draw.factors[0] = material.roughness.value_or(draw.factors[0]);
         draw.factors[1] = material.metallic.value_or(draw.factors[1]);
-        if (!options.shadow_casters.empty()) {
-            draw.cast_shadows = options.shadow_casters[m_parts.size()] != 0;
+        if (!shadow_casters.empty()) {
+            draw.cast_shadows = shadow_casters[m_parts.size()] != 0;
         }
         m_parts.push_back(draw);
         vertices.insert(vertices.end(), part.vertices.begin(), part.vertices.end());
         indices.insert(indices.end(), part.indices.begin(), part.indices.end());
     }
-    m_camera = makeCamera(vertices, options.front_view);
+    if (!vertices.empty()) {
+        Vector3 low = vertices.front().position;
+        Vector3 high = low;
+        for (const auto &vertex : vertices) {
+            const auto &p = vertex.position;
+            low = {std::min(low.x, p.x), std::min(low.y, p.y), std::min(low.z, p.z)};
+            high = {std::max(high.x, p.x), std::max(high.y, p.y), std::max(high.z, p.z)};
+        }
+        m_bounds.center = (low + high) * 0.5F;
+        m_bounds.radius = std::max(length(high - low) * 0.5F, 1e-6F);
+    }
+    m_camera = makeFramedCamera(m_bounds, options.front_view);
     m_color.create(color_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     m_depth.create(depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -442,9 +539,14 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const Forwar
     const auto fragment_file =
         state.shading == star::MaterialShadingModel::Unlit ? "forward-unlit.spv" : "forward-fragment.spv";
     const Shader fragment(loadShader(options.shader_directory / fragment_file), destroy_shader);
-    m_prepass = createPipeline(vertex.get(), VK_NULL_HANDLE, resolution, state.double_sided);
-    m_forward = createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided);
-    m_shadow_pipeline = createPipeline(vertex.get(), VK_NULL_HANDLE, shadow_resolution, state.double_sided);
+    m_prepass = createPipeline(vertex.get(), VK_NULL_HANDLE, resolution, state.double_sided, DrawPass::Depth);
+    m_forward = createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided, DrawPass::ColorOpaque);
+    m_forward_masked =
+        createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided, DrawPass::ColorMasked);
+    m_forward_transparent =
+        createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided, DrawPass::ColorTransparent);
+    m_shadow_pipeline =
+        createPipeline(vertex.get(), VK_NULL_HANDLE, shadow_resolution, state.double_sided, DrawPass::Shadow);
     const Shader cluster(loadShader(options.shader_directory / "forward-cluster.spv"), destroy_shader);
     auto compute = vkInfo<VkComputePipelineCreateInfo>(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
     compute.stage = vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
@@ -466,24 +568,22 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const Forwar
 void VulkanForwardPasses::createLightingDescriptors() {
     const auto &vk = m_gpu.vk;
     const auto device = m_gpu.device;
-    const float radius = m_camera.cluster_params[0] / 0.05F;
-    const auto &eye = m_camera.eye;
-    const auto &forward = m_camera.clip_w;
+    const float radius = m_bounds.radius;
+    const auto &center = m_bounds.center;
     const auto light = [&](Vector3 offset, float range, std::array<float, 3> color, float intensity) {
-        const auto position = Vector3{eye[0], eye[1], eye[2]} +
-                              Vector3{forward[0], forward[1], forward[2]} * (radius * 2.6F) + offset * radius;
-        return PointLight{{position.x, position.y, position.z, radius * range},
-                          {color[0], color[1], color[2], intensity * radius * radius}};
+        return RenderPointLight{
+            {center.x + offset.x * radius, center.y + offset.y * radius, center.z + offset.z * radius},
+            {color[0], color[1], color[2]},
+            intensity * radius * radius,
+            radius * range};
     };
     const std::array lights{
         light({-0.42F, 0.48F, 0.20F}, 0.75F, {1.0F, 0.55F, 0.20F}, 1.8F),
         light({0.42F, 0.28F, 0.38F}, 0.72F, {0.20F, 0.45F, 1.0F}, 1.6F),
         light({0.03F, 0.41F, -0.42F}, 0.62F, {0.20F, 1.0F, 0.48F}, 1.0F),
     };
-    static_assert(lights.size() <= STAR_CLUSTER_MAX_LIGHTS);
-    uploadBuffer(m_lights, std::as_bytes(std::span(lights)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    m_lights.create(kMaxRenderPointLights * sizeof(PointLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, MemoryType::Upload);
+    writeLights(lights);
     constexpr auto cluster_bytes = STAR_CLUSTER_COLUMNS * STAR_CLUSTER_ROWS * STAR_CLUSTER_SLICES *
                                    (1 + STAR_CLUSTER_MAX_LIGHTS) * sizeof(std::uint32_t);
     m_cluster_lists.create(cluster_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, MemoryType::GpuOnly);
@@ -556,9 +656,9 @@ void VulkanForwardPasses::createShadows() {
     if ((format.optimalTilingFeatures & required) != required) {
         throw std::runtime_error("The device does not support sampled D32 depth images");
     }
-    m_shadow_frame = makeShadowFrame(m_camera);
-    uploadBuffer(m_shadow_buffer, std::as_bytes(std::span(&m_shadow_frame, 1)), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
+    m_sun = RenderDirectionalLight{default_sun_direction, {1.0F, 1.0F, 1.0F}, default_sun_intensity};
+    m_shadow_buffer.create(sizeof(ShadowFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, MemoryType::Upload);
+    updateShadowFrame();
     m_shadows.create(depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_DEPTH_BIT, shadow_resolution, STAR_SHADOW_CASCADES);
     for (std::uint32_t layer = 0; layer < m_shadow_layers.size(); ++layer) {
@@ -609,6 +709,69 @@ void VulkanForwardPasses::createEnvironment() {
     sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler.maxLod = static_cast<float>(mip_count - 1);
     check(vk.vkCreateSampler(m_gpu.device, &sampler, nullptr, &m_environment_sampler), "Create environment sampler");
+}
+
+void VulkanForwardPasses::updateShadowFrame() {
+    m_shadow_frame = makeShadowFrame(m_camera, m_bounds, m_sun.direction, m_sun.intensity);
+    m_shadow_buffer.write(std::as_bytes(std::span(&m_shadow_frame, 1)));
+    m_shadow_dirty = true;
+}
+
+void VulkanForwardPasses::writeLights(std::span<const RenderPointLight> point_lights) {
+    std::array<PointLight, kMaxRenderPointLights> packed{};
+    for (std::size_t index = 0; index < point_lights.size() && index < packed.size(); ++index) {
+        const auto &light = point_lights[index];
+        // Inactive entries use a tiny radius so the shader never divides by zero.
+        packed[index] = PointLight{{light.position.x, light.position.y, light.position.z, std::max(light.range, 1e-6F)},
+                                   {light.color.x, light.color.y, light.color.z, light.intensity}};
+    }
+    m_lights.write(std::as_bytes(std::span(packed)));
+    m_lights_dirty = true;
+}
+
+bool VulkanForwardPasses::setCamera(const RenderCamera &camera) {
+    if (!validCamera(camera)) {
+        return false;
+    }
+    m_camera = makeSceneCamera(camera);
+    updateShadowFrame();
+    return true;
+}
+
+bool VulkanForwardPasses::setLights(std::span<const RenderPointLight> point_lights, const RenderDirectionalLight *sun) {
+    if (point_lights.size() > kMaxRenderPointLights ||
+        std::ranges::any_of(point_lights, [](const RenderPointLight &light) {
+            return !finite(light.position) || !finite(light.color) || !std::isfinite(light.range) ||
+                   !std::isfinite(light.intensity) || light.range <= 0.0F || light.intensity < 0.0F;
+        })) {
+        return false;
+    }
+    if (sun != nullptr) {
+        if (!finite(sun->direction) || !finite(sun->color) || lengthSquared(sun->direction) <= 1e-12F ||
+            !std::isfinite(sun->intensity) || sun->intensity < 0.0F) {
+            return false;
+        }
+        m_sun = *sun;
+    }
+    writeLights(point_lights);
+    updateShadowFrame();
+    return true;
+}
+
+void VulkanForwardPasses::applyScene(const RenderScene &scene, const ForwardRenderOptions &options) {
+    if (scene.bounds.radius > 0.0F) {
+        m_bounds = scene.bounds;
+    }
+    if (!scene.cameras.empty()) {
+        m_camera = makeSceneCamera(scene.cameras[options.camera_index]);
+    }
+    if (scene.directional_light) {
+        m_sun = *scene.directional_light;
+    }
+    updateShadowFrame();
+    if (!scene.point_lights.empty()) {
+        writeLights(scene.point_lights);
+    }
 }
 
 VkBuffer VulkanForwardPasses::stageUpload(std::span<const std::byte> bytes) {
@@ -801,7 +964,8 @@ VkShaderModule VulkanForwardPasses::loadShader(const std::filesystem::path &path
 }
 
 VkPipeline VulkanForwardPasses::createPipeline(VkShaderModule vertex, VkShaderModule fragment, VkExtent2D extent,
-                                               bool double_sided) const {
+                                               bool double_sided, DrawPass pass) const {
+    const bool has_color = fragment != VK_NULL_HANDLE;
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{
         vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO),
         vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO)};
@@ -844,21 +1008,31 @@ VkPipeline VulkanForwardPasses::createPipeline(VkShaderModule vertex, VkShaderMo
     auto depth =
         vkInfo<VkPipelineDepthStencilStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
     depth.depthTestEnable = VK_TRUE;
-    depth.depthWriteEnable = fragment ? VK_FALSE : VK_TRUE;
-    depth.depthCompareOp = fragment ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_LESS;
+    depth.depthWriteEnable =
+        pass == DrawPass::Depth || pass == DrawPass::Shadow || pass == DrawPass::ColorMasked ? VK_TRUE : VK_FALSE;
+    depth.depthCompareOp = pass == DrawPass::ColorOpaque                         ? VK_COMPARE_OP_EQUAL
+                           : pass == DrawPass::Depth || pass == DrawPass::Shadow ? VK_COMPARE_OP_LESS
+                                                                                 : VK_COMPARE_OP_LESS_OR_EQUAL;
     VkPipelineColorBlendAttachmentState attachment{};
     attachment.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    attachment.blendEnable = pass == DrawPass::ColorTransparent ? VK_TRUE : VK_FALSE;
+    attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    attachment.colorBlendOp = VK_BLEND_OP_ADD;
+    attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    attachment.alphaBlendOp = VK_BLEND_OP_ADD;
     auto blend = vkInfo<VkPipelineColorBlendStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
-    blend.attachmentCount = fragment ? 1 : 0;
+    blend.attachmentCount = has_color ? 1 : 0;
     blend.pAttachments = &attachment;
     auto attachments = vkInfo<VkPipelineRenderingCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
-    attachments.colorAttachmentCount = fragment ? 1 : 0;
+    attachments.colorAttachmentCount = has_color ? 1 : 0;
     attachments.pColorAttachmentFormats = &color_format;
     attachments.depthAttachmentFormat = depth_format;
     auto info = vkInfo<VkGraphicsPipelineCreateInfo>(VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
     info.pNext = &attachments;
-    info.stageCount = fragment ? 2 : 1;
+    info.stageCount = has_color ? 2 : 1;
     info.pStages = stages.data();
     info.pVertexInputState = &input;
     info.pInputAssemblyState = &assembly;
@@ -874,7 +1048,24 @@ VkPipeline VulkanForwardPasses::createPipeline(VkShaderModule vertex, VkShaderMo
     return pipeline;
 }
 
-void VulkanForwardPasses::renderPass(bool depth_only) const {
+void VulkanForwardPasses::renderDepthPass() const {
+    const auto &vk = m_gpu.vk;
+    auto depth = vkInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
+    depth.imageView = m_depth.view;
+    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depth.clearValue.depthStencil = {1.0F, 0};
+    auto rendering = vkInfo<VkRenderingInfo>(VK_STRUCTURE_TYPE_RENDERING_INFO);
+    rendering.renderArea = {{0, 0}, resolution};
+    rendering.layerCount = 1;
+    rendering.pDepthAttachment = &depth;
+    vk.vkCmdBeginRendering(m_commands, &rendering);
+    drawParts(m_camera, DrawPass::Depth, m_prepass);
+    vk.vkCmdEndRendering(m_commands);
+}
+
+void VulkanForwardPasses::renderColorPass() const {
     const auto &vk = m_gpu.vk;
     auto color = vkInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
     color.imageView = m_color.view;
@@ -885,22 +1076,21 @@ void VulkanForwardPasses::renderPass(bool depth_only) const {
     auto depth = vkInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
     depth.imageView = m_depth.view;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth.loadOp = depth_only ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-    depth.storeOp = depth_only ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depth.clearValue.depthStencil = {1.0F, 0};
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     auto rendering = vkInfo<VkRenderingInfo>(VK_STRUCTURE_TYPE_RENDERING_INFO);
     rendering.renderArea = {{0, 0}, resolution};
     rendering.layerCount = 1;
-    rendering.colorAttachmentCount = depth_only ? 0 : 1;
+    rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &color;
     rendering.pDepthAttachment = &depth;
     vk.vkCmdBeginRendering(m_commands, &rendering);
-    vk.vkCmdBindPipeline(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, depth_only ? m_prepass : m_forward);
-    if (!depth_only) {
-        vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 0, 1, &m_descriptors, 0,
-                                   nullptr);
-    }
-    drawParts(m_camera, depth_only ? DrawPass::Depth : DrawPass::Color);
+    vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 0, 1, &m_descriptors, 0, nullptr);
+    // Opaque fragments already carry depth from the prepass; masked parts skip the prepass and write
+    // depth here because their cut-out shape is only known in the fragment shader.
+    drawParts(m_camera, DrawPass::ColorOpaque, m_forward);
+    drawParts(m_camera, DrawPass::ColorMasked, m_forward_masked);
+    drawParts(m_camera, DrawPass::ColorTransparent, m_forward_transparent);
     vk.vkCmdEndRendering(m_commands);
 }
 
@@ -918,27 +1108,55 @@ void VulkanForwardPasses::renderShadows() const {
     for (std::size_t layer = 0; layer < m_shadow_layers.size(); ++layer) {
         depth.imageView = m_shadow_layers[layer];
         vk.vkCmdBeginRendering(m_commands, &rendering);
-        vk.vkCmdBindPipeline(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadow_pipeline);
         DrawConstants view{};
         view.clip_x = m_shadow_frame.views[layer].clip_x;
         view.clip_y = m_shadow_frame.views[layer].clip_y;
         view.clip_z = m_shadow_frame.views[layer].clip_z;
         view.clip_w = {0, 0, 0, 1};
-        drawParts(view, DrawPass::Shadow);
+        drawParts(view, DrawPass::Shadow, m_shadow_pipeline);
         vk.vkCmdEndRendering(m_commands);
     }
 }
 
-void VulkanForwardPasses::drawParts(const DrawConstants &frame, DrawPass pass) const {
+void VulkanForwardPasses::drawParts(const DrawConstants &frame, DrawPass pass, VkPipeline pipeline) const {
     const auto &vk = m_gpu.vk;
     constexpr VkDeviceSize offset = 0;
+    vk.vkCmdBindPipeline(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vk.vkCmdBindVertexBuffers(m_commands, 0, 1, &m_vertices.handle, &offset);
     vk.vkCmdBindIndexBuffer(m_commands, m_indices.handle, 0, VK_INDEX_TYPE_UINT32);
-    for (const auto &part : m_parts) {
-        if (pass == DrawPass::Shadow && !part.cast_shadows) {
-            continue;
+
+    const auto matches = [pass](const DrawPart &part) {
+        switch (pass) {
+        case DrawPass::ColorMasked:
+            return part.blend == MaterialBlendMode::Masked;
+        case DrawPass::ColorTransparent:
+            return part.blend == MaterialBlendMode::Transparent;
+        case DrawPass::Shadow:
+            // The shadow pipeline has no alpha test, so masked parts cast solid shadows.
+            return part.blend != MaterialBlendMode::Transparent;
+        default:
+            return part.blend == MaterialBlendMode::Opaque;
         }
-        if (pass == DrawPass::Color) {
+    };
+    std::vector<std::size_t> visible;
+    visible.reserve(m_parts.size());
+    for (std::size_t index = 0; index < m_parts.size(); ++index) {
+        if (matches(m_parts[index])) {
+            visible.push_back(index);
+        }
+    }
+    if (pass == DrawPass::ColorTransparent) {
+        // Back to front keeps alpha blending stable for overlapping surfaces.
+        const Vector3 eye{frame.eye[0], frame.eye[1], frame.eye[2]};
+        std::ranges::sort(visible, [&](std::size_t left, std::size_t right) {
+            return lengthSquared(m_parts[left].center - eye) > lengthSquared(m_parts[right].center - eye);
+        });
+    }
+
+    const bool textured = pass != DrawPass::Depth && pass != DrawPass::Shadow;
+    for (const auto index : visible) {
+        const auto &part = m_parts[index];
+        if (textured) {
             vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 1, 1, &part.textures, 0,
                                        nullptr);
         }
@@ -959,6 +1177,23 @@ double VulkanForwardPasses::draw() {
         vk.vkCmdResetQueryPool(m_commands, m_queries, 0, 2);
         vk.vkCmdWriteTimestamp2(m_commands, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, m_queries, 0);
     }
+    if (m_shadow_dirty || m_lights_dirty) {
+        auto barrier = vkInfo<VkMemoryBarrier2>(VK_STRUCTURE_TYPE_MEMORY_BARRIER_2);
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+        barrier.dstStageMask =
+            m_shadow_dirty && m_lights_dirty
+                ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                : (m_lights_dirty ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                                  : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
+        auto dependency = vkInfo<VkDependencyInfo>(VK_STRUCTURE_TYPE_DEPENDENCY_INFO);
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &barrier;
+        vk.vkCmdPipelineBarrier2(m_commands, &dependency);
+        m_shadow_dirty = false;
+        m_lights_dirty = false;
+    }
     const auto transition = [&](const Image &image, TextureState before, TextureState after) {
         transitionVulkanImage(m_gpu, m_commands, image.handle, image.range, vulkanTextureSync(before),
                               vulkanTextureSync(after));
@@ -967,11 +1202,11 @@ double VulkanForwardPasses::draw() {
     renderShadows();
     transition(m_shadows, TextureState::DepthAttachment, TextureState::Sampled);
     transition(m_depth, TextureState::Undefined, TextureState::DepthAttachment);
-    renderPass(true);
+    renderDepthPass();
     dispatchClusters();
     transition(m_depth, TextureState::DepthAttachment, TextureState::DepthAttachment);
     transition(m_color, TextureState::Undefined, TextureState::ColorAttachment);
-    renderPass(false);
+    renderColorPass();
     transition(m_color, TextureState::ColorAttachment, TextureState::CopySource);
     VkBufferImageCopy copy{};
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1086,12 +1321,48 @@ ForwardRenderer::~ForwardRenderer() = default;
 std::expected<std::unique_ptr<ForwardRenderer>, ForwardRenderError>
 ForwardRenderer::create(const StaticModelAsset &model, const ForwardRenderOptions &options,
                         const ForwardMaterial &material) {
+    return createImpl(model, options, material, nullptr);
+}
+
+std::expected<std::unique_ptr<ForwardRenderer>, ForwardRenderError>
+ForwardRenderer::create(const RenderScene &scene, const ForwardRenderOptions &options,
+                        const ForwardMaterial &material) {
+    if (!scene.cameras.empty() && options.camera_index >= scene.cameras.size()) {
+        return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid camera index"});
+    }
+    if (scene.shadow_casters.size() != scene.model.parts.size()) {
+        return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid shadow caster list"});
+    }
+    if (!std::ranges::all_of(scene.cameras, validCamera)) {
+        return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid scene camera"});
+    }
+    if (scene.point_lights.size() > kMaxRenderPointLights ||
+        std::ranges::any_of(scene.point_lights, [](const RenderPointLight &light) {
+            return !finite(light.position) || !finite(light.color) || !std::isfinite(light.range) ||
+                   !std::isfinite(light.intensity) || light.range <= 0.0F || light.intensity < 0.0F;
+        })) {
+        return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid point lights"});
+    }
+    if (scene.directional_light &&
+        (!finite(scene.directional_light->direction) || !finite(scene.directional_light->color) ||
+         lengthSquared(scene.directional_light->direction) <= 1e-12F ||
+         !std::isfinite(scene.directional_light->intensity) || scene.directional_light->intensity < 0.0F)) {
+        return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid directional light"});
+    }
+    return createImpl(scene.model, options, material, &scene);
+}
+
+std::expected<std::unique_ptr<ForwardRenderer>, ForwardRenderError>
+ForwardRenderer::createImpl(const StaticModelAsset &model, const ForwardRenderOptions &options,
+                            const ForwardMaterial &material, const RenderScene *scene) {
+    const auto shadow_casters =
+        scene != nullptr ? std::span<const std::uint8_t>(scene->shadow_casters) : options.shadow_casters;
     if (!validGeometry(model) || !std::ranges::all_of(model.textures, validTexture) ||
-        (!options.shadow_casters.empty() && options.shadow_casters.size() != model.parts.size())) {
+        (!shadow_casters.empty() && shadow_casters.size() != model.parts.size())) {
         return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid static model"});
     }
     if (material.variant.shader != defaultForwardMaterial().variant.shader ||
-        material.variant.state.blend != MaterialBlendMode::Opaque || !material.variant.state.depth_test ||
+        material.variant.state.blend > MaterialBlendMode::Transparent || !material.variant.state.depth_test ||
         material.variant.state.shading > MaterialShadingModel::Unlit) {
         return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::Unsupported, "Unsupported forward material"});
     }
@@ -1103,13 +1374,44 @@ ForwardRenderer::create(const StaticModelAsset &model, const ForwardRenderOption
             return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::BackendFailure,
                                                       "Cannot initialize the requested Vulkan device"});
         }
-        implementation->passes.initialize(model, options, material);
+        implementation->passes.initialize(model, options, material, shadow_casters);
+        if (scene != nullptr) {
+            implementation->passes.applyScene(*scene, options);
+        }
         return std::unique_ptr<ForwardRenderer>(new ForwardRenderer(std::move(implementation)));
     } catch (const std::exception &error) {
         return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::BackendFailure, error.what()});
     }
 #else
     (void)options;
+    (void)shadow_casters;
+    (void)scene;
+    return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::Unsupported, "Vulkan renderer unavailable"});
+#endif
+}
+
+std::expected<void, ForwardRenderError> ForwardRenderer::setCamera(const RenderCamera &camera) {
+#ifdef STAR_FORWARD_VULKAN
+    if (!m_impl->passes.setCamera(camera)) {
+        return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid scene camera"});
+    }
+    return {};
+#else
+    (void)camera;
+    return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::Unsupported, "Vulkan renderer unavailable"});
+#endif
+}
+
+std::expected<void, ForwardRenderError> ForwardRenderer::setLights(std::span<const RenderPointLight> point_lights,
+                                                                   const RenderDirectionalLight *sun) {
+#ifdef STAR_FORWARD_VULKAN
+    if (!m_impl->passes.setLights(point_lights, sun)) {
+        return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid lighting"});
+    }
+    return {};
+#else
+    (void)point_lights;
+    (void)sun;
     return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::Unsupported, "Vulkan renderer unavailable"});
 #endif
 }

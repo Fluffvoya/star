@@ -33,6 +33,7 @@ std::span<const reflect::TypeInfo> builtinComponents() noexcept {
         makeProperty<MeshRenderer, std::uint32_t, &MeshRenderer::layer_mask>("layer_mask"),
     };
     static const std::array light{
+        makeProperty<Light, bool, &Light::directional>("directional"),
         makeProperty<Light, math::Vec3, &Light::color>("color"),
         makeProperty<Light, float, &Light::intensity>("intensity"),
         makeProperty<Light, float, &Light::range>("range"),

@@ -134,6 +134,9 @@ STAR_TEST(asset_manager_loads_a_static_model_without_model_parsers) {
     part.name = "Triangle";
     part.vertices = {{{0, 0, 0}, {0, 0, 1}, {0, 0}}, {{1, 0, 0}, {0, 0, 1}, {1, 0}}, {{0, 1, 0}, {0, 0, 1}, {0, 1}}};
     part.indices = {0, 1, 2};
+    part.material.emplace();
+    part.material->blend = MaterialBlendMode::Masked;
+    part.material->alpha_cutoff = 0.25F;
     const auto payload = writeModelAsset(model);
     STAR_CHECK(payload.has_value());
 
@@ -149,6 +152,8 @@ STAR_TEST(asset_manager_loads_a_static_model_without_model_parsers) {
     STAR_CHECK(decoded->parts.at(0).name == "Triangle");
     STAR_CHECK(decoded->parts.at(0).indices == part.indices);
     STAR_CHECK(decoded->parts.at(0).vertices.at(1).position == part.vertices.at(1).position);
+    STAR_CHECK(decoded->parts.at(0).material->blend == MaterialBlendMode::Masked);
+    STAR_CHECK(decoded->parts.at(0).material->alpha_cutoff == 0.25F);
 
     auto corrupt = *payload;
     corrupt.at(corrupt.size() - 1) = std::byte{1};

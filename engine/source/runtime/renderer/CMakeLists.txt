@@ -1,5 +1,6 @@
 star_add_module(Renderer renderer
     include/renderer/forward_renderer.hpp
+    include/renderer/render_scene.hpp
     src/forward_renderer.cpp
 )
 

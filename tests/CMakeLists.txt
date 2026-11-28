@@ -133,6 +133,21 @@ if(STAR_TEST_WINDOWS_VULKAN)
     set_property(TEST windows-vulkan-present APPEND PROPERTY ENVIRONMENT "SDL_VIDEODRIVER=windows")
 endif()
 
+
+if(STAR_TEST_VULKAN)
+    if(NOT TARGET StarSceneForward)
+        message(FATAL_ERROR "Vulkan smoke tests require the scene forward sample and its shaders")
+    endif()
+    add_test(NAME vulkan-scene-forward COMMAND StarSceneForward
+        "${CMAKE_CURRENT_BINARY_DIR}/vulkan-scene-forward.ppm" 4)
+    set_tests_properties(vulkan-scene-forward PROPERTIES
+        LABELS "vulkan"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 180
+        ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1"
+        FAIL_REGULAR_EXPRESSION "[[]error[]] Vulkan:;Validation Error:")
+endif()
+
 if(NOT STAR_MONOLITHIC)
     set(game_fixture_source "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/game-module")
     set(game_fixture_build "${CMAKE_CURRENT_BINARY_DIR}/game-module/$<CONFIG>")
