@@ -39,6 +39,8 @@ star_add_module(EditorUI editor-ui
     include/editor-ui/editor_shell.hpp
     src/imgui_layer.cpp
     src/editor_shell.cpp
+    src/project_build.cpp
+    src/project_build.hpp
     src/scene_viewport.cpp
     src/scene_viewport.hpp
     src/scene_models.cpp

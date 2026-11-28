@@ -10,6 +10,8 @@ struct ProjectSettings {
     std::string engine_version;
     std::vector<std::filesystem::path> modules;
     std::filesystem::path startup_scene;
+    std::filesystem::path build_directory;
+    std::string build_configuration;
 };
 
 [[nodiscard]] STAR_EDITORCORE_API const reflect::TypeInfo &projectSettingsType();

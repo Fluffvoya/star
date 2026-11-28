@@ -40,6 +40,8 @@ const reflect::TypeInfo &projectSettingsType() {
         makeProperty<ProjectSettings, std::string, &ProjectSettings::engine_version>("EngineVersion"),
         makeProperty<ProjectSettings, std::vector<std::filesystem::path>, &ProjectSettings::modules>("Modules"),
         makeProperty<ProjectSettings, std::filesystem::path, &ProjectSettings::startup_scene>("StartupScene"),
+        makeProperty<ProjectSettings, std::filesystem::path, &ProjectSettings::build_directory>("BuildDirectory"),
+        makeProperty<ProjectSettings, std::string, &ProjectSettings::build_configuration>("BuildConfiguration"),
     };
     static const reflect::TypeInfo type{reflect::makeTypeId(k_type_name),
                                         k_type_name,
