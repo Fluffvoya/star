@@ -84,7 +84,9 @@ cmake --build $buildDir
 ctest --test-dir $buildDir -L windows-vulkan --output-on-failure
 ```
 
-开启选项后，完整 CTest 也会运行 `windows-vulkan-rhi` 和 `windows-vulkan-present`。Vulkan 实机结果和抓帧步骤见 [M2 Windows 验收阶段报告](progress/m2/10-windows-acceptance.md)。
+开启选项后，完整 CTest 也会运行 `windows-vulkan-rhi` 和 `windows-vulkan-present`。若构建生成了前向渲染样例，
+`windows-vulkan-forward` 会在同步验证下渲染三帧，并将 PPM 写到构建目录的 `tests/`。Vulkan 实机结果和抓帧步骤见
+[M2 Windows 验收阶段报告](progress/m2/10-windows-acceptance.md)。
 
 ## 运行 M4 渲染样例
 

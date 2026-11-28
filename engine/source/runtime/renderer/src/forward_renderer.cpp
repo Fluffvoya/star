@@ -72,7 +72,8 @@ struct Buffer {
 
     void upload(std::span<const std::byte> bytes, VkBufferUsageFlags flags) {
         create(bytes.size(), flags, MemoryType::Upload);
-        check(vmaCopyMemoryToAllocation(gpu.allocator, bytes.data(), allocation, 0, bytes.size()), "Upload mesh data");
+        check(vmaCopyMemoryToAllocation(gpu.allocator, bytes.data(), allocation, 0, bytes.size()),
+              "Write staging buffer");
     }
 };
 
@@ -140,6 +141,8 @@ struct PointLight {
     std::array<float, 4> color_intensity;
 };
 
+enum class DrawPass { Depth, Shadow, Color };
+
 struct DrawPart {
     std::uint32_t index_count;
     std::uint32_t index_offset;
@@ -147,6 +150,7 @@ struct DrawPart {
     std::array<float, 4> albedo;
     std::array<float, 4> factors;
     VkDescriptorSet textures = VK_NULL_HANDLE;
+    bool cast_shadows = true;
 };
 
 DrawConstants makeCamera(std::span<const StaticMeshVertex> vertices, bool front_view) {
@@ -292,7 +296,7 @@ class VulkanForwardPasses {
         vk.vkDestroyCommandPool(device, m_pool, nullptr);
     }
 
-    void initialize(const StaticModelAsset &model, const std::filesystem::path &assets, bool front_view,
+    void initialize(const StaticModelAsset &model, const ForwardRenderOptions &options,
                     const ForwardMaterial &material);
     double draw();
     ForwardImage capture() const;
@@ -306,11 +310,13 @@ class VulkanForwardPasses {
     void createShadows();
     void createEnvironment();
     void createMaterialDescriptors(const StaticModelAsset &model);
-    void uploadImage(const Image &image, std::span<const std::byte> bytes,
-                     std::span<const VkBufferImageCopy> regions) const;
+    VkBuffer stageUpload(std::span<const std::byte> bytes);
+    void uploadBuffer(Buffer &buffer, std::span<const std::byte> bytes, VkBufferUsageFlags usage,
+                      VkPipelineStageFlags2 stages, VkAccessFlags2 access);
+    void uploadImage(const Image &image, std::span<const std::byte> bytes, std::span<const VkBufferImageCopy> regions);
     void submitCommands() const;
     void renderShadows() const;
-    void drawParts(const DrawConstants &frame, bool bind_materials = false) const;
+    void drawParts(const DrawConstants &frame, DrawPass pass) const;
     void dispatchClusters() const;
 
     const VulkanRuntime &m_gpu;
@@ -344,12 +350,14 @@ class VulkanForwardPasses {
     VkPipeline m_forward = VK_NULL_HANDLE;
     VkCommandPool m_pool = VK_NULL_HANDLE;
     VkCommandBuffer m_commands = VK_NULL_HANDLE;
+    VkCommandBuffer m_upload_commands = VK_NULL_HANDLE;
+    std::vector<std::unique_ptr<Buffer>> m_staging;
     VkFence m_fence = VK_NULL_HANDLE;
     VkQueryPool m_queries = VK_NULL_HANDLE;
 };
 
-void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::filesystem::path &assets,
-                                     bool front_view, const ForwardMaterial &material) {
+void VulkanForwardPasses::initialize(const StaticModelAsset &model, const ForwardRenderOptions &options,
+                                     const ForwardMaterial &material) {
     if ((m_gpu.queueProperties.queueFlags & VK_QUEUE_COMPUTE_BIT) == 0) {
         throw std::runtime_error("The graphics queue must also support compute shaders");
     }
@@ -373,13 +381,14 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::f
         draw.albedo = material.base_color.value_or(draw.albedo);
         draw.factors[0] = material.roughness.value_or(draw.factors[0]);
         draw.factors[1] = material.metallic.value_or(draw.factors[1]);
+        if (!options.shadow_casters.empty()) {
+            draw.cast_shadows = options.shadow_casters[m_parts.size()] != 0;
+        }
         m_parts.push_back(draw);
         vertices.insert(vertices.end(), part.vertices.begin(), part.vertices.end());
         indices.insert(indices.end(), part.indices.begin(), part.indices.end());
     }
-    m_camera = makeCamera(vertices, front_view);
-    m_vertices.upload(std::as_bytes(std::span(vertices)), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    m_indices.upload(std::as_bytes(std::span(indices)), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    m_camera = makeCamera(vertices, options.front_view);
     m_color.create(color_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     m_depth.create(depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -393,8 +402,11 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::f
     check(vk.vkCreateCommandPool(device, &pool, nullptr, &m_pool), "Create command pool");
     auto commands = vkInfo<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
     commands.commandPool = m_pool;
-    commands.commandBufferCount = 1;
-    check(vk.vkAllocateCommandBuffers(device, &commands, &m_commands), "Allocate command buffer");
+    std::array<VkCommandBuffer, 2> command_buffers{};
+    commands.commandBufferCount = static_cast<std::uint32_t>(command_buffers.size());
+    check(vk.vkAllocateCommandBuffers(device, &commands, command_buffers.data()), "Allocate command buffers");
+    m_commands = command_buffers[0];
+    m_upload_commands = command_buffers[1];
     const auto fence = vkInfo<VkFenceCreateInfo>(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
     check(vk.vkCreateFence(device, &fence, nullptr, &m_fence), "Create submission fence");
     if (m_gpu.queueProperties.timestampValidBits != 0) {
@@ -403,6 +415,13 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::f
         query.queryCount = 2;
         check(vk.vkCreateQueryPool(device, &query, nullptr, &m_queries), "Create timestamp queries");
     }
+    auto upload_begin = vkInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+    upload_begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    check(vk.vkBeginCommandBuffer(m_upload_commands, &upload_begin), "Begin static resource upload");
+    uploadBuffer(m_vertices, std::as_bytes(std::span(vertices)), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                 VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+    uploadBuffer(m_indices, std::as_bytes(std::span(indices)), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                 VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
     createShadows();
     createEnvironment();
     createLightingDescriptors();
@@ -418,15 +437,15 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::f
 
     const auto destroy_shader = [&](VkShaderModule shader) { vk.vkDestroyShaderModule(device, shader, nullptr); };
     using Shader = std::unique_ptr<std::remove_pointer_t<VkShaderModule>, decltype(destroy_shader)>;
-    const Shader vertex(loadShader(assets / "forward-vertex.spv"), destroy_shader);
+    const Shader vertex(loadShader(options.shader_directory / "forward-vertex.spv"), destroy_shader);
     const auto &state = material.variant.state;
     const auto fragment_file =
         state.shading == star::MaterialShadingModel::Unlit ? "forward-unlit.spv" : "forward-fragment.spv";
-    const Shader fragment(loadShader(assets / fragment_file), destroy_shader);
+    const Shader fragment(loadShader(options.shader_directory / fragment_file), destroy_shader);
     m_prepass = createPipeline(vertex.get(), VK_NULL_HANDLE, resolution, state.double_sided);
     m_forward = createPipeline(vertex.get(), fragment.get(), resolution, state.double_sided);
     m_shadow_pipeline = createPipeline(vertex.get(), VK_NULL_HANDLE, shadow_resolution, state.double_sided);
-    const Shader cluster(loadShader(assets / "forward-cluster.spv"), destroy_shader);
+    const Shader cluster(loadShader(options.shader_directory / "forward-cluster.spv"), destroy_shader);
     auto compute = vkInfo<VkComputePipelineCreateInfo>(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
     compute.stage = vkInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
     compute.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -435,6 +454,13 @@ void VulkanForwardPasses::initialize(const StaticModelAsset &model, const std::f
     compute.layout = m_layout;
     check(vk.vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compute, nullptr, &m_cluster_pipeline),
           "Create cluster compute pipeline");
+
+    check(vk.vkEndCommandBuffer(m_upload_commands), "End static resource upload");
+    auto submit = vkInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &m_upload_commands;
+    // The first frame is submitted to the same queue. Its fence also retires the staging buffers.
+    check(vk.vkQueueSubmit(m_gpu.queue, 1, &submit, VK_NULL_HANDLE), "Submit static resource upload");
 }
 
 void VulkanForwardPasses::createLightingDescriptors() {
@@ -455,7 +481,9 @@ void VulkanForwardPasses::createLightingDescriptors() {
         light({0.03F, 0.41F, -0.42F}, 0.62F, {0.20F, 1.0F, 0.48F}, 1.0F),
     };
     static_assert(lights.size() <= STAR_CLUSTER_MAX_LIGHTS);
-    m_lights.upload(std::as_bytes(std::span(lights)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    uploadBuffer(m_lights, std::as_bytes(std::span(lights)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     constexpr auto cluster_bytes = STAR_CLUSTER_COLUMNS * STAR_CLUSTER_ROWS * STAR_CLUSTER_SLICES *
                                    (1 + STAR_CLUSTER_MAX_LIGHTS) * sizeof(std::uint32_t);
     m_cluster_lists.create(cluster_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, MemoryType::GpuOnly);
@@ -529,7 +557,8 @@ void VulkanForwardPasses::createShadows() {
         throw std::runtime_error("The device does not support sampled D32 depth images");
     }
     m_shadow_frame = makeShadowFrame(m_camera);
-    m_shadow_buffer.upload(std::as_bytes(std::span(&m_shadow_frame, 1)), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    uploadBuffer(m_shadow_buffer, std::as_bytes(std::span(&m_shadow_frame, 1)), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
     m_shadows.create(depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_DEPTH_BIT, shadow_resolution, STAR_SHADOW_CASCADES);
     for (std::uint32_t layer = 0; layer < m_shadow_layers.size(); ++layer) {
@@ -556,7 +585,8 @@ void VulkanForwardPasses::createEnvironment() {
     const auto mip_count = static_cast<std::uint32_t>(lighting.mip_levels.size());
     m_environment.create(environment_format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                          VK_IMAGE_ASPECT_COLOR_BIT, {base.width, base.height}, 1, mip_count);
-    m_environment_buffer.upload(std::as_bytes(std::span(lighting.diffuse)), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    uploadBuffer(m_environment_buffer, std::as_bytes(std::span(lighting.diffuse)), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
     std::vector<VkBufferImageCopy> regions;
     for (std::uint32_t level = 0; level < mip_count; ++level) {
         const auto &mip = lighting.mip_levels[level];
@@ -581,21 +611,45 @@ void VulkanForwardPasses::createEnvironment() {
     check(vk.vkCreateSampler(m_gpu.device, &sampler, nullptr, &m_environment_sampler), "Create environment sampler");
 }
 
-void VulkanForwardPasses::uploadImage(const Image &image, std::span<const std::byte> bytes,
-                                      std::span<const VkBufferImageCopy> regions) const {
-    Buffer staging(m_gpu);
-    staging.upload(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+VkBuffer VulkanForwardPasses::stageUpload(std::span<const std::byte> bytes) {
+    auto staging = std::make_unique<Buffer>(m_gpu);
+    staging->upload(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    m_staging.push_back(std::move(staging));
+    return m_staging.back()->handle;
+}
+
+void VulkanForwardPasses::uploadBuffer(Buffer &buffer, std::span<const std::byte> bytes, VkBufferUsageFlags usage,
+                                       VkPipelineStageFlags2 stages, VkAccessFlags2 access) {
+    buffer.create(bytes.size(), usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryType::GpuOnly);
+    const auto staging = stageUpload(bytes);
     const auto &vk = m_gpu.vk;
-    check(vk.vkResetCommandBuffer(m_commands, 0), "Reset upload command buffer");
-    const auto begin = vkInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-    check(vk.vkBeginCommandBuffer(m_commands, &begin), "Begin image upload");
-    transitionVulkanImage(m_gpu, m_commands, image.handle, image.range, vulkanTextureSync(TextureState::Undefined),
-                          vulkanTextureSync(TextureState::CopyDestination));
-    vk.vkCmdCopyBufferToImage(m_commands, staging.handle, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                              static_cast<std::uint32_t>(regions.size()), regions.data());
-    transitionVulkanImage(m_gpu, m_commands, image.handle, image.range,
+    const VkBufferCopy copy{0, 0, bytes.size()};
+    vk.vkCmdCopyBuffer(m_upload_commands, staging, buffer.handle, 1, &copy);
+
+    auto barrier = vkInfo<VkBufferMemoryBarrier2>(VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = stages;
+    barrier.dstAccessMask = access;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = buffer.handle;
+    barrier.size = VK_WHOLE_SIZE;
+    auto dependency = vkInfo<VkDependencyInfo>(VK_STRUCTURE_TYPE_DEPENDENCY_INFO);
+    dependency.bufferMemoryBarrierCount = 1;
+    dependency.pBufferMemoryBarriers = &barrier;
+    vk.vkCmdPipelineBarrier2(m_upload_commands, &dependency);
+}
+
+void VulkanForwardPasses::uploadImage(const Image &image, std::span<const std::byte> bytes,
+                                      std::span<const VkBufferImageCopy> regions) {
+    const auto staging = stageUpload(bytes);
+    transitionVulkanImage(m_gpu, m_upload_commands, image.handle, image.range,
+                          vulkanTextureSync(TextureState::Undefined), vulkanTextureSync(TextureState::CopyDestination));
+    m_gpu.vk.vkCmdCopyBufferToImage(m_upload_commands, staging, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    static_cast<std::uint32_t>(regions.size()), regions.data());
+    transitionVulkanImage(m_gpu, m_upload_commands, image.handle, image.range,
                           vulkanTextureSync(TextureState::CopyDestination), vulkanTextureSync(TextureState::Sampled));
-    submitCommands();
 }
 
 void VulkanForwardPasses::createMaterialDescriptors(const StaticModelAsset &model) {
@@ -846,7 +900,7 @@ void VulkanForwardPasses::renderPass(bool depth_only) const {
         vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 0, 1, &m_descriptors, 0,
                                    nullptr);
     }
-    drawParts(m_camera, !depth_only);
+    drawParts(m_camera, depth_only ? DrawPass::Depth : DrawPass::Color);
     vk.vkCmdEndRendering(m_commands);
 }
 
@@ -870,18 +924,21 @@ void VulkanForwardPasses::renderShadows() const {
         view.clip_y = m_shadow_frame.views[layer].clip_y;
         view.clip_z = m_shadow_frame.views[layer].clip_z;
         view.clip_w = {0, 0, 0, 1};
-        drawParts(view);
+        drawParts(view, DrawPass::Shadow);
         vk.vkCmdEndRendering(m_commands);
     }
 }
 
-void VulkanForwardPasses::drawParts(const DrawConstants &frame, bool bind_materials) const {
+void VulkanForwardPasses::drawParts(const DrawConstants &frame, DrawPass pass) const {
     const auto &vk = m_gpu.vk;
     constexpr VkDeviceSize offset = 0;
     vk.vkCmdBindVertexBuffers(m_commands, 0, 1, &m_vertices.handle, &offset);
     vk.vkCmdBindIndexBuffer(m_commands, m_indices.handle, 0, VK_INDEX_TYPE_UINT32);
     for (const auto &part : m_parts) {
-        if (bind_materials) {
+        if (pass == DrawPass::Shadow && !part.cast_shadows) {
+            continue;
+        }
+        if (pass == DrawPass::Color) {
             vk.vkCmdBindDescriptorSets(m_commands, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 1, 1, &part.textures, 0,
                                        nullptr);
         }
@@ -925,6 +982,7 @@ double VulkanForwardPasses::draw() {
         vk.vkCmdWriteTimestamp2(m_commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_queries, 1);
     }
     submitCommands();
+    m_staging.clear();
     if (m_gpu.validationErrors.load() != 0) {
         throw std::runtime_error("Vulkan validation reported errors");
     }
@@ -1028,7 +1086,8 @@ ForwardRenderer::~ForwardRenderer() = default;
 std::expected<std::unique_ptr<ForwardRenderer>, ForwardRenderError>
 ForwardRenderer::create(const StaticModelAsset &model, const ForwardRenderOptions &options,
                         const ForwardMaterial &material) {
-    if (!validGeometry(model) || !std::ranges::all_of(model.textures, validTexture)) {
+    if (!validGeometry(model) || !std::ranges::all_of(model.textures, validTexture) ||
+        (!options.shadow_casters.empty() && options.shadow_casters.size() != model.parts.size())) {
         return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::InvalidInput, "Invalid static model"});
     }
     if (material.variant.shader != defaultForwardMaterial().variant.shader ||
@@ -1044,7 +1103,7 @@ ForwardRenderer::create(const StaticModelAsset &model, const ForwardRenderOption
             return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::BackendFailure,
                                                       "Cannot initialize the requested Vulkan device"});
         }
-        implementation->passes.initialize(model, options.shader_directory, options.front_view, material);
+        implementation->passes.initialize(model, options, material);
         return std::unique_ptr<ForwardRenderer>(new ForwardRenderer(std::move(implementation)));
     } catch (const std::exception &error) {
         return std::unexpected(ForwardRenderError{ForwardRenderErrorCode::BackendFailure, error.what()});

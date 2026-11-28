@@ -1,9 +1,13 @@
 #include "test_support.hpp"
 
+#include "asset/asset_manager.hpp"
 #include "scene/scene_archive.hpp"
+#include "scene/static_render_snapshot.hpp"
 #include "scene/world.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 
 namespace {
@@ -648,3 +652,63 @@ GameObjects:
 }
 
 } // namespace
+
+STAR_TEST(staticRenderSnapshotResolvesAssetsAndBakesWorldTransforms) {
+    using namespace star;
+    struct TemporaryModel {
+        std::filesystem::path path =
+            std::filesystem::temp_directory_path() / ("star-scene-" + Guid::generate().toString() + ".smdl");
+        ~TemporaryModel() {
+            std::error_code error;
+            std::filesystem::remove(path, error);
+        }
+    } file;
+
+    StaticModelAsset model;
+    model.textures.push_back({TextureColorSpace::Color, {{1, 1, {255, 255, 255, 255}}}});
+    auto &part = model.parts.emplace_back();
+    part.vertices = {{{0, 0, 0}, {0, 0, 1}, {}}, {{1, 0, 0}, {0, 0, 1}, {}}, {{0, 1, 0}, {0, 0, 1}, {}}};
+    part.indices = {0, 1, 2};
+    part.material.emplace().base_color_texture = 0;
+    const auto bytes = writeModelAsset(model).value();
+    {
+        std::ofstream output(file.path, std::ios::binary);
+        output.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        STAR_CHECK(output.good());
+    }
+
+    World world;
+    auto &scene = *world.createScene().value();
+    const auto root = scene.createObject("Root").value();
+    const auto mirrored = scene.createObject("Mirrored").value();
+    const auto filtered = scene.createObject("Filtered").value();
+    scene.findComponent<Transform>(root)->position.x = 3;
+    scene.findComponent<Transform>(mirrored)->scale.x = -2;
+    STAR_CHECK(scene.queueSetParent(mirrored, root, false));
+    const auto mesh_id = Guid::generate();
+    const MeshRenderer original{mesh_id, {}, true, 1};
+    const MeshRenderer reflection{mesh_id, {}, false, 1};
+    const MeshRenderer hidden{Guid::generate(), {}, true, 2};
+    STAR_CHECK(scene.queueAddComponent(root, componentTypeId<MeshRenderer>(), &original));
+    STAR_CHECK(scene.queueAddComponent(mirrored, componentTypeId<MeshRenderer>(), &reflection));
+    STAR_CHECK(scene.queueAddComponent(filtered, componentTypeId<MeshRenderer>(), &hidden));
+    STAR_CHECK(scene.commitCommands());
+
+    AssetManager assets;
+    const auto missing = extractStaticRenderSnapshot(scene, assets, 1);
+    STAR_CHECK(!missing && missing.error().code == StaticRenderErrorCode::AssetLoadFailed);
+    STAR_CHECK(assets.registerAsset<StaticModelAsset>(mesh_id, file.path));
+    const auto snapshot = extractStaticRenderSnapshot(scene, assets, 1).value();
+    STAR_CHECK(snapshot.model.parts.size() == 2);
+    STAR_CHECK(snapshot.model.textures.size() == 1);
+    const auto mirrored_part = snapshot.shadow_casters.front() ? 1u : 0u;
+    const auto &geometry = snapshot.model.parts[mirrored_part];
+    STAR_CHECK(geometry.vertices.at(1).position.x == 1.0F);
+    STAR_CHECK(geometry.vertices.at(1).normal.z == 1.0F);
+    STAR_CHECK(geometry.indices == std::vector<std::uint32_t>({0, 2, 1}));
+    STAR_CHECK(geometry.material->base_color_texture == 0);
+
+    STAR_CHECK(scene.queueDestroy(mirrored));
+    STAR_CHECK(extractStaticRenderSnapshot(scene, assets, 1).value().model.parts.size() == 1);
+}

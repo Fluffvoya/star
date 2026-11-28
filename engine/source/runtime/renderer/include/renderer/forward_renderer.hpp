@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,6 +35,8 @@ struct ForwardRenderOptions {
     std::filesystem::path shader_directory;
     bool front_view = false;
     bool enable_validation = false;
+    // Optional per-part flags consumed during create().
+    std::span<const std::uint8_t> shadow_casters{};
 };
 
 struct ForwardImage {
